@@ -1,0 +1,16 @@
+[package]
+name = "frame-flow"
+version = "0.1.0"
+authors = ["jerry73204 <jerry73204@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tch = "0.3"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+json5 = "0.3.0"
+structopt = "0.3.21"
+gstreamer = "0.16.5"
+gstreamer-app = "0.16.5"
