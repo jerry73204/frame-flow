@@ -3,6 +3,8 @@ use crate::common::*;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub input_url: String,
+    #[serde(with = "tch_serde::serde_device")]
+    pub device: Device,
 }
 
 impl Config {

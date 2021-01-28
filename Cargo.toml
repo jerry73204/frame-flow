@@ -7,10 +7,14 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tch = "0.3"
-anyhow = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+tch = "0.3.1"
+anyhow = "1.0.38"
+serde = { version = "1.0.118", features = ["derive"] }
 json5 = "0.3.0"
 structopt = "0.3.21"
 gstreamer = "0.16.5"
 gstreamer-app = "0.16.5"
+tch-serde = "0.3.1"
+opencv = "0.47.0"
+rand = "0.8.1"
+itertools = "0.10.0"
