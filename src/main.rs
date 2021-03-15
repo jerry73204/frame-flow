@@ -1,9 +1,4 @@
-mod common;
-mod config;
-mod model;
-mod video;
-
-use crate::{common::*, config::Config, model::Model};
+use frame_flow::{common::*, config::Config};
 
 #[derive(Debug, Clone, StructOpt)]
 /// Implementation for 'frame-flow' model.
@@ -18,7 +13,6 @@ fn main() -> Result<()> {
 
     let vs = nn::VarStore::new(device);
     let root = vs.root();
-    let model = Model::new(&root);
 
     let seq_size = 4;
     let mut video = VideoCapture::from_file(&input_url, 0)?;

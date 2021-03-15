@@ -1,4 +1,4 @@
-pub use anyhow::{ensure, format_err, Result};
+pub use anyhow::{ensure, format_err, Context, Result};
 pub use gstreamer::{self as gst, prelude::*};
 pub use gstreamer_app as gst_app;
 pub use itertools::Itertools;
@@ -16,6 +16,8 @@ pub use std::{
 };
 pub use structopt::StructOpt;
 pub use tch::{
+    kind::FLOAT_CPU,
     nn::{self, OptimizerConfig},
     Device, Kind, Tensor,
 };
+pub use tch_goodies::TensorExt;
