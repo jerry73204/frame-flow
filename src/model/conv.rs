@@ -6,6 +6,7 @@ where
 {
     fn dim(&self) -> usize;
     fn i64_iter(&self) -> Box<dyn Iterator<Item = i64>>;
+    fn usize_iter(&self) -> Box<dyn Iterator<Item = usize>>;
 }
 
 impl ConvParam for usize {
@@ -15,6 +16,10 @@ impl ConvParam for usize {
 
     fn i64_iter(&self) -> Box<dyn Iterator<Item = i64>> {
         Box::new(iter::once(*self as i64))
+    }
+
+    fn usize_iter(&self) -> Box<dyn Iterator<Item = usize>> {
+        Box::new(iter::once(*self))
     }
 }
 
@@ -26,6 +31,10 @@ impl<const DIM: usize> ConvParam for [usize; DIM] {
     fn i64_iter(&self) -> Box<dyn Iterator<Item = i64>> {
         Box::new(Vec::from(*self).into_iter().map(|val| val as i64))
     }
+
+    fn usize_iter(&self) -> Box<dyn Iterator<Item = usize>> {
+        Box::new(Vec::from(*self).into_iter())
+    }
 }
 
 impl ConvParam for Vec<usize> {
@@ -36,6 +45,10 @@ impl ConvParam for Vec<usize> {
     fn i64_iter(&self) -> Box<dyn Iterator<Item = i64>> {
         Box::new(self.clone().into_iter().map(|val| val as i64))
     }
+
+    fn usize_iter(&self) -> Box<dyn Iterator<Item = usize>> {
+        Box::new(self.clone().into_iter())
+    }
 }
 
 impl ConvParam for &[usize] {
@@ -45,6 +58,10 @@ impl ConvParam for &[usize] {
 
     fn i64_iter(&self) -> Box<dyn Iterator<Item = i64>> {
         Box::new(Vec::<usize>::from(*self).into_iter().map(|val| val as i64))
+    }
+
+    fn usize_iter(&self) -> Box<dyn Iterator<Item = usize>> {
+        Box::new(Vec::<usize>::from(*self).into_iter())
     }
 }
 
@@ -66,6 +83,21 @@ pub type ConvNDInit3D = ConvNDInit<[usize; 3]>;
 pub type ConvNDInit4D = ConvNDInit<[usize; 4]>;
 pub type ConvNDInitDyn = ConvNDInit<Vec<usize>>;
 
+impl ConvNDInit1D {
+    pub fn new(ksize: usize) -> Self {
+        Self {
+            ksize,
+            stride: 1,
+            padding: ksize / 2,
+            dilation: 1,
+            groups: 1,
+            bias: true,
+            ws_init: nn::Init::KaimingUniform,
+            bs_init: nn::Init::Const(0.0),
+        }
+    }
+}
+
 impl<const DIM: usize> ConvNDInit<[usize; DIM]> {
     pub fn new(ksize: usize) -> Self {
         Self {
@@ -77,30 +109,6 @@ impl<const DIM: usize> ConvNDInit<[usize; DIM]> {
             bias: true,
             ws_init: nn::Init::KaimingUniform,
             bs_init: nn::Init::Const(0.0),
-        }
-    }
-
-    pub fn into_dyn(self) -> ConvNDInitDyn {
-        let Self {
-            ksize,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-            ws_init,
-            bs_init,
-        } = self;
-
-        ConvNDInitDyn {
-            ksize: Vec::from(ksize),
-            stride: Vec::from(stride),
-            padding: Vec::from(padding),
-            dilation: Vec::from(dilation),
-            groups,
-            bias,
-            ws_init,
-            bs_init,
         }
     }
 }
@@ -118,37 +126,59 @@ impl ConvNDInit<Vec<usize>> {
             bs_init: nn::Init::Const(0.0),
         }
     }
-
-    // pub fn cat(params: impl IntoIterator<Item = Self>) -> Self {
-    //     params
-    //         .into_iter()
-    //         .map(|conv| {
-    //             let Self {
-    //                 ksize,
-    //                 stride,
-    //                 padding,
-    //                 dilation,
-    //                 groups,
-    //                 bias,
-    //                 ws_init,
-    //                 bs_init,
-    //             } = conv;
-
-    //             (
-    //                 ksize, stride, padding, dilation, groups, bias, ws_init, bs_init,
-    //             )
-    //         })
-    //         .unzip_n();
-    // }
 }
 
 impl<Param: ConvParam> ConvNDInit<Param> {
+    pub fn into_dyn(self) -> ConvNDInitDyn {
+        let Self {
+            ksize,
+            stride,
+            padding,
+            dilation,
+            groups,
+            bias,
+            ws_init,
+            bs_init,
+        } = self;
+
+        ConvNDInitDyn {
+            ksize: Vec::from_iter(ksize.usize_iter()),
+            stride: Vec::from_iter(stride.usize_iter()),
+            padding: Vec::from_iter(padding.usize_iter()),
+            dilation: Vec::from_iter(dilation.usize_iter()),
+            groups,
+            bias,
+            ws_init,
+            bs_init,
+        }
+    }
+
+    pub fn dim(&self) -> Result<usize> {
+        let Self {
+            ksize,
+            stride,
+            padding,
+            dilation,
+            ..
+        } = self;
+
+        ensure!(
+            ksize.dim() == stride.dim()
+                && ksize.dim() == padding.dim()
+                && ksize.dim() == dilation.dim(),
+            "parameter dimension mismatch"
+        );
+
+        Ok(ksize.dim())
+    }
+
     pub fn build<'a>(
         self,
         path: impl Borrow<nn::Path<'a>>,
         in_dim: usize,
         out_dim: usize,
     ) -> Result<ConvND> {
+        let conv_dim = self.dim()?;
         let Self {
             ksize,
             stride,
@@ -164,15 +194,8 @@ impl<Param: ConvParam> ConvNDInit<Param> {
             groups > 0 && in_dim % groups == 0,
             "in_dim must be multiple of group"
         );
-        ensure!(
-            ksize.dim() == stride.dim()
-                && ksize.dim() == padding.dim()
-                && ksize.dim() == dilation.dim(),
-            "parameter dimension mismatch"
-        );
 
         let path = path.borrow();
-        let conv_dim = ksize.dim();
         let in_dim = in_dim as i64;
         let out_dim = out_dim as i64;
         let ksize: Vec<i64> = ksize.i64_iter().collect();
@@ -202,6 +225,7 @@ impl<Param: ConvParam> ConvNDInit<Param> {
     }
 }
 
+#[derive(Debug)]
 pub struct ConvND {
     stride: Vec<i64>,
     padding: Vec<i64>,
@@ -213,6 +237,14 @@ pub struct ConvND {
 }
 
 impl ConvND {
+    pub fn set_trainable(&self, trainable: bool) {
+        let Self { weight, bias, .. } = self;
+        let _ = weight.set_requires_grad(trainable);
+        bias.as_ref().map(|bias| {
+            let _ = bias.set_requires_grad(trainable);
+        });
+    }
+
     pub fn forward(&self, input: &Tensor) -> Tensor {
         let Self {
             ref stride,

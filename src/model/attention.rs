@@ -1,4 +1,4 @@
-use super::conv::{ConvND, ConvNDInit, ConvParam};
+use super::conv::{ConvND, ConvNDInit, ConvNDInitDyn, ConvParam};
 use crate::common::*;
 
 pub struct AttentionInit<InputConvParam, ContextConvParam>
@@ -34,13 +34,30 @@ where
             context_conv,
         } = self;
 
-        let mask_conv = {
-            // let mask_dim = INPUT_DIM + CONTEXT_DIM;
-            // let arr = [0i64; INPUT_DIM + CONTEXT_DIM];
-            // let mask_conv = ConvNDInit {
+        let mask_input_conv = ConvNDInitDyn {
+            groups: 1,
+            bias: false,
+            ws_init: nn::Init::Const(1.0),
+            bs_init: nn::Init::Const(0.0),
+            ..input_conv.clone().into_dyn()
+        }
+        .build(path / "mask_input_conv", 1, 1)
+        .unwrap();
+        mask_input_conv.set_trainable(false);
 
-            // };
-        };
+        let mask_context_conv = ConvNDInitDyn {
+            groups: 1,
+            bias: false,
+            ws_init: nn::Init::Const(1.0),
+            bs_init: nn::Init::Const(0.0),
+            ..context_conv.clone().into_dyn()
+        }
+        .build(path / "mask_input_conv", 1, 1)
+        .unwrap();
+        mask_context_conv.set_trainable(false);
+
+        let mask_divisor = input_conv.ksize.usize_iter().product::<usize>()
+            * context_conv.ksize.usize_iter().product::<usize>();
 
         let query_conv = input_conv.build(
             path / "query_conv",
@@ -75,7 +92,10 @@ where
             query_conv,
             key_conv,
             value_conv,
+            mask_input_conv,
+            mask_context_conv,
             merge_weight,
+            mask_divisor: mask_divisor as f64,
         })
     }
 }
@@ -89,16 +109,20 @@ pub struct Attention {
     query_conv: ConvND,
     key_conv: ConvND,
     value_conv: ConvND,
+    mask_input_conv: ConvND,
+    mask_context_conv: ConvND,
+    mask_divisor: f64,
 }
 
 impl Attention {
-    pub fn forward(
+    pub fn forward<'a>(
         &self,
         input: &Tensor,
         context: &Tensor,
-        mask: Option<&Tensor>,
-    ) -> Result<Tensor> {
+        mask: impl Into<Option<&'a Tensor>>,
+    ) -> Result<(Tensor, Option<Tensor>)> {
         let batch_size = input.size()[0];
+        let input_mask = mask.into();
         ensure!(context.size()[0] == batch_size, "batch size mismatch");
 
         let Self {
@@ -106,26 +130,30 @@ impl Attention {
             key_channels,
             value_channels,
             output_channels,
+            mask_divisor,
             ref query_conv,
             ref key_conv,
             ref value_conv,
+            ref mask_input_conv,
+            ref mask_context_conv,
             ref merge_weight,
         } = *self;
 
+        let input_shape = &input.size()[2..];
+        let context_shape = &context.size()[2..];
+        let input_numel: i64 = input_shape.iter().product();
+        // let context_numel: i64 = context_shape.iter().product();
+
         // check mask shape
-        let mask = mask
-            .map(|mask| {
-                let input_shape = &input.size()[2..];
-                let context_shape = &context.size()[2..];
-                let expect_shape: Vec<_> = input_shape
-                    .iter()
-                    .cloned()
-                    .chain(context_shape.iter().cloned())
-                    .collect();
-                ensure!(mask.size() == expect_shape, "mask shape mismatch");
-                Ok(mask)
-            })
-            .transpose()?;
+        if let Some(input_mask) = input_mask {
+            let expect_shape: Vec<_> = input_shape
+                .iter()
+                .cloned()
+                .chain(context_shape.iter().cloned())
+                .collect();
+            ensure!(!input_mask.requires_grad(), "mask must be non-trainable");
+            ensure!(input_mask.size() == expect_shape, "mask shape mismatch");
+        }
 
         // convolutions
         let (query, new_input_shape) = {
@@ -145,22 +173,63 @@ impl Attention {
             debug_assert_eq!(orig.size()[2..], new_context_shape);
             orig.view([batch_size, num_heads, value_channels, -1])
         };
+        let new_input_numel: i64 = new_input_shape.iter().product();
+        let new_context_numel: i64 = new_context_shape.iter().product();
 
         // compute attention
-        let attention = query
-            // [b, h, c, m] -> [b, h, m, c]
-            .permute(&[0, 1, 3, 2])
-            .matmul(&key)
-            .g_div1((key_channels as f64).sqrt())
-            .softmax(2, Kind::Float);
+        let (attention, output_mask) = {
+            let logit = query
+                // [b, h, c, mx] -> [b, h, mx, c]
+                .permute(&[0, 1, 3, 2])
+                // [b, h, mx, c] * [b, h, c, my] -> [b, h, mx, my]
+                .matmul(&key)
+                .g_div1((key_channels as f64).sqrt());
 
-        // mask attention
-        let attention = match mask {
-            Some(mask) => {
-                // let mask = mask.borrow();
-                attention
-            }
-            None => attention,
+            // mask attention
+            let (masked_logit, output_mask) = match input_mask {
+                Some(mask) => {
+                    // transform mask by convolutions
+                    let shape1: Vec<_> = vec![input_numel, 1]
+                        .into_iter()
+                        .chain(context_shape.iter().cloned())
+                        .collect();
+                    let mask = mask.view(&*shape1);
+                    let mask = mask_context_conv.forward(&mask);
+
+                    let shape2: Vec<_> = vec![new_context_numel, 1]
+                        .into_iter()
+                        .chain(input_shape.iter().cloned())
+                        .collect();
+                    let mask = mask
+                        .view([input_numel, 1, new_context_numel])
+                        .permute(&[2, 1, 0])
+                        .reshape(&*shape2);
+                    let mask = mask_input_conv.forward(&mask);
+
+                    let mask = mask
+                        .view([new_context_numel, new_input_numel])
+                        .permute(&[1, 0])
+                        .reshape(&[1, 1, new_input_numel, new_context_numel]);
+                    let mask = mask / mask_divisor;
+
+                    // apply masking
+                    let masked_logit = &logit + &mask.log();
+
+                    // transform mask shape
+                    let shape3: Vec<_> = new_input_shape
+                        .iter()
+                        .cloned()
+                        .chain(new_context_shape.iter().cloned())
+                        .collect();
+                    let output_mask = mask.view(&*shape3);
+
+                    (masked_logit, Some(output_mask))
+                }
+                None => (logit.shallow_clone(), None),
+            };
+
+            let attention = masked_logit.softmax(3, Kind::Float);
+            (attention, output_mask)
         };
 
         // compute output per head
@@ -176,30 +245,16 @@ impl Attention {
             output.view(&*output_shape)
         };
 
-        Ok(output)
+        Ok((output, output_mask))
     }
 }
 
-// fn array_cat<T, const LHS_SIZE: usize, const RHS_SIZE: usize>(
-//     lhs: [T; LHS_SIZE],
-//     rhs: [T; RHS_SIZE],
-// ) -> [T; LHS_SIZE + RHS_SIZE] {
-//     todo!();
-// }
-
-// trait ArrayCat<Rhs> {
-//     const OUT: usize;
-//     type Output;
-// }
-
-// impl<T, const LHS: usize, const RHS: usize> ArrayCat<[T; RHS]> for [T; LHS] {
-//     const OUT: usize = LHS + RHS;
-//     type Output = [T; Self::OUT];
-// }
-
 #[cfg(test)]
 mod tests {
-    use super::{super::conv::ConvNDInit2D, *};
+    use super::{
+        super::conv::{ConvNDInit1D, ConvNDInit2D},
+        *,
+    };
 
     #[test]
     fn attention_test() -> Result<()> {
@@ -216,6 +271,7 @@ mod tests {
 
         let input = Tensor::randn(&[b, cx, hx, wx], FLOAT_CPU);
         let context = Tensor::randn(&[b, cc, hc, wc], FLOAT_CPU);
+        let mask = Tensor::ones(&[hx, wx, hc, wc], FLOAT_CPU).set_requires_grad(false);
 
         let vs = nn::VarStore::new(Device::Cpu);
         let root = vs.root();
@@ -226,13 +282,23 @@ mod tests {
             output_channels: o as usize,
             key_channels: 4,
             value_channels: 6,
-            input_conv: ConvNDInit2D::new(ki),
-            context_conv: ConvNDInit2D::new(kc),
+            input_conv: ConvNDInit2D {
+                stride: [2, 2],
+                ..ConvNDInit2D::new(ki)
+            },
+            context_conv: ConvNDInit2D {
+                stride: [2, 2],
+                ..ConvNDInit2D::new(kc)
+            },
         }
         .build(&root)?;
 
-        let output = attention.forward(&input, &context, None)?;
-        assert_eq!(output.size(), vec![b, o, hx, wx]);
+        let (output, out_mask) = attention.forward(&input, &context, &mask)?;
+        let out_mask = out_mask.unwrap();
+
+        assert_eq!(output.size(), vec![b, o, hx / 2, wx / 2]);
+        assert_eq!(out_mask.size(), vec![hx / 2, wx / 2, hc / 2, wc / 2]);
+        assert_abs_diff_eq!(f64::from(out_mask.max()), 1.0);
 
         Ok(())
     }

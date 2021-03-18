@@ -20,3 +20,5 @@ rand = "0.8.3"
 itertools = "0.10.0"
 tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "f37cf74f" }
 unzip-n = "0.1.2"
+approx = "0.4.0"
+log = "0.4.14"
