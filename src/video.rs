@@ -58,7 +58,7 @@ pub fn play(url: &str) -> Result<()> {
 
                             let structure =
                                 || -> Option<_> { Some(sample.get_caps()?.get_structure(0)?) }()
-                                    .ok_or_else(|| gst::FlowError::Error)?;
+                                    .ok_or(gst::FlowError::Error)?;
 
                             let caps = || -> Result<_> {
                                 let format = structure.get::<String>("format")?;

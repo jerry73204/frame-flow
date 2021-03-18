@@ -11,7 +11,7 @@ pub use rand::prelude::*;
 pub use serde::{Deserialize, Serialize};
 pub use std::{
     borrow::Borrow,
-    fs,
+    fs, iter,
     path::{Path, PathBuf},
 };
 pub use structopt::StructOpt;
@@ -21,3 +21,6 @@ pub use tch::{
     Device, Kind, Tensor,
 };
 pub use tch_goodies::TensorExt;
+pub use unzip_n::unzip_n;
+
+unzip_n!(pub 8);

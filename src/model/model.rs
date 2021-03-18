@@ -6,10 +6,10 @@ pub struct Generator {
 }
 
 impl Generator {
-    pub fn new<'a>(path: impl Borrow<nn::Path<'a>>) -> Self {
+    pub fn new<'a>(path: impl Borrow<nn::Path<'a>>, latent_dim: usize) -> Self {
         let path = path.borrow();
         let seq = nn::seq_t()
-            .add(tr2d(path / "tr1", LATENT_DIM, 1024, 0, 1))
+            .add(tr2d(path / "tr1", latent_dim as i64, 1024, 0, 1))
             .add(nn::batch_norm2d(path / "bn1", 1024, Default::default()))
             .add_fn(|xs| xs.relu())
             .add(tr2d(path / "tr2", 1024, 512, 1, 2))
@@ -62,12 +62,6 @@ impl Discriminator {
     }
 }
 
-const IMG_SIZE: i64 = 64;
-const LATENT_DIM: i64 = 128;
-const BATCH_SIZE: i64 = 32;
-const LEARNING_RATE: f64 = 1e-4;
-const BATCHES: i64 = 100000000;
-
 fn tr2d<'a>(
     p: impl Borrow<nn::Path<'a>>,
     c_in: i64,
@@ -100,65 +94,29 @@ fn conv2d<'a>(
     nn::conv2d(p, c_in, c_out, 4, cfg)
 }
 
-fn generator<'a>(p: impl Borrow<nn::Path<'a>>) -> impl nn::ModuleT {
-    let p = p.borrow();
-    nn::seq_t()
-        .add(tr2d(p / "tr1", LATENT_DIM, 1024, 0, 1))
-        .add(nn::batch_norm2d(p / "bn1", 1024, Default::default()))
-        .add_fn(|xs| xs.relu())
-        .add(tr2d(p / "tr2", 1024, 512, 1, 2))
-        .add(nn::batch_norm2d(p / "bn2", 512, Default::default()))
-        .add_fn(|xs| xs.relu())
-        .add(tr2d(p / "tr3", 512, 256, 1, 2))
-        .add(nn::batch_norm2d(p / "bn3", 256, Default::default()))
-        .add_fn(|xs| xs.relu())
-        .add(tr2d(p / "tr4", 256, 128, 1, 2))
-        .add(nn::batch_norm2d(p / "bn4", 128, Default::default()))
-        .add_fn(|xs| xs.relu())
-        .add(tr2d(p / "tr5", 128, 3, 1, 2))
-        .add_fn(|xs| xs.tanh())
-}
-
 fn leaky_relu(xs: &Tensor) -> Tensor {
     xs.max1(&(xs * 0.2))
 }
 
-fn discriminator<'a>(p: impl Borrow<nn::Path<'a>>) -> impl nn::ModuleT {
-    let p = p.borrow();
-    nn::seq_t()
-        .add(conv2d(p / "conv1", 3, 128, 1, 2))
-        .add_fn(leaky_relu)
-        .add(conv2d(p / "conv2", 128, 256, 1, 2))
-        .add(nn::batch_norm2d(p / "bn2", 256, Default::default()))
-        .add_fn(leaky_relu)
-        .add(conv2d(p / "conv3", 256, 512, 1, 2))
-        .add(nn::batch_norm2d(p / "bn3", 512, Default::default()))
-        .add_fn(leaky_relu)
-        .add(conv2d(p / "conv4", 512, 1024, 1, 2))
-        .add(nn::batch_norm2d(p / "bn4", 1024, Default::default()))
-        .add_fn(leaky_relu)
-        .add(conv2d(p / "conv5", 1024, 1, 0, 1))
-}
-
-fn mse_loss(x: &Tensor, y: &Tensor) -> Tensor {
-    let diff = x - y;
-    (&diff * &diff).mean(Kind::Float)
-}
+// fn mse_loss(x: &Tensor, y: &Tensor) -> Tensor {
+//     let diff = x - y;
+//     (&diff * &diff).mean(Kind::Float)
+// }
 
 // Generate a 2D matrix of images from a tensor with multiple images.
-fn image_matrix(imgs: &Tensor, sz: i64) -> Result<Tensor> {
-    let imgs = ((imgs + 1.) * 127.5).clamp(0., 255.).to_kind(Kind::Uint8);
-    let mut ys: Vec<Tensor> = vec![];
-    for i in 0..sz {
-        ys.push(Tensor::cat(
-            &(0..sz)
-                .map(|j| imgs.narrow(0, 4 * i + j, 1))
-                .collect::<Vec<_>>(),
-            2,
-        ))
-    }
-    Ok(Tensor::cat(&ys, 3).squeeze1(0))
-}
+// fn image_matrix(imgs: &Tensor, sz: i64) -> Result<Tensor> {
+//     let imgs = ((imgs + 1.) * 127.5).clamp(0., 255.).to_kind(Kind::Uint8);
+//     let mut ys: Vec<Tensor> = vec![];
+//     for i in 0..sz {
+//         ys.push(Tensor::cat(
+//             &(0..sz)
+//                 .map(|j| imgs.narrow(0, 4 * i + j, 1))
+//                 .collect::<Vec<_>>(),
+//             2,
+//         ))
+//     }
+//     Ok(Tensor::cat(&ys, 3).squeeze1(0))
+// }
 
 // pub fn main() -> Result<()> {
 //     let device = Device::cuda_if_available();

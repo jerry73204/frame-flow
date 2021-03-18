@@ -19,3 +19,4 @@ opencv = "0.49.1"
 rand = "0.8.3"
 itertools = "0.10.0"
 tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "f37cf74f" }
+unzip-n = "0.1.2"
