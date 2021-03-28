@@ -85,9 +85,9 @@ impl<Param: ConvParam> ConvBnNDInit<Param> {
 
 #[derive(Debug)]
 pub struct ConvBnND {
-    pub conv: ConvND,
-    pub bn: BatchNormND,
-    pub bn_first: bool,
+    conv: ConvND,
+    bn: BatchNormND,
+    bn_first: bool,
 }
 
 impl ConvBnND {
