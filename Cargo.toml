@@ -22,3 +22,4 @@ tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.
 unzip-n = "0.1.2"
 approx = "0.4.0"
 log = "0.4.14"
+tch-tensor-like = "0.3.0"

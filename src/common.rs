@@ -25,6 +25,7 @@ pub use tch::{
     Device, Kind, Tensor,
 };
 pub use tch_goodies::TensorExt;
+pub use tch_tensor_like::TensorLike;
 pub use unzip_n::unzip_n;
 
 unzip_n!(pub 8);

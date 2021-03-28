@@ -251,10 +251,7 @@ impl Attention {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        super::conv::{ConvNDInit1D, ConvNDInit2D},
-        *,
-    };
+    use super::{super::conv::ConvNDInit2D, *};
 
     #[test]
     fn attention_test() -> Result<()> {
