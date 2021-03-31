@@ -89,13 +89,13 @@ mod conv_init {
         pub bs_init: nn::Init,
     }
 
-    pub type ConvNDInit1D = ConvNDInit<usize>;
-    pub type ConvNDInit2D = ConvNDInit<[usize; 2]>;
-    pub type ConvNDInit3D = ConvNDInit<[usize; 3]>;
-    pub type ConvNDInit4D = ConvNDInit<[usize; 4]>;
+    pub type Conv1DInit = ConvNDInit<usize>;
+    pub type Conv2DInit = ConvNDInit<[usize; 2]>;
+    pub type Conv3DInit = ConvNDInit<[usize; 3]>;
+    pub type Conv4DInit = ConvNDInit<[usize; 4]>;
     pub type ConvNDInitDyn = ConvNDInit<Vec<usize>>;
 
-    impl ConvNDInit1D {
+    impl Conv1DInit {
         pub fn new(ksize: usize) -> Self {
             Self {
                 ksize,
@@ -195,7 +195,6 @@ mod conv_init {
             in_dim: usize,
             out_dim: usize,
         ) -> Result<ConvND> {
-            let conv_dim = self.dim()?;
             let Self {
                 ksize,
                 stride,
@@ -224,10 +223,14 @@ mod conv_init {
 
             let bs = bias.then(|| path.var("bias", &[out_dim], bs_init));
             let ws = {
-                let weight_size: Vec<i64> = vec![out_dim, in_dim / groups]
-                    .into_iter()
-                    .chain(ksize)
-                    .collect();
+                let weight_size: Vec<i64> = if transposed {
+                    vec![in_dim, out_dim / groups]
+                } else {
+                    vec![out_dim, in_dim / groups]
+                }
+                .into_iter()
+                .chain(ksize)
+                .collect();
                 path.var("weight", weight_size.as_slice(), ws_init)
             };
 
@@ -235,7 +238,6 @@ mod conv_init {
                 stride,
                 padding,
                 dilation,
-                output_padding: vec![0; conv_dim],
                 groups,
                 weight: ws,
                 bias: bs,
@@ -253,7 +255,6 @@ mod conv_nd {
         pub(super) stride: Vec<i64>,
         pub(super) padding: Vec<i64>,
         pub(super) dilation: Vec<i64>,
-        pub(super) output_padding: Vec<i64>,
         pub(super) groups: i64,
         pub(super) weight: Tensor,
         pub(super) bias: Option<Tensor>,
@@ -269,17 +270,25 @@ mod conv_nd {
             }
         }
 
+        pub fn stride(&self) -> &[i64] {
+            &self.stride
+        }
+
         pub fn forward(&self, input: &Tensor) -> Tensor {
+            self.forward_ext(input, None)
+        }
+
+        pub fn forward_ext(&self, input: &Tensor, output_padding: Option<&[i64]>) -> Tensor {
             let Self {
                 ref stride,
                 ref padding,
                 ref dilation,
                 groups,
-                ref output_padding,
                 ref weight,
                 ref bias,
                 transposed,
             } = *self;
+            let ndims = stride.len();
 
             input.convolution(
                 weight,
@@ -288,7 +297,7 @@ mod conv_nd {
                 &padding,
                 &dilation,
                 transposed,
-                &output_padding,
+                output_padding.unwrap_or(&vec![0; ndims]),
                 groups,
             )
         }

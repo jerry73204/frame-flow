@@ -2,7 +2,7 @@ pub use anyhow::{ensure, format_err, Context, Result};
 pub use approx::assert_abs_diff_eq;
 pub use gstreamer::{self as gst, prelude::*};
 pub use gstreamer_app as gst_app;
-pub use itertools::Itertools;
+pub use itertools::{izip, Itertools};
 pub use log::warn;
 pub use opencv::{
     highgui,
@@ -12,7 +12,8 @@ pub use opencv::{
 pub use rand::prelude::*;
 pub use serde::{Deserialize, Serialize};
 pub use std::{
-    borrow::Borrow,
+    array,
+    borrow::{Borrow, Cow},
     collections, fs,
     iter::{self, FromIterator},
     path::{Path, PathBuf},
@@ -28,4 +29,5 @@ pub use tch_goodies::TensorExt;
 pub use tch_tensor_like::TensorLike;
 pub use unzip_n::unzip_n;
 
+unzip_n!(pub 2);
 unzip_n!(pub 8);

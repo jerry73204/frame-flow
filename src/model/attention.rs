@@ -1,6 +1,7 @@
 use super::conv::{ConvND, ConvNDInit, ConvNDInitDyn, ConvParam};
 use crate::common::*;
 
+#[derive(Debug, Clone)]
 pub struct AttentionInit<InputConvParam, ContextConvParam>
 where
     InputConvParam: ConvParam,
@@ -100,6 +101,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct Attention {
     num_heads: i64,
     key_channels: i64,
@@ -142,7 +144,6 @@ impl Attention {
         let input_shape = &input.size()[2..];
         let context_shape = &context.size()[2..];
         let input_numel: i64 = input_shape.iter().product();
-        // let context_numel: i64 = context_shape.iter().product();
 
         // check mask shape
         if let Some(input_mask) = input_mask {
@@ -251,7 +252,7 @@ impl Attention {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::conv::ConvNDInit2D, *};
+    use super::{super::conv::Conv2DInit, *};
 
     #[test]
     fn attention_test() -> Result<()> {
@@ -279,13 +280,13 @@ mod tests {
             output_channels: o as usize,
             key_channels: 4,
             value_channels: 6,
-            input_conv: ConvNDInit2D {
+            input_conv: Conv2DInit {
                 stride: [2, 2],
-                ..ConvNDInit2D::new(ki)
+                ..Conv2DInit::new(ki)
             },
-            context_conv: ConvNDInit2D {
+            context_conv: Conv2DInit {
                 stride: [2, 2],
-                ..ConvNDInit2D::new(kc)
+                ..Conv2DInit::new(kc)
             },
         }
         .build(&root)?;

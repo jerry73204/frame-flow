@@ -2,13 +2,15 @@ use super::{
     attention::{Attention, AttentionInit},
     conv::{ConvND, ConvNDInitDyn},
     conv_bn::{ConvBnND, ConvBnNDInitDyn},
+    tensor_list::TensorList,
 };
 use crate::common::*;
 
 #[derive(Debug, Clone)]
-pub struct EncoderBlockInit {
+pub struct DecoderBlockInit {
     pub ndims: usize,
     pub input_channels: usize,
+    pub context_channels: usize,
     pub output_channels: usize,
     pub repeat: usize,
     pub num_heads: usize,
@@ -18,12 +20,13 @@ pub struct EncoderBlockInit {
     pub conv_transposed: bool,
 }
 
-impl EncoderBlockInit {
-    pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> Result<EncoderBlock> {
+impl DecoderBlockInit {
+    pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> Result<DecoderBlock> {
         let path = path.borrow();
         let Self {
             ndims,
             input_channels,
+            context_channels,
             attention_channels,
             keyvalue_channels,
             output_channels,
@@ -68,7 +71,7 @@ impl EncoderBlockInit {
                 AttentionInit {
                     num_heads,
                     input_channels: attention_channels,
-                    context_channels: attention_channels,
+                    context_channels,
                     output_channels: attention_channels,
                     key_channels: keyvalue_channels,
                     value_channels: keyvalue_channels,
@@ -91,7 +94,7 @@ impl EncoderBlockInit {
         }
         .build(path / "merge_conv", attention_channels * 2, output_channels)?;
 
-        Ok(EncoderBlock {
+        Ok(DecoderBlock {
             attentions,
             shortcut_conv,
             merge_conv,
@@ -102,7 +105,7 @@ impl EncoderBlockInit {
 }
 
 #[derive(Debug)]
-pub struct EncoderBlock {
+pub struct DecoderBlock {
     attentions: Vec<Attention>,
     shortcut_conv: ConvND,
     merge_conv: ConvND,
@@ -110,13 +113,14 @@ pub struct EncoderBlock {
     post_attention_conv: ConvBnND,
 }
 
-impl EncoderBlock {
+impl DecoderBlock {
     pub fn forward_t(
         &mut self,
         input: impl Borrow<Tensor>,
+        contexts: impl TensorList,
         mask: Option<&Tensor>,
         train: bool,
-    ) -> Result<EncoderBlockOutput> {
+    ) -> Result<DecoderBlockOutput> {
         let Self {
             ref attentions,
             ref shortcut_conv,
@@ -124,43 +128,46 @@ impl EncoderBlock {
             ref mut pre_attention_conv,
             ref mut post_attention_conv,
         } = *self;
+        let contexts = contexts.into_owned_tensors();
+        ensure!(
+            contexts.len() == attentions.len(),
+            "the number of context tensors does not match the number of attentions"
+        );
         let input = input.borrow();
         let mask = mask.map(|mask| mask.detach());
 
         let shortcut = shortcut_conv.forward(input);
-        let (branch, output_mask, contexts) = {
+        let (branch, output_mask) = {
+            dbg!(input.size());
             let xs = pre_attention_conv.forward_t(input, train)?;
-            let mut contexts = vec![];
+            dbg!(xs.size());
 
-            let (xs, mask) =
-                attentions
-                    .iter()
-                    .try_fold((xs, mask), |(xs, mask), attention| -> Result<_> {
-                        let (xs, mask) = attention.forward(&xs, &xs, mask.as_ref())?;
-                        contexts.push(xs.shallow_clone());
-                        Ok((xs, mask))
-                    })?;
+            let (xs, mask) = izip!(attentions.iter(), contexts).try_fold(
+                (xs, mask),
+                |(xs, mask), (attention, context)| -> Result<_> {
+                    let (xs, mask) = attention.forward(&xs, context.borrow(), mask.as_ref())?;
+                    Ok((xs, mask))
+                },
+            )?;
 
             let xs = post_attention_conv.forward_t(&xs, train)?;
 
-            (xs, mask, contexts)
+            (xs, mask)
         };
         let merge = Tensor::cat(&[shortcut, branch], 1);
         let output = merge_conv.forward(&merge);
 
-        Ok(EncoderBlockOutput {
+        Ok(DecoderBlockOutput {
             feature: output,
             mask: output_mask,
-            contexts,
         })
     }
 }
 
 #[derive(Debug)]
-pub struct EncoderBlockOutput {
+pub struct DecoderBlockOutput {
     pub feature: Tensor,
     pub mask: Option<Tensor>,
-    pub contexts: Vec<Tensor>,
 }
 
 #[cfg(test)]
@@ -168,21 +175,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encoder_block_test() -> Result<()> {
+    fn decoder_block_test() -> Result<()> {
         let b = 6;
         let cx = 3;
+        let cxx = 4;
         let hx = 12;
         let wx = 16;
         let cy = 5;
+        let repeat = 2;
 
         let vs = nn::VarStore::new(Device::Cpu);
         let root = vs.root();
 
-        let mut block = EncoderBlockInit {
+        let mut block = DecoderBlockInit {
             input_channels: cx,
+            context_channels: cxx,
             output_channels: cy,
-            repeat: 2,
-            num_heads: 15,
+            repeat,
+            num_heads: 10,
             attention_channels: cx * 2,
             keyvalue_channels: cx * 2,
             ndims: 2,
@@ -191,12 +201,13 @@ mod tests {
         }
         .build(&root)?;
 
+        let contexts: Vec<_> = (0..repeat)
+            .map(|_| Tensor::rand(&[b, cxx as i64, hx, wx], FLOAT_CPU))
+            .collect();
+
         let input = Tensor::rand(&[b, cx as i64, hx, wx], FLOAT_CPU);
-        let EncoderBlockOutput {
-            feature,
-            mask: _,
-            contexts: _,
-        } = block.forward_t(&input, None, true)?;
+        let DecoderBlockOutput { feature, mask: _ } =
+            block.forward_t(&input, contexts, None, true)?;
 
         ensure!(
             feature.size() == vec![b, cy as i64, hx as i64, wx as i64],

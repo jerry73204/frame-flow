@@ -1,8 +1,6 @@
 use super::{
     batch_norm::{BatchNormND, BatchNormNDConfig},
-    conv::{
-        ConvND, ConvNDInit, ConvNDInit1D, ConvNDInit2D, ConvNDInit3D, ConvNDInitDyn, ConvParam,
-    },
+    conv::{Conv1DInit, Conv2DInit, Conv3DInit, ConvND, ConvNDInit, ConvNDInitDyn, ConvParam},
 };
 use crate::common::*;
 
@@ -13,36 +11,26 @@ pub struct ConvBnNDInit<Param: ConvParam> {
     pub bn_first: bool,
 }
 
-pub type ConvBnNDInit1D = ConvBnNDInit<usize>;
-pub type ConvBnNDInit2D = ConvBnNDInit<[usize; 2]>;
-pub type ConvBnNDInit3D = ConvBnNDInit<[usize; 3]>;
-pub type ConvBnNDInit4D = ConvBnNDInit<[usize; 4]>;
+pub type ConvBn1DInit = ConvBnNDInit<usize>;
+pub type ConvBn2DInit = ConvBnNDInit<[usize; 2]>;
+pub type ConvBn3DInit = ConvBnNDInit<[usize; 3]>;
+pub type ConvBn4DInit = ConvBnNDInit<[usize; 4]>;
 pub type ConvBnNDInitDyn = ConvBnNDInit<Vec<usize>>;
 
-impl ConvBnNDInit1D {
+impl ConvBn1DInit {
     pub fn new(ksize: usize) -> Self {
         Self {
-            conv: ConvNDInit1D::new(ksize),
+            conv: Conv1DInit::new(ksize),
             bn: Default::default(),
             bn_first: true,
         }
     }
 }
 
-impl ConvBnNDInit2D {
+impl<const DIM: usize> ConvBnNDInit<[usize; DIM]> {
     pub fn new(ksize: usize) -> Self {
         Self {
-            conv: ConvNDInit2D::new(ksize),
-            bn: Default::default(),
-            bn_first: true,
-        }
-    }
-}
-
-impl ConvBnNDInit3D {
-    pub fn new(ksize: usize) -> Self {
-        Self {
-            conv: ConvNDInit3D::new(ksize),
+            conv: ConvNDInit::<[usize; DIM]>::new(ksize),
             bn: Default::default(),
             bn_first: true,
         }
