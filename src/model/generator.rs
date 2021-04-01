@@ -1,9 +1,9 @@
 use super::{
-    conv::{ConvND, ConvNDInitDyn},
     dec_block::{DecoderBlock, DecoderBlockInit, DecoderBlockOutput},
     enc_block::{EncoderBlock, EncoderBlockInit, EncoderBlockOutput},
 };
 use crate::common::*;
+use tch_goodies::module::{ConvND, ConvNDInitDyn};
 
 #[derive(Debug, Clone)]
 pub struct GeneratorInit<const DEPTH: usize> {
@@ -115,7 +115,7 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
                 conv_transposed: true,
             }
             .build(path / format!("enc_block_{}", index))?;
-            dbg!((in_c, out_c));
+
             Ok(block)
         })
         .try_collect()?;
@@ -148,8 +148,6 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
             conv_transposed: false,
         }
         .build(path / "top_block")?;
-
-        dbg!(&dec_blocks);
 
         Ok(Generator {
             enc_blocks,
@@ -186,11 +184,7 @@ impl Generator {
             last_conv,
         } = self;
 
-        dbg!(input.size());
-
         let xs = first_conv.forward(input);
-
-        dbg!(xs.size());
 
         // encoder
         let (xs, contexts_vec, mut output_paddings_vec) =
@@ -205,12 +199,10 @@ impl Generator {
                         ..
                     } = block.forward_t(xs, None, train)?;
                     contexts_vec.push(contexts);
-                    dbg!(xs.size());
 
                     let before_shape = xs.size();
 
                     let xs = down_sample.forward(&xs);
-                    dbg!(xs.size());
 
                     let after_shape = xs.size();
 
@@ -220,7 +212,7 @@ impl Generator {
                                 before_size - ((after_size - 1) * stride + 1)
                             })
                             .collect();
-                    dbg!(&output_paddings);
+
                     output_paddings_vec.push(output_paddings);
 
                     Ok((xs, contexts_vec, output_paddings_vec))
@@ -229,7 +221,6 @@ impl Generator {
 
         // top
         let EncoderBlockOutput { feature: xs, .. } = top_block.forward_t(xs, None, train)?;
-        dbg!(xs.size());
 
         // reverse contexts
         let contexts_vec: Vec<_> = contexts_vec
@@ -252,20 +243,16 @@ impl Generator {
         .try_fold(
             xs,
             |xs, (block, up_sample, contexts, output_paddings)| -> Result<_> {
-                dbg!(&output_paddings);
                 let xs = up_sample.forward_ext(&xs, Some(&output_paddings));
-                dbg!(xs.size());
 
                 let DecoderBlockOutput { feature: xs, .. } =
                     block.forward_t(&xs, &contexts, None, train)?;
-                dbg!(xs.size());
 
                 Ok(xs)
             },
         )?;
 
         let xs = last_conv.forward(&xs);
-        dbg!(xs.size());
 
         Ok(xs)
     }
@@ -296,10 +283,8 @@ mod tests {
         }
         .build(root)?;
 
-        for _ in 0..10 {
-            let input = Tensor::rand(&[bs, cx as i64, hx, wx], FLOAT_CPU);
-            let output = generator.forward_t(&input, true);
-        }
+        let input = Tensor::rand(&[bs, cx as i64, hx, wx], FLOAT_CPU);
+        let _output = generator.forward_t(&input, true);
 
         Ok(())
     }

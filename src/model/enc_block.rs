@@ -1,9 +1,6 @@
-use super::{
-    attention::{Attention, AttentionInit},
-    conv::{ConvND, ConvNDInitDyn},
-    conv_bn::{ConvBnND, ConvBnNDInitDyn},
-};
+use super::attention::{Attention, AttentionInit};
 use crate::common::*;
+use tch_goodies::module::{ConvBnND, ConvBnNDInitDyn, ConvND, ConvNDInitDyn};
 
 #[derive(Debug, Clone)]
 pub struct EncoderBlockInit {

@@ -1,10 +1,9 @@
 use super::{
     attention::{Attention, AttentionInit},
-    conv::{ConvND, ConvNDInitDyn},
-    conv_bn::{ConvBnND, ConvBnNDInitDyn},
     tensor_list::TensorList,
 };
 use crate::common::*;
+use tch_goodies::module::{ConvBnND, ConvBnNDInitDyn, ConvND, ConvNDInitDyn};
 
 #[derive(Debug, Clone)]
 pub struct DecoderBlockInit {
@@ -138,9 +137,7 @@ impl DecoderBlock {
 
         let shortcut = shortcut_conv.forward(input);
         let (branch, output_mask) = {
-            dbg!(input.size());
             let xs = pre_attention_conv.forward_t(input, train)?;
-            dbg!(xs.size());
 
             let (xs, mask) = izip!(attentions.iter(), contexts).try_fold(
                 (xs, mask),
