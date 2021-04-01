@@ -136,15 +136,22 @@ mod tests {
 
     #[test]
     fn simple_dataset_test() -> Result<()> {
+        let hx = 256;
+        let wx = 256;
+
         let dataset = DatasetInit {
             dir: "/home/jerry73204/wtf",
             file_name_digits: 8,
-            height: 256,
-            width: 256,
+            height: hx,
+            width: wx,
         }
         .load()?;
 
-        let sample = dataset.sample(1)?;
+        (1..=10).try_for_each(|len| {
+            let samples = dataset.sample(len)?;
+            ensure!(samples.size() == vec![len as i64, 3, hx as i64, wx as i64]);
+            Ok(())
+        })?;
 
         Ok(())
     }
