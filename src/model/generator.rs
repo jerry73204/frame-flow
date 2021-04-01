@@ -284,7 +284,12 @@ mod tests {
         .build(root)?;
 
         let input = Tensor::rand(&[bs, cx as i64, hx, wx], FLOAT_CPU);
-        let _output = generator.forward_t(&input, true);
+        let output = generator.forward_t(&input, true)?;
+
+        ensure!(
+            output.size() == vec![bs, cy as i64, hx, wx],
+            "incorrect output shape"
+        );
 
         Ok(())
     }
