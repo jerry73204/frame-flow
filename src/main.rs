@@ -71,13 +71,11 @@ async fn main() -> Result<()> {
         .stream()
         .try_for_each(|record| async move {
             let TrainingRecord {
-                images,
+                sequence,
                 noise,
                 batch_index,
                 record_index: _,
             } = record;
-
-            let prefix_images = images.i((.., .., 0..(peek_len as i64), .., ..));
 
             info!("batch_index = {}", batch_index);
 

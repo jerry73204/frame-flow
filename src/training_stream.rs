@@ -5,7 +5,7 @@ use crate::{
 
 #[derive(Debug, TensorLike)]
 pub struct TrainingRecord {
-    pub images: Tensor,
+    pub sequence: Vec<Tensor>,
     pub noise: Tensor,
     pub batch_index: usize,
     pub record_index: usize,
@@ -107,57 +107,51 @@ impl TrainingStream {
             });
 
         // convert to batched type
-        let stream = stream.try_par_map_unordered(None, |(batch_index, chunk)| {
-            // summerizable type
-            struct State {
-                pub record_index: usize,
-                pub sample_vec: Vec<Tensor>,
-            }
-
-            impl Sum<(usize, Tensor)> for State {
-                fn sum<I>(iter: I) -> Self
-                where
-                    I: Iterator<Item = (usize, Tensor)>,
-                {
-                    let (max_record_index, sample_vec): (MaxCollector<_>, Vec<_>) = iter.unzip_n();
-
-                    Self {
-                        record_index: max_record_index.unwrap(),
-                        sample_vec,
-                    }
-                }
-            }
-
+        let stream = stream.try_par_map_unordered(None, move |(batch_index, chunk)| {
             move || {
-                let State {
-                    record_index,
-                    sample_vec,
-                } = chunk.into_iter().sum();
-                let batch = Tensor::stack(&sample_vec, 0);
-                Fallible::Ok((batch_index, record_index, batch))
+                let (max_record_index, sequence_vec): (MaxCollector<_>, Vec<_>) =
+                    chunk.into_iter().unzip_n();
+                let record_index = max_record_index.unwrap();
+
+                let mut sequence_iter_vec: Vec<_> = sequence_vec
+                    .into_iter()
+                    .map(|seq| seq.into_iter())
+                    .collect();
+
+                let sequence: Vec<_> = (0..seq_len)
+                    .map(|_seq_index| {
+                        let samples_vec: Vec<_> = (0..batch_index)
+                            .map(|batch_index| sequence_iter_vec[batch_index].next().unwrap())
+                            .collect();
+                        let samples = Tensor::stack(&samples_vec, 0);
+                        samples
+                    })
+                    .collect();
+
+                Fallible::Ok((batch_index, record_index, sequence))
             }
         });
 
         // generate noise for each batch
         let stream =
-            stream.try_par_map_unordered(None, move |(batch_index, record_index, batch)| {
+            stream.try_par_map_unordered(None, move |(batch_index, record_index, sequence)| {
                 move || {
                     let noise = Tensor::rand(
                         &[batch_size as i64, latent_dim as i64],
                         (Kind::Float, device),
                     );
-                    Ok((batch_index, record_index, batch, noise))
+                    Ok((batch_index, record_index, sequence, noise))
                 }
             });
 
         // convert to output type
         let stream =
-            stream.try_par_map_unordered(None, |(batch_index, record_index, batch, noise)| {
+            stream.try_par_map_unordered(None, |(batch_index, record_index, sequence, noise)| {
                 move || {
                     let record = TrainingRecord {
                         batch_index,
                         record_index,
-                        images: batch,
+                        sequence,
                         noise,
                     };
                     Ok(record)

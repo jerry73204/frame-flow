@@ -81,7 +81,7 @@ pub struct Dataset {
 }
 
 impl Dataset {
-    pub fn sample(&self, length: usize) -> Result<Tensor> {
+    pub fn sample(&self, length: usize) -> Result<Vec<Tensor>> {
         let Self {
             min_length,
             file_name_digits,
@@ -108,7 +108,7 @@ impl Dataset {
         let start_index = rng.gen_range(0..=(count - length)) + 1;
         let end_index = start_index + length;
 
-        let images: Vec<_> = (start_index..end_index)
+        let output: Vec<_> = (start_index..end_index)
             .map(|frame_index| -> Result<_> {
                 let file_name = format!("{:0width$}.png", frame_index, width = file_name_digits);
                 let path = segment_dir.join(file_name);
@@ -117,9 +117,6 @@ impl Dataset {
                 Ok(image)
             })
             .try_collect()?;
-
-        // the output has shape [c, t, h, w]
-        let output = Tensor::stack(&images, 1).to_kind(Kind::Float) / 255.0;
 
         Ok(output)
     }
@@ -141,16 +138,25 @@ mod tests {
         let wx = 256;
 
         let dataset = DatasetInit {
-            dir: "/home/jerry73204/wtf",
+            dir: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test")
+                .join("demo-dataset"),
             file_name_digits: 8,
             height: hx,
             width: wx,
         }
         .load()?;
 
-        (1..=10).try_for_each(|len| {
+        (1..=5).try_for_each(|len| -> Result<_> {
             let samples = dataset.sample(len)?;
-            ensure!(samples.size() == vec![len as i64, 3, hx as i64, wx as i64]);
+
+            ensure!(samples.len() == len);
+
+            samples.into_iter().try_for_each(|sample| {
+                ensure!(sample.size() == vec![3, hx as i64, wx as i64]);
+                Ok(())
+            })?;
+
             Ok(())
         })?;
 
