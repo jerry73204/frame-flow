@@ -218,7 +218,7 @@ impl Generator {
                     let input_contexts_iter = num_contexts.iter().scan(0, |index, len| {
                         let curr = *index;
                         let next = curr + len;
-                        *index += next;
+                        *index = next;
                         Some(&input_contexts[curr..next])
                     });
 
