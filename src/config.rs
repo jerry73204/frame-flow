@@ -4,6 +4,7 @@ use crate::common::*;
 pub struct Config {
     pub dataset: Dataset,
     pub train: Training,
+    pub logging: Logging,
 }
 
 impl Config {
@@ -29,4 +30,11 @@ pub struct Training {
     #[serde(with = "tch_serde::serde_device")]
     pub device: Device,
     pub learning_rate: R64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Logging {
+    pub log_dir: PathBuf,
+    pub save_image_steps: Option<NonZeroUsize>,
+    pub save_checkpoint_steps: Option<NonZeroUsize>,
 }

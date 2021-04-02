@@ -29,6 +29,7 @@ pub use tch::{
 };
 pub use tch_goodies::{Activation, OptionalTensorList, TensorExt, TensorList, NONE_TENSORS};
 pub use tch_tensor_like::TensorLike;
+pub use tfrecord::{EventWriter, EventWriterInit};
 pub use tokio_stream::wrappers::ReadDirStream;
 pub use tracing::{error, info, info_span, instrument, trace, trace_span, warn, Instrument};
 pub use unzip_n::unzip_n;

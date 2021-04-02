@@ -1,4 +1,5 @@
 use anyhow::Result;
+pub use chrono::{DateTime, Local};
 use frame_flow::{
     common::*,
     config,
@@ -9,6 +10,8 @@ use std::{env, path::PathBuf};
 use structopt::StructOpt;
 use tracing_subscriber::{filter::LevelFilter, prelude::*, EnvFilter};
 
+const FILE_STRFTIME: &str = "%Y-%m-%d-%H-%M-%S.%3f%z";
+
 #[derive(Debug, Clone, StructOpt)]
 /// Implementation for 'frame-flow' model.
 pub struct Args {
@@ -16,8 +19,20 @@ pub struct Args {
     pub config: PathBuf,
 }
 
+#[derive(Debug)]
+pub struct LogMessage {
+    pub step: usize,
+    pub dis_loss: f64,
+    pub gen_loss: f64,
+    pub learning_rate: f64,
+    pub true_image: Option<Vec<Tensor>>,
+    pub fake_image: Option<Vec<Tensor>>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let start_time = Local::now();
+
     // setup tracing
     let fmt_layer = tracing_subscriber::fmt::layer().with_target(true).compact();
     let filter_layer = {
@@ -61,12 +76,27 @@ async fn main() -> Result<()> {
                 pred_len,
                 learning_rate,
             },
+        logging:
+            config::Logging {
+                log_dir: log_base_dir,
+                save_image_steps,
+                save_checkpoint_steps,
+            },
     } = config::Config::load(&config)?;
+    let save_image_steps = save_image_steps.map(|steps| steps.get());
     let batch_size = batch_size.get();
     let image_size = image_size.get();
     let image_dim = image_dim.get();
     let seq_len = peek_len + pred_len;
     let learning_rate = learning_rate.raw();
+
+    // data logging
+    let log_dir = log_base_dir.join(format!("{}", start_time.format(FILE_STRFTIME)));
+    let checkpoint_dir = log_dir.join("checkpoints");
+    let event_dir = log_dir.join("events");
+
+    tokio::fs::create_dir_all(&checkpoint_dir).await?;
+    tokio::fs::create_dir_all(&event_dir).await?;
 
     // load dataset
     let train_stream = TrainingStreamInit {
@@ -83,6 +113,7 @@ async fn main() -> Result<()> {
     .build()
     .await?;
 
+    // initialize model
     let mut generator_vs = nn::VarStore::new(device);
     let mut discriminator_vs = nn::VarStore::new(device);
 
@@ -111,7 +142,9 @@ async fn main() -> Result<()> {
     let mut discriminator_opt = nn::adam(0.5, 0.999, 0.).build(&discriminator_vs, learning_rate)?;
 
     let (train_tx, mut train_rx) = tokio::sync::mpsc::channel(2);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(1);
 
+    // data stream to channel worker
     let data_fut = tokio::task::spawn(async move {
         train_stream
             .stream()
@@ -127,8 +160,9 @@ async fn main() -> Result<()> {
     })
     .map(|result| Fallible::Ok(result??));
 
+    // training worker
     let train_fut = tokio::task::spawn_blocking(move || -> Result<()> {
-        loop {
+        for (train_step, _) in iter::repeat(()).enumerate() {
             let record = train_rx.blocking_recv().unwrap()?;
             let TrainingRecord {
                 sequence,
@@ -194,11 +228,12 @@ async fn main() -> Result<()> {
                 },
             )?;
 
-            let true_sample = Tensor::stack(&sequence, 2);
-            let fake_sample = {
-                let seq: Vec<_> = sequence[0..peek_len].iter().chain(outputs.iter()).collect();
-                Tensor::stack(&seq, 2)
-            };
+            let true_sequence = &sequence;
+            let fake_sequence: Vec<_> =
+                sequence[0..peek_len].iter().chain(outputs.iter()).collect();
+
+            let true_sample = Tensor::stack(true_sequence, 2);
+            let fake_sample = Tensor::stack(&fake_sequence, 2);
 
             // optimize discriminator
             let dis_loss = {
@@ -233,10 +268,116 @@ async fn main() -> Result<()> {
                 "batch_index = {}\tdis_loss = {:.5}\tgen_loss = {:.5}",
                 batch_index, dis_loss, gen_loss
             );
+
+            // save checkpoint
+            {
+                let save_checkpoint = save_checkpoint_steps
+                    .map(|steps| train_step % steps == 0)
+                    .unwrap_or(false);
+
+                if save_checkpoint {
+                    save_checkpoint_files(
+                        &discriminator_vs,
+                        &generator_vs,
+                        &checkpoint_dir,
+                        train_step,
+                        dis_loss,
+                        gen_loss,
+                    )?;
+                }
+            }
+
+            // save results
+            {
+                let save_image = save_image_steps
+                    .map(|steps| train_step % steps == 0)
+                    .unwrap_or(false);
+
+                let true_image = save_image.then(|| true_sequence.shallow_clone());
+                let fake_image = save_image.then(|| {
+                    let seq: Vec<_> = fake_sequence
+                        .iter()
+                        .map(|&image| image.shallow_clone())
+                        .collect();
+                    seq
+                });
+
+                let msg = LogMessage {
+                    step: train_step,
+                    dis_loss,
+                    gen_loss,
+                    learning_rate,
+                    true_image,
+                    fake_image,
+                };
+
+                log_tx.blocking_send(msg).unwrap();
+            };
         }
+
+        Ok(())
     })
     .map(|result| Fallible::Ok(result??));
 
+    let log_fut = tokio::task::spawn(async move {
+        let mut event_writer = {
+            let event_path_prefix = event_dir
+                .join("frame-flow")
+                .into_os_string()
+                .into_string()
+                .unwrap();
+
+            let event_writer = EventWriterInit::default()
+                .from_prefix_async(event_path_prefix, None)
+                .await?;
+
+            event_writer
+        };
+
+        loop {
+            let msg = log_rx.recv().await.unwrap();
+            let LogMessage {
+                step,
+                dis_loss,
+                gen_loss,
+                learning_rate,
+                true_image,
+                fake_image,
+            } = msg;
+            let step = step as i64;
+
+            event_writer
+                .write_scalar_async("loss/discriminator_loss", step, dis_loss as f32)
+                .await?;
+            event_writer
+                .write_scalar_async("loss/generator_loss", step, gen_loss as f32)
+                .await?;
+            event_writer
+                .write_scalar_async("params/learning_rate", step, learning_rate as f32)
+                .await?;
+
+            if let Some(true_image) = true_image {
+                for (index, image) in true_image.into_iter().enumerate() {
+                    event_writer
+                        .write_image_list_async(format!("image/true_image/{}", index), step, image)
+                        .await?;
+                }
+            }
+
+            if let Some(fake_image) = fake_image {
+                for (index, image) in fake_image.into_iter().enumerate() {
+                    event_writer
+                        .write_image_list_async(format!("image/fake_image/{}", index), step, image)
+                        .await?;
+                }
+            }
+        }
+
+        Fallible::Ok(())
+    })
+    .map(|result| Fallible::Ok(result??));
+
+    // run all tasks
     futures::try_join!(data_fut, train_fut)?;
 
     Ok(())
@@ -245,4 +386,39 @@ async fn main() -> Result<()> {
 fn mse_loss(x: &Tensor, y: &Tensor) -> Tensor {
     let diff = x - y;
     (&diff * &diff).mean(Kind::Float)
+}
+
+/// Save parameters to a checkpoint file.
+fn save_checkpoint_files(
+    dis_vs: &nn::VarStore,
+    gen_vs: &nn::VarStore,
+    checkpoint_dir: &Path,
+    training_step: usize,
+    dis_loss: f64,
+    gen_loss: f64,
+) -> Result<()> {
+    // save discriminator
+    {
+        let filename = format!(
+            "discriminator_{}_{:06}_{:08.5}.ckpt",
+            Local::now().format(FILE_STRFTIME),
+            training_step,
+            dis_loss
+        );
+        let path = checkpoint_dir.join(filename);
+        dis_vs.save(&path)?;
+    }
+
+    // save generator
+    {
+        let filename = format!(
+            "generator_{}_{:06}_{:08.5}.ckpt",
+            Local::now().format(FILE_STRFTIME),
+            training_step,
+            gen_loss
+        );
+        let path = checkpoint_dir.join(filename);
+        gen_vs.save(&path)?;
+    }
+    Ok(())
 }

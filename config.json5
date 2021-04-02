@@ -12,4 +12,9 @@
         "pred_len": 1,
         "learning_rate": 0.001,
     },
+    "logging": {
+        "log_dir": "log",
+        "save_image_steps": 10,
+        "save_checkpoint_steps": 10,
+    },
 }
