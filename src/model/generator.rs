@@ -197,7 +197,10 @@ impl Generator {
         ensure!(
             input_contexts
                 .as_ref()
-                .map(|contexts| contexts.len() == num_contexts.iter().cloned().sum())
+                .map(|contexts| {
+                    let total: usize = num_contexts.iter().cloned().sum();
+                    contexts.len() == total
+                })
                 .unwrap_or(true),
             "number of contexts does not match"
         );
