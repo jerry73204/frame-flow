@@ -15,14 +15,14 @@ impl<P> DatasetInit<P>
 where
     P: AsRef<Path>,
 {
-    pub fn load(self) -> Result<Dataset> {
+    pub async fn load(self) -> Result<Dataset> {
         let Self {
             dir: parent_dir,
             file_name_digits,
             height,
             width,
         } = self;
-        let parent_dir = parent_dir.as_ref();
+        let parent_dir = Arc::new(parent_dir.as_ref().to_owned());
         let dataset_file = parent_dir.join("dataset.csv");
 
         let entries: Vec<DatasetEntry> = csv::Reader::from_path(&dataset_file)?
@@ -31,38 +31,48 @@ where
 
         let orig_num_entries = entries.len();
         ensure!(orig_num_entries > 0, "empty dataset is not allowed");
+        info!("{} sequence entries", orig_num_entries);
 
         let entries: IndexMap<_, _> = entries
             .into_iter()
-            .map(|entry| -> Result<_> {
-                let DatasetEntry {
-                    ref name, count, ..
-                } = entry;
-                let segment_dir = parent_dir.join(name);
-
-                (1..=count).try_for_each(move |index| {
-                    let file_name = format!("{:0width$}.png", index, width = file_name_digits);
-                    let path = segment_dir.join(file_name);
-
-                    ensure!(path.is_file(), "'{}' is not a file", path.display());
-                    Ok(())
-                })?;
-
-                Ok((name.clone(), entry))
-            })
-            .try_collect()?;
-
-        let min_length = entries.values().map(|entry| entry.count).min().unwrap();
+            .map(|entry| (entry.name.clone(), Arc::new(entry)))
+            .collect();
 
         ensure!(
             entries.len() == orig_num_entries,
             "duplicated dataset name found"
         );
 
+        {
+            let parent_dir = parent_dir.clone();
+            let entries_vec: Vec<_> = entries.values().cloned().collect();
+
+            stream::iter(entries_vec)
+                .flat_map(move |entry| {
+                    let segment_dir = Arc::new(parent_dir.join(&entry.name));
+
+                    stream::iter(1..=entry.count).map(move |index| Ok((segment_dir.clone(), index)))
+                })
+                .try_par_for_each(None, move |(segment_dir, index)| async move {
+                    let file_name = format!("{:0width$}.png", index, width = file_name_digits);
+                    let path = segment_dir.join(file_name);
+                    ensure!(path.is_file(), "'{}' is not a file", path.display());
+                    Ok(())
+                })
+                .await?;
+        }
+
+        let min_length = entries.values().map(|entry| entry.count).min().unwrap();
+
+        let entries: IndexMap<_, _> = entries
+            .into_iter()
+            .map(|(name, entry)| (name, Arc::try_unwrap(entry).unwrap()))
+            .collect();
+
         Ok(Dataset {
             min_length,
             entries,
-            dir: parent_dir.to_owned(),
+            dir: (*parent_dir).clone(),
             file_name_digits,
             height,
             width,

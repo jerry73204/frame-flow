@@ -28,20 +28,18 @@ async fn main() -> Result<()> {
     let seq_len = peek_len + pred_len;
 
     // load dataset
-    let train_stream = tokio::task::spawn_blocking(move || {
-        TrainingStreamInit {
-            dir: &dir,
-            file_name_digits: 8,
-            height: height.get(),
-            width: width.get(),
-            latent_dim: 64,
-            batch_size: 16,
-            device,
-            seq_len,
-        }
-        .build()
-    })
-    .await??;
+    let train_stream = TrainingStreamInit {
+        dir: &dir,
+        file_name_digits: 8,
+        height: height.get(),
+        width: width.get(),
+        latent_dim: 64,
+        batch_size: 16,
+        device,
+        seq_len,
+    }
+    .build()
+    .await?;
 
     let vs = nn::VarStore::new(device);
     let root = vs.root();

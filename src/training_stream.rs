@@ -30,7 +30,7 @@ impl<P> TrainingStreamInit<P>
 where
     P: AsRef<Path>,
 {
-    pub fn build(self) -> Result<TrainingStream> {
+    pub async fn build(self) -> Result<TrainingStream> {
         let Self {
             dir,
             file_name_digits,
@@ -48,7 +48,8 @@ where
             height,
             width,
         }
-        .load()?;
+        .load()
+        .await?;
 
         Ok(TrainingStream {
             dataset: Arc::new(dataset),
