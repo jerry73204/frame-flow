@@ -59,12 +59,14 @@ async fn main() -> Result<()> {
                 device,
                 peek_len,
                 pred_len,
+                learning_rate,
             },
     } = config::Config::load(&config)?;
     let batch_size = batch_size.get();
     let image_size = image_size.get();
     let image_dim = image_dim.get();
     let seq_len = peek_len + pred_len;
+    let learning_rate = learning_rate.raw();
 
     // load dataset
     let train_stream = TrainingStreamInit {
@@ -81,8 +83,8 @@ async fn main() -> Result<()> {
     .build()
     .await?;
 
-    let vs = nn::VarStore::new(device);
-    let root = vs.root();
+    let mut generator_vs = nn::VarStore::new(device);
+    let mut discriminator_vs = nn::VarStore::new(device);
 
     let mut generator = GeneratorInit {
         ndims: 2,
@@ -94,16 +96,19 @@ async fn main() -> Result<()> {
         context_channels: [5, 10, 20],
         repeats: [2, 2, 2],
     }
-    .build(&root / "generator")?;
+    .build(&generator_vs.root() / "generator")?;
 
-    let discriminator = DiscriminatorInit {
+    let mut discriminator = DiscriminatorInit {
         ndims: 3,
         ksize: 3,
         input_channels: 3,
         channels: [8, 16, 32],
         strides: [2, 2, 2],
     }
-    .build(&root / "discriminator")?;
+    .build(&discriminator_vs.root() / "discriminator")?;
+
+    let mut generator_opt = nn::adam(0.5, 0.999, 0.).build(&generator_vs, learning_rate)?;
+    let mut discriminator_opt = nn::adam(0.5, 0.999, 0.).build(&discriminator_vs, learning_rate)?;
 
     let (train_tx, mut train_rx) = tokio::sync::mpsc::channel(2);
 
@@ -158,6 +163,11 @@ async fn main() -> Result<()> {
                             ..
                         } = generator.forward_t(&input, in_contexts, true)?;
 
+                        debug_assert!(
+                            out_contexts.iter().all(|context| !context.has_nan()),
+                            "NaN detected"
+                        );
+
                         Ok(Some(out_contexts))
                     })?;
 
@@ -184,7 +194,45 @@ async fn main() -> Result<()> {
                 },
             )?;
 
-            info!("batch_index = {}", batch_index);
+            let true_sample = Tensor::stack(&sequence, 2);
+            let fake_sample = {
+                let seq: Vec<_> = sequence[0..peek_len].iter().chain(outputs.iter()).collect();
+                Tensor::stack(&seq, 2)
+            };
+
+            // optimize discriminator
+            let dis_loss = {
+                discriminator_vs.unfreeze();
+                generator_vs.freeze();
+
+                let true_score = discriminator.forward_t(&true_sample, true)?;
+                let fake_score = discriminator.forward_t(&fake_sample.detach(), true)?;
+                let loss = mse_loss(&true_score, &(&fake_score + 1.0))
+                    + mse_loss(&fake_score, &(true_score - 1.0));
+
+                discriminator_opt.backward_step(&loss);
+
+                f64::from(&loss)
+            };
+
+            // optimize generator
+            let gen_loss = {
+                discriminator_vs.freeze();
+                generator_vs.unfreeze();
+
+                let true_score = discriminator.forward_t(&true_sample, true)?;
+                let fake_score = discriminator.forward_t(&fake_sample, true)?;
+                let loss = mse_loss(&true_score, &(&fake_score - 1.0))
+                    + mse_loss(&fake_score, &(true_score + 1.0));
+                generator_opt.backward_step(&loss);
+
+                f64::from(&loss)
+            };
+
+            info!(
+                "batch_index = {}\tdis_loss = {:.5}\tgen_loss = {:.5}",
+                batch_index, dis_loss, gen_loss
+            );
         }
     })
     .map(|result| Fallible::Ok(result??));
@@ -192,4 +240,9 @@ async fn main() -> Result<()> {
     futures::try_join!(data_fut, train_fut)?;
 
     Ok(())
+}
+
+fn mse_loss(x: &Tensor, y: &Tensor) -> Tensor {
+    let diff = x - y;
+    (&diff * &diff).mean(Kind::Float)
 }

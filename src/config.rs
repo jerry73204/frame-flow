@@ -28,4 +28,5 @@ pub struct Training {
     pub pred_len: usize,
     #[serde(with = "tch_serde::serde_device")]
     pub device: Device,
+    pub learning_rate: R64,
 }
