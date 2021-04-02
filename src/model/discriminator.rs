@@ -1,6 +1,6 @@
 use crate::common::*;
 use nn::Module;
-use tch_goodies::module::{ConvBnND, ConvBnNDInitDyn, ConvND, ConvNDInitDyn};
+use tch_goodies::module::{ConvBn, ConvBnInitDyn, ConvND, ConvNDInitDyn};
 
 #[derive(Debug, Clone)]
 pub struct DiscriminatorInit<const DEPTH: usize> {
@@ -24,7 +24,7 @@ impl<const DEPTH: usize> DiscriminatorInit<DEPTH> {
             strides,
         } = self;
         ensure!(
-            (1..3).contains(&ndims),
+            (1..=3).contains(&ndims),
             "ndims must be one of 1, 2, 3, but get ndims = {}",
             ndims
         );
@@ -38,7 +38,7 @@ impl<const DEPTH: usize> DiscriminatorInit<DEPTH> {
         )
         .enumerate()
         .map(|(index, (in_c, out_c, stride))| -> Result<_> {
-            let conv = ConvBnNDInitDyn::new(ndims, ksize).build(
+            let conv = ConvBnInitDyn::new(ndims, ksize).build(
                 path / format!("conv_{}", index),
                 in_c,
                 out_c,
@@ -70,7 +70,7 @@ impl<const DEPTH: usize> DiscriminatorInit<DEPTH> {
 #[derive(Debug)]
 pub struct Discriminator {
     ndims: usize,
-    convs: Vec<ConvBnND>,
+    convs: Vec<ConvBn>,
     down_samples: Vec<ConvND>,
     linear: nn::Linear,
 }

@@ -1,7 +1,4 @@
-use super::{
-    dec_block::{DecoderBlock, DecoderBlockInit, DecoderBlockOutput},
-    enc_block::{EncoderBlock, EncoderBlockInit, EncoderBlockOutput},
-};
+use super::block::{Block, BlockInit, BlockOutput};
 use crate::common::*;
 use tch_goodies::module::{ConvND, ConvNDInitDyn};
 
@@ -12,7 +9,8 @@ pub struct GeneratorInit<const DEPTH: usize> {
     pub output_channels: usize,
     pub num_heads: usize,
     pub strides: [usize; DEPTH],
-    pub channels: [usize; DEPTH],
+    pub block_channels: [usize; DEPTH],
+    pub context_channels: [usize; DEPTH],
     pub repeats: [usize; DEPTH],
 }
 
@@ -27,12 +25,12 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
             input_channels,
             output_channels,
             strides,
-            channels,
+            block_channels,
+            context_channels,
             repeats,
         } = self;
-        let channel_scale = 2;
-        let first_attention_channels = channels[0];
-        let last_attention_channels = *channels.last().unwrap();
+        let first_attention_channels = block_channels[0];
+        let last_attention_channels = *block_channels.last().unwrap();
 
         let first_conv = ConvNDInitDyn::new(ndims, 1).build(
             path / "first_conv",
@@ -49,35 +47,35 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
             output_channels,
         )?;
 
-        let (enc_blocks, context_channels_vec) = izip!(
+        // encoder blocks
+        let enc_blocks = izip!(
             array::IntoIter::new(repeats),
-            array::IntoIter::new(channels),
-            iter::once(first_attention_channels).chain(array::IntoIter::new(channels)),
+            array::IntoIter::new(block_channels),
+            iter::once(first_attention_channels).chain(array::IntoIter::new(block_channels)),
+            array::IntoIter::new(context_channels),
         )
         .enumerate()
-        .map(|(index, (repeat, out_c, in_c))| -> Result<_> {
-            let context_channels = in_c * channel_scale;
-            let block = EncoderBlockInit {
+        .map(|(index, (repeat, out_c, in_c, context_c))| -> Result<_> {
+            let block = BlockInit {
                 ndims,
                 input_channels: in_c,
+                context_channels: context_c,
                 output_channels: out_c,
                 repeat,
                 num_heads,
-                attention_channels: context_channels,
-                keyvalue_channels: in_c * channel_scale,
+                keyvalue_channels: context_c,
                 attention_ksize: 3,
                 conv_transposed: false,
             }
             .build(path / format!("enc_block_{}", index))?;
-            Ok((block, context_channels))
+            Ok(block)
         })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .unzip_n_vec();
+        .try_collect()?;
 
+        // down sample modules
         let down_samples: Vec<_> = izip!(
             array::IntoIter::new(strides),
-            array::IntoIter::new(channels),
+            array::IntoIter::new(block_channels),
         )
         .enumerate()
         .map(|(index, (stride, inout_c))| -> Result<_> {
@@ -91,26 +89,26 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
         })
         .try_collect()?;
 
+        // decoder blocks
         let dec_blocks: Vec<_> = izip!(
             array::IntoIter::new(repeats).rev(),
-            array::IntoIter::new(channels).rev(),
-            array::IntoIter::new(channels)
+            array::IntoIter::new(block_channels).rev(),
+            array::IntoIter::new(block_channels)
                 .rev()
                 .chain(iter::once(first_attention_channels))
                 .skip(1),
-            context_channels_vec,
+            array::IntoIter::new(context_channels).rev(),
         )
         .enumerate()
         .map(|(index, (repeat, in_c, out_c, context_c))| -> Result<_> {
-            let block = DecoderBlockInit {
+            let block = BlockInit {
                 ndims,
                 input_channels: in_c,
                 context_channels: context_c,
                 output_channels: out_c,
                 repeat,
                 num_heads,
-                attention_channels: in_c * channel_scale,
-                keyvalue_channels: in_c * channel_scale,
+                keyvalue_channels: context_c,
                 attention_ksize: 3,
                 conv_transposed: true,
             }
@@ -120,9 +118,10 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
         })
         .try_collect()?;
 
+        // up sample modules
         let up_samples: Vec<_> = izip!(
             array::IntoIter::new(strides).rev(),
-            array::IntoIter::new(channels).rev(),
+            array::IntoIter::new(block_channels).rev(),
         )
         .enumerate()
         .map(|(index, (stride, inout_c))| -> Result<_> {
@@ -136,14 +135,16 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
         })
         .try_collect()?;
 
-        let top_block = EncoderBlockInit {
+        // top block
+
+        let top_block = BlockInit {
             ndims,
             input_channels: last_attention_channels,
+            context_channels: last_attention_channels,
             output_channels: last_attention_channels,
             repeat: 3,
             num_heads,
-            attention_channels: last_attention_channels * channel_scale,
-            keyvalue_channels: last_attention_channels * channel_scale,
+            keyvalue_channels: last_attention_channels,
             attention_ksize: 3,
             conv_transposed: false,
         }
@@ -157,23 +158,30 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
             top_block,
             first_conv,
             last_conv,
+            num_contexts: repeats.into(),
         })
     }
 }
 
 #[derive(Debug)]
 pub struct Generator {
-    enc_blocks: Vec<EncoderBlock>,
-    dec_blocks: Vec<DecoderBlock>,
+    enc_blocks: Vec<Block>,
+    dec_blocks: Vec<Block>,
     down_samples: Vec<ConvND>,
     up_samples: Vec<ConvND>,
-    top_block: EncoderBlock,
+    top_block: Block,
     first_conv: ConvND,
     last_conv: ConvND,
+    num_contexts: Vec<usize>,
 }
 
 impl Generator {
-    pub fn forward_t(&mut self, input: &Tensor, train: bool) -> Result<Tensor> {
+    pub fn forward_t(
+        &mut self,
+        input: &Tensor,
+        contexts: impl OptionalTensorList,
+        train: bool,
+    ) -> Result<GeneratorOutput> {
         let Self {
             enc_blocks,
             dec_blocks,
@@ -182,45 +190,96 @@ impl Generator {
             top_block,
             first_conv,
             last_conv,
+            num_contexts,
         } = self;
+        let input_contexts = contexts.into_optional_tensor_list();
 
+        ensure!(
+            input_contexts
+                .as_ref()
+                .map(|contexts| contexts.len() == num_contexts.iter().cloned().sum())
+                .unwrap_or(true),
+            "number of contexts does not match"
+        );
+
+        // first conv
         let xs = first_conv.forward(input);
 
         // encoder
-        let (xs, contexts_vec, mut output_paddings_vec) =
-            izip!(enc_blocks.iter_mut(), down_samples.iter_mut()).try_fold(
-                (xs, vec![], vec![]),
-                |(xs, mut contexts_vec, mut output_paddings_vec),
-                 (block, down_sample)|
-                 -> Result<_> {
-                    let EncoderBlockOutput {
-                        feature: xs,
-                        contexts,
-                        ..
-                    } = block.forward_t(xs, None, train)?;
-                    contexts_vec.push(contexts);
+        let (xs, contexts_vec, mut output_paddings_vec) = {
+            let mut contexts_vec = vec![];
+            let mut output_paddings_vec = vec![];
 
-                    let before_shape = xs.size();
+            let xs = match input_contexts {
+                Some(input_contexts) => {
+                    let input_contexts_iter = num_contexts.iter().scan(0, |index, len| {
+                        let curr = *index;
+                        let next = curr + len;
+                        *index += next;
+                        Some(&input_contexts[curr..next])
+                    });
 
-                    let xs = down_sample.forward(&xs);
+                    izip!(
+                        enc_blocks.iter_mut(),
+                        down_samples.iter_mut(),
+                        input_contexts_iter
+                    )
+                    .try_fold(
+                        xs,
+                        |xs, (block, down_sample, in_contexts)| -> Result<_> {
+                            let BlockOutput {
+                                feature: xs,
+                                contexts: out_contexts,
+                                ..
+                            } = block.forward_t(xs, in_contexts, None, train)?;
+                            let before_shape = xs.size();
+                            let xs = down_sample.forward(&xs);
+                            let after_shape = xs.size();
+                            let output_paddings: Vec<_> =
+                                izip!(&before_shape[2..], &after_shape[2..], down_sample.stride())
+                                    .map(|(&before_size, &after_size, &stride)| {
+                                        before_size - ((after_size - 1) * stride + 1)
+                                    })
+                                    .collect();
 
-                    let after_shape = xs.size();
+                            contexts_vec.push(out_contexts);
+                            output_paddings_vec.push(output_paddings);
 
-                    let output_paddings: Vec<_> =
-                        izip!(&before_shape[2..], &after_shape[2..], down_sample.stride())
-                            .map(|(&before_size, &after_size, &stride)| {
-                                before_size - ((after_size - 1) * stride + 1)
-                            })
-                            .collect();
+                            Ok(xs)
+                        },
+                    )?
+                }
+                None => izip!(enc_blocks.iter_mut(), down_samples.iter_mut()).try_fold(
+                    xs,
+                    |xs, (block, down_sample)| -> Result<_> {
+                        let BlockOutput {
+                            feature: xs,
+                            contexts: out_contexts,
+                            ..
+                        } = block.forward_t(xs, NONE_TENSORS, None, train)?;
+                        let before_shape = xs.size();
+                        let xs = down_sample.forward(&xs);
+                        let after_shape = xs.size();
+                        let output_paddings: Vec<_> =
+                            izip!(&before_shape[2..], &after_shape[2..], down_sample.stride())
+                                .map(|(&before_size, &after_size, &stride)| {
+                                    before_size - ((after_size - 1) * stride + 1)
+                                })
+                                .collect();
 
-                    output_paddings_vec.push(output_paddings);
+                        contexts_vec.push(out_contexts);
+                        output_paddings_vec.push(output_paddings);
 
-                    Ok((xs, contexts_vec, output_paddings_vec))
-                },
-            )?;
+                        Ok(xs)
+                    },
+                )?,
+            };
+
+            (xs, contexts_vec, output_paddings_vec)
+        };
 
         // top
-        let EncoderBlockOutput { feature: xs, .. } = top_block.forward_t(xs, None, train)?;
+        let BlockOutput { feature: xs, .. } = top_block.forward_t(xs, NONE_TENSORS, None, train)?;
 
         // reverse contexts
         let contexts_vec: Vec<_> = contexts_vec
@@ -234,28 +293,51 @@ impl Generator {
         output_paddings_vec.reverse();
 
         // decoder
-        let xs = izip!(
-            dec_blocks.iter_mut(),
-            up_samples.iter_mut(),
-            contexts_vec,
-            output_paddings_vec
-        )
-        .try_fold(
-            xs,
-            |xs, (block, up_sample, contexts, output_paddings)| -> Result<_> {
-                let xs = up_sample.forward_ext(&xs, Some(&output_paddings));
+        let (xs, mut output_contexts) = {
+            let mut output_contexts = vec![];
 
-                let DecoderBlockOutput { feature: xs, .. } =
-                    block.forward_t(&xs, &contexts, None, train)?;
+            let xs = izip!(
+                dec_blocks.iter_mut(),
+                up_samples.iter_mut(),
+                contexts_vec,
+                output_paddings_vec
+            )
+            .try_fold(
+                xs,
+                |xs, (block, up_sample, contexts, output_paddings)| -> Result<_> {
+                    let xs = up_sample.forward_ext(&xs, Some(&output_paddings));
 
-                Ok(xs)
-            },
-        )?;
+                    let BlockOutput {
+                        feature: xs,
+                        contexts: out_contexts,
+                        ..
+                    } = block.forward_t(&xs, &contexts, None, train)?;
 
+                    output_contexts.extend(out_contexts);
+                    Ok(xs)
+                },
+            )?;
+
+            (xs, output_contexts)
+        };
+
+        // last conv
         let xs = last_conv.forward(&xs);
 
-        Ok(xs)
+        // reverse output contexts
+        output_contexts.reverse();
+
+        Ok(GeneratorOutput {
+            output: xs,
+            contexts: output_contexts,
+        })
     }
+}
+
+#[derive(Debug)]
+pub struct GeneratorOutput {
+    pub output: Tensor,
+    pub contexts: Vec<Tensor>,
 }
 
 #[cfg(test)]
@@ -278,14 +360,33 @@ mod tests {
             output_channels: cy,
             num_heads: 7,
             strides: [2, 2],
-            channels: [8, 16],
+            block_channels: [8, 16],
+            context_channels: [5, 10],
             repeats: [2, 2],
         }
         .build(root)?;
 
+        // first pass, without contexts
         let input = Tensor::rand(&[bs, cx as i64, hx, wx], FLOAT_CPU);
-        let output = generator.forward_t(&input, true)?;
+        let GeneratorOutput {
+            output, contexts, ..
+        } = generator.forward_t(&input, NONE_TENSORS, true)?;
+        ensure!(
+            output.size() == vec![bs, cy as i64, hx, wx],
+            "incorrect output shape"
+        );
 
+        // second pass, with contexts
+        let GeneratorOutput {
+            output, contexts, ..
+        } = generator.forward_t(&input, contexts, true)?;
+        ensure!(
+            output.size() == vec![bs, cy as i64, hx, wx],
+            "incorrect output shape"
+        );
+
+        // third pass, with contexts
+        let GeneratorOutput { output, .. } = generator.forward_t(&input, contexts, true)?;
         ensure!(
             output.size() == vec![bs, cy as i64, hx, wx],
             "incorrect output shape"
