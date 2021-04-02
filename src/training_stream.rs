@@ -12,41 +12,43 @@ pub struct TrainingRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct TrainingStreamInit<P>
+pub struct TrainingStreamInit<P1, P2>
 where
-    P: AsRef<Path>,
+    P1: AsRef<Path>,
+    P2: AsRef<Path>,
 {
-    pub dir: P,
+    pub dataset_dir: P1,
+    pub cache_dir: P2,
     pub file_name_digits: usize,
-    pub height: usize,
-    pub width: usize,
     pub latent_dim: usize,
     pub batch_size: usize,
     pub device: Device,
     pub seq_len: usize,
+    pub image_size: usize,
+    pub image_dim: usize,
 }
 
-impl<P> TrainingStreamInit<P>
+impl<P1, P2> TrainingStreamInit<P1, P2>
 where
-    P: AsRef<Path>,
+    P1: AsRef<Path>,
+    P2: AsRef<Path>,
 {
     pub async fn build(self) -> Result<TrainingStream> {
         let Self {
-            dir,
+            dataset_dir,
             file_name_digits,
-            height,
-            width,
             latent_dim,
             batch_size,
             device,
             seq_len,
+            cache_dir,
+            image_size,
+            image_dim,
         } = self;
 
         let dataset = DatasetInit {
-            dir,
+            dir: dataset_dir,
             file_name_digits,
-            height,
-            width,
         }
         .load()
         .await?;
@@ -57,6 +59,9 @@ where
             batch_size,
             device,
             seq_len,
+            cache_dir: cache_dir.as_ref().to_owned(),
+            image_size,
+            image_dim,
         })
     }
 }
@@ -68,6 +73,9 @@ pub struct TrainingStream {
     batch_size: usize,
     device: Device,
     seq_len: usize,
+    cache_dir: PathBuf,
+    image_size: usize,
+    image_dim: usize,
 }
 
 impl TrainingStream {
@@ -78,23 +86,40 @@ impl TrainingStream {
             batch_size,
             device,
             seq_len,
+            ref cache_dir,
+            image_size,
+            image_dim,
         } = *self;
 
         // load subsequence samples
-        let stream = stream::repeat(())
-            .wrapping_enumerate()
-            .map(|(record_index, _)| Result::Ok(record_index))
-            .try_par_map_init_unordered(
-                None,
-                || dataset.clone(),
-                move |dataset, record_index| {
+        let stream = {
+            let dataset = dataset.clone();
+
+            stream::repeat(())
+                .wrapping_enumerate()
+                .map(|(record_index, _)| Result::Ok(record_index))
+                .try_par_then_unordered(None, move |record_index| {
                     let dataset = dataset.clone();
-                    move || -> Result<_> {
-                        let sample = dataset.sample(seq_len)?.to_device(device);
-                        Ok((record_index, sample))
+
+                    async move {
+                        let paths = dataset.sample(seq_len)?;
+                        let images: Vec<_> = paths
+                            .into_iter()
+                            .map(|path| -> Result<_> {
+                                let image = vision::image::load_and_resize(
+                                    path,
+                                    image_size as i64,
+                                    image_size as i64,
+                                )?
+                                .to_device(device);
+                                Ok(image)
+                            })
+                            .try_collect()?;
+
+                        Fallible::Ok((record_index, images))
                     }
-                },
-            );
+                })
+        };
 
         // group into chunks
         let stream = stream

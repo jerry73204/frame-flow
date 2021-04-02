@@ -1,10 +1,12 @@
 pub use anyhow::{ensure, format_err, Context, Error, Result};
 pub use approx::assert_abs_diff_eq;
 pub use collected::MaxCollector;
-pub use futures::stream::{self, Stream, StreamExt, TryStreamExt};
+pub use futures::{
+    future::FutureExt,
+    stream::{self, Stream, StreamExt, TryStreamExt},
+};
 pub use indexmap::IndexMap;
 pub use itertools::{izip, Itertools};
-pub use log::{info, warn};
 pub use par_stream::{ParStreamExt, TryParStreamExt};
 pub use rand::prelude::*;
 pub use serde::{Deserialize, Serialize};
@@ -27,6 +29,7 @@ pub use tch::{
 pub use tch_goodies::{Activation, OptionalTensorList, TensorExt, TensorList, NONE_TENSORS};
 pub use tch_tensor_like::TensorLike;
 pub use tokio_stream::wrappers::ReadDirStream;
+pub use tracing::{error, info, info_span, instrument, trace, trace_span, warn, Instrument};
 pub use unzip_n::unzip_n;
 
 pub type Fallible<T> = Result<T>;

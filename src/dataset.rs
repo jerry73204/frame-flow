@@ -7,8 +7,6 @@ where
 {
     pub dir: P,
     pub file_name_digits: usize,
-    pub height: usize,
-    pub width: usize,
 }
 
 impl<P> DatasetInit<P>
@@ -19,8 +17,6 @@ where
         let Self {
             dir: parent_dir,
             file_name_digits,
-            height,
-            width,
         } = self;
         let parent_dir = Arc::new(parent_dir.as_ref().to_owned());
         let dataset_file = parent_dir.join("dataset.csv");
@@ -74,8 +70,6 @@ where
             entries,
             dir: (*parent_dir).clone(),
             file_name_digits,
-            height,
-            width,
         })
     }
 }
@@ -86,17 +80,13 @@ pub struct Dataset {
     entries: IndexMap<String, DatasetEntry>,
     dir: PathBuf,
     file_name_digits: usize,
-    height: usize,
-    width: usize,
 }
 
 impl Dataset {
-    pub fn sample(&self, length: usize) -> Result<Vec<Tensor>> {
+    pub fn sample(&self, length: usize) -> Result<Vec<PathBuf>> {
         let Self {
             min_length,
             file_name_digits,
-            height,
-            width,
             ref entries,
             ref dir,
         } = *self;
@@ -122,9 +112,7 @@ impl Dataset {
             .map(|frame_index| -> Result<_> {
                 let file_name = format!("{:0width$}.png", frame_index, width = file_name_digits);
                 let path = segment_dir.join(file_name);
-                let image =
-                    vision::image::load(path)?.resize2d_letterbox(height as i64, width as i64)?;
-                Ok(image)
+                Ok(path)
             })
             .try_collect()?;
 
@@ -142,8 +130,8 @@ struct DatasetEntry {
 mod tests {
     use super::*;
 
-    #[test]
-    fn simple_dataset_test() -> Result<()> {
+    #[tokio::test]
+    async fn simple_dataset_test() -> Result<()> {
         let hx = 256;
         let wx = 256;
 
@@ -152,20 +140,13 @@ mod tests {
                 .join("test")
                 .join("demo-dataset"),
             file_name_digits: 8,
-            height: hx,
-            width: wx,
         }
-        .load()?;
+        .load()
+        .await?;
 
         (1..=5).try_for_each(|len| -> Result<_> {
             let samples = dataset.sample(len)?;
-
             ensure!(samples.len() == len);
-
-            samples.into_iter().try_for_each(|sample| {
-                ensure!(sample.size() == vec![3, hx as i64, wx as i64]);
-                Ok(())
-            })?;
 
             Ok(())
         })?;

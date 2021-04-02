@@ -15,13 +15,15 @@ impl Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dataset {
-    pub dir: PathBuf,
-    pub height: NonZeroUsize,
-    pub width: NonZeroUsize,
+    pub dataset_dir: PathBuf,
+    pub cache_dir: PathBuf,
+    pub image_size: NonZeroUsize,
+    pub image_dim: NonZeroUsize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Training {
+    pub batch_size: NonZeroUsize,
     pub peek_len: usize,
     pub pred_len: usize,
     #[serde(with = "tch_serde::serde_device")]
