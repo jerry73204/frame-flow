@@ -158,25 +158,29 @@ impl Attention {
 
         // convolutions
         let (query, new_input_shape) = {
-            let orig = query_conv.forward(input);
+            let orig = query_conv.forward(input).sigmoid() * 2.0 - 1.0;
             let shape = orig.size()[2..].to_owned();
             let new = orig.view([batch_size, num_heads, key_channels, -1]);
             (new, shape)
         };
         let (key, new_context_shape) = {
             // notice the sigmoid() here
-            let orig = key_conv.forward(context).sigmoid();
+            let orig = key_conv.forward(context).sigmoid() * 2.0 - 1.0;
             let shape = orig.size()[2..].to_owned();
             let new = orig.view([batch_size, num_heads, key_channels, -1]);
             (new, shape)
         };
         let value = {
-            let orig = value_conv.forward(context);
+            let orig = value_conv.forward(context).sigmoid() * 2.0 - 1.0;
             debug_assert_eq!(orig.size()[2..], new_context_shape);
             orig.view([batch_size, num_heads, value_channels, -1])
         };
         let new_input_numel: i64 = new_input_shape.iter().product();
         let new_context_numel: i64 = new_context_shape.iter().product();
+
+        debug_assert!(!query.has_nan(), "NaN detected");
+        debug_assert!(!key.has_nan(), "NaN detected");
+        debug_assert!(!value.has_nan(), "NaN detected");
 
         // transform mask by convolutions
         let output_mask = input_mask.map(|mask| {
@@ -211,6 +215,8 @@ impl Attention {
             None => Tensor::einsum("bhky,bhvy,bhkx->bhvx", &[&key, &value, &query]),
         };
 
+        debug_assert!(!head_outputs.has_nan(), "NaN detected");
+
         // transform mask shape
         let output_mask = output_mask.map(|mask| {
             let shape: Vec<_> = new_input_shape
@@ -222,7 +228,10 @@ impl Attention {
         });
 
         // merge head outputs
-        let output = Tensor::einsum("hvo,bhvx->box", &[merge_weight, &head_outputs]);
+        let output =
+            Tensor::einsum("hvo,bhvx->box", &[merge_weight, &head_outputs]).sigmoid() * 2.0 - 1.0;
+        debug_assert!(!output.has_nan(), "NaN detected");
+
         let output = {
             let output_shape: Vec<_> = vec![batch_size, output_channels]
                 .into_iter()
@@ -230,6 +239,8 @@ impl Attention {
                 .collect();
             output.view(&*output_shape)
         };
+
+        debug_assert!(!output.has_nan(), "NaN detected");
 
         Ok((output, output_mask))
     }
