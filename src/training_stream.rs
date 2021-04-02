@@ -120,9 +120,10 @@ impl TrainingStream {
 
                 let sequence: Vec<_> = (0..seq_len)
                     .map(|_seq_index| {
-                        let samples_vec: Vec<_> = (0..batch_index)
+                        let samples_vec: Vec<_> = (0..batch_size)
                             .map(|batch_index| sequence_iter_vec[batch_index].next().unwrap())
                             .collect();
+
                         let samples = Tensor::stack(&samples_vec, 0);
                         samples
                     })
