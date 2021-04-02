@@ -1,12 +1,15 @@
 {
     "dataset": {
-        "dir": "/home/jerry73204/wtf",
-        "height": 256,
-        "width": 256,
+        "dataset_dir": "/home/aeon/dataset/frame-flow/2020-10-21",
+        "cache_dir": "/home/aeon/frame-flow-cache",
+        "image_size": 64,
+        "image_dim": 3,
     },
     "train": {
-        "device": "cuda(0)",
-        "peek_len": 10,
-        "pred_len": 5,
+        "batch_size": 40,
+        "device": "cuda(3)",
+        "peek_len": 9,
+        "pred_len": 1,
+        "learning_rate": 0.001,
     },
 }

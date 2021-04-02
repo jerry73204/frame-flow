@@ -92,9 +92,9 @@ async fn main() -> Result<()> {
         output_channels: 3,
         num_heads: 4,
         strides: [2, 2, 2],
-        block_channels: [8, 16, 32],
-        context_channels: [5, 10, 20],
-        repeats: [2, 2, 2],
+        block_channels: [4, 8, 16],
+        context_channels: [4, 8, 16],
+        repeats: [3, 3, 3],
     }
     .build(&generator_vs.root() / "generator")?;
 
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
         ndims: 3,
         ksize: 3,
         input_channels: 3,
-        channels: [8, 16, 32],
+        channels: [4, 8, 16],
         strides: [2, 2, 2],
     }
     .build(&discriminator_vs.root() / "discriminator")?;
