@@ -3,8 +3,7 @@ use crate::common::*;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub dataset: Dataset,
-    #[serde(with = "tch_serde::serde_device")]
-    pub device: Device,
+    pub train: Training,
 }
 
 impl Config {
@@ -19,4 +18,12 @@ pub struct Dataset {
     pub dir: PathBuf,
     pub height: NonZeroUsize,
     pub width: NonZeroUsize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Training {
+    pub peek_len: usize,
+    pub pred_len: usize,
+    #[serde(with = "tch_serde::serde_device")]
+    pub device: Device,
 }

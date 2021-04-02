@@ -118,7 +118,8 @@ impl Dataset {
             })
             .try_collect()?;
 
-        let output = Tensor::stack(&images, 0).to_kind(Kind::Float) / 255.0;
+        // the output has shape [c, t, h, w]
+        let output = Tensor::stack(&images, 1).to_kind(Kind::Float) / 255.0;
 
         Ok(output)
     }
