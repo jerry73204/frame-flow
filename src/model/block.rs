@@ -11,7 +11,7 @@ pub struct BlockInit {
     pub repeat: usize,
     pub num_heads: usize,
     pub keyvalue_channels: usize,
-    pub attention_ksize: usize,
+    pub conv_ksize: usize,
     pub conv_transposed: bool,
 }
 
@@ -26,7 +26,7 @@ impl BlockInit {
             output_channels,
             repeat,
             num_heads,
-            attention_ksize,
+            conv_ksize,
             conv_transposed,
         } = self;
 
@@ -71,11 +71,12 @@ impl BlockInit {
                     value_channels: keyvalue_channels,
                     input_conv: ConvNDInitDyn {
                         transposed: conv_transposed,
-                        ..ConvNDInitDyn::new(ndims, attention_ksize)
+                        ..ConvNDInitDyn::new(ndims, conv_ksize)
                     },
                     context_conv: ConvNDInitDyn {
+                        // stride: vec![context_stride; ndims],
                         transposed: conv_transposed,
-                        ..ConvNDInitDyn::new(ndims, attention_ksize)
+                        ..ConvNDInitDyn::new(ndims, conv_ksize)
                     },
                 }
                 .build(path / format!("attention_{}", index))
@@ -207,7 +208,7 @@ mod tests {
             num_heads: 10,
             keyvalue_channels: cx * 2,
             ndims: 2,
-            attention_ksize: 3,
+            conv_ksize: 3,
             conv_transposed: false,
         }
         .build(&root)?;

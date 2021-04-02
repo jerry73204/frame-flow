@@ -64,7 +64,7 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
                 repeat,
                 num_heads,
                 keyvalue_channels: context_c,
-                attention_ksize: 3,
+                conv_ksize: 3,
                 conv_transposed: false,
             }
             .build(path / format!("enc_block_{}", index))?;
@@ -109,7 +109,7 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
                 repeat,
                 num_heads,
                 keyvalue_channels: context_c,
-                attention_ksize: 3,
+                conv_ksize: 3,
                 conv_transposed: true,
             }
             .build(path / format!("enc_block_{}", index))?;
@@ -145,7 +145,7 @@ impl<const DEPTH: usize> GeneratorInit<DEPTH> {
             repeat: 3,
             num_heads,
             keyvalue_channels: last_attention_channels,
-            attention_ksize: 3,
+            conv_ksize: 3,
             conv_transposed: false,
         }
         .build(path / "top_block")?;

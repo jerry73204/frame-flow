@@ -164,7 +164,8 @@ impl Attention {
             (new, shape)
         };
         let (key, new_context_shape) = {
-            let orig = key_conv.forward(context);
+            // notice the sigmoid() here
+            let orig = key_conv.forward(context).sigmoid();
             let shape = orig.size()[2..].to_owned();
             let new = orig.view([batch_size, num_heads, key_channels, -1]);
             (new, shape)
@@ -177,64 +178,48 @@ impl Attention {
         let new_input_numel: i64 = new_input_shape.iter().product();
         let new_context_numel: i64 = new_context_shape.iter().product();
 
-        // compute attention
-        let (attention, output_mask) = {
-            let logit = query
-                // [b, h, c, mx] -> [b, h, mx, c]
-                .permute(&[0, 1, 3, 2])
-                // [b, h, mx, c] * [b, h, c, my] -> [b, h, mx, my]
-                .matmul(&key)
-                .g_div1((key_channels as f64).sqrt());
+        // transform mask by convolutions
+        let output_mask = input_mask.map(|mask| {
+            let shape1: Vec<_> = vec![input_numel, 1]
+                .into_iter()
+                .chain(context_shape.iter().cloned())
+                .collect();
+            let mask = mask.view(&*shape1);
+            let mask = mask_context_conv.forward(&mask);
 
-            // mask attention
-            let (masked_logit, output_mask) = match input_mask {
-                Some(mask) => {
-                    // transform mask by convolutions
-                    let shape1: Vec<_> = vec![input_numel, 1]
-                        .into_iter()
-                        .chain(context_shape.iter().cloned())
-                        .collect();
-                    let mask = mask.view(&*shape1);
-                    let mask = mask_context_conv.forward(&mask);
+            let shape2: Vec<_> = vec![new_context_numel, 1]
+                .into_iter()
+                .chain(input_shape.iter().cloned())
+                .collect();
+            let mask = mask
+                .view([input_numel, 1, new_context_numel])
+                .permute(&[2, 1, 0])
+                .reshape(&*shape2);
+            let mask = mask_input_conv.forward(&mask);
 
-                    let shape2: Vec<_> = vec![new_context_numel, 1]
-                        .into_iter()
-                        .chain(input_shape.iter().cloned())
-                        .collect();
-                    let mask = mask
-                        .view([input_numel, 1, new_context_numel])
-                        .permute(&[2, 1, 0])
-                        .reshape(&*shape2);
-                    let mask = mask_input_conv.forward(&mask);
+            let mask = mask
+                .view([new_context_numel, new_input_numel])
+                .permute(&[1, 0])
+                .reshape(&[new_input_numel, new_context_numel]);
+            let mask = mask / mask_divisor;
 
-                    let mask = mask
-                        .view([new_context_numel, new_input_numel])
-                        .permute(&[1, 0])
-                        .reshape(&[1, 1, new_input_numel, new_context_numel]);
-                    let mask = mask / mask_divisor;
+            mask
+        });
 
-                    // apply masking
-                    let masked_logit = &logit + &mask.log();
-
-                    // transform mask shape
-                    let shape3: Vec<_> = new_input_shape
-                        .iter()
-                        .cloned()
-                        .chain(new_context_shape.iter().cloned())
-                        .collect();
-                    let output_mask = mask.view(&*shape3);
-
-                    (masked_logit, Some(output_mask))
-                }
-                None => (logit.shallow_clone(), None),
-            };
-
-            let attention = masked_logit.softmax(3, Kind::Float);
-            (attention, output_mask)
+        let head_outputs = match &output_mask {
+            Some(mask) => Tensor::einsum("bhky,bhvy,bhkx,xy->bhvx", &[&key, &value, &query, mask]),
+            None => Tensor::einsum("bhky,bhvy,bhkx->bhvx", &[&key, &value, &query]),
         };
 
-        // compute output per head
-        let head_outputs = Tensor::einsum("bhxy,bhvy->bhvx", &[&attention, &value]);
+        // transform mask shape
+        let output_mask = output_mask.map(|mask| {
+            let shape: Vec<_> = new_input_shape
+                .iter()
+                .cloned()
+                .chain(new_context_shape.iter().cloned())
+                .collect();
+            mask.view(&*shape)
+        });
 
         // merge head outputs
         let output = Tensor::einsum("hvo,bhvx->box", &[merge_weight, &head_outputs]);
