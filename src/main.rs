@@ -61,7 +61,9 @@ async fn main() -> Result<()> {
                 pred_len,
             },
     } = config::Config::load(&config)?;
-
+    let batch_size = batch_size.get();
+    let image_size = image_size.get();
+    let image_dim = image_dim.get();
     let seq_len = peek_len + pred_len;
 
     // load dataset
@@ -69,10 +71,10 @@ async fn main() -> Result<()> {
         dataset_dir: &dataset_dir,
         cache_dir: &cache_dir,
         file_name_digits: 8,
-        image_size: image_size.get(),
-        image_dim: image_dim.get(),
+        image_size,
+        image_dim,
         latent_dim,
-        batch_size: batch_size.get(),
+        batch_size,
         device,
         seq_len,
     }
@@ -84,7 +86,7 @@ async fn main() -> Result<()> {
 
     let mut generator = GeneratorInit {
         ndims: 2,
-        input_channels: 3 + latent_dim,
+        input_channels: image_dim + latent_dim + 1,
         output_channels: 3,
         num_heads: 4,
         strides: [2, 2, 2],
@@ -134,13 +136,23 @@ async fn main() -> Result<()> {
                 sequence[0..peek_len]
                     .iter()
                     .try_fold(None, |in_contexts, image| -> Result<_> {
-                        let (batch_size, _c, height, width) = image.size4().unwrap();
+                        let indicator = Tensor::ones(
+                            &[batch_size as i64, 1, image_size as i64, image_size as i64],
+                            (Kind::Float, device),
+                        );
                         let noise = noise
-                            .view([batch_size, latent_dim as i64, 1, 1])
-                            .expand(&[batch_size, latent_dim as i64, height, width], false);
+                            .view([batch_size as i64, latent_dim as i64, 1, 1])
+                            .expand(
+                                &[
+                                    batch_size as i64,
+                                    latent_dim as i64,
+                                    image_size as i64,
+                                    image_size as i64,
+                                ],
+                                false,
+                            );
 
-                        let input = Tensor::cat(&[image, &noise], 1);
-
+                        let input = Tensor::cat(&[image, &noise, &indicator], 1);
                         let GeneratorOutput {
                             contexts: out_contexts,
                             ..
@@ -148,6 +160,29 @@ async fn main() -> Result<()> {
 
                         Ok(Some(out_contexts))
                     })?;
+
+            let (outputs, _contexts) = (0..pred_len).try_fold(
+                (vec![], contexts),
+                |(mut outputs, in_contexts), _index| -> Result<_> {
+                    let input = Tensor::zeros(
+                        &[
+                            batch_size as i64,
+                            (image_dim + latent_dim + 1) as i64,
+                            image_size as i64,
+                            image_size as i64,
+                        ],
+                        (Kind::Float, device),
+                    );
+
+                    let GeneratorOutput {
+                        output,
+                        contexts: out_contexts,
+                    } = generator.forward_t(&input, in_contexts, true)?;
+
+                    outputs.push(output);
+                    Ok((outputs, Some(out_contexts)))
+                },
+            )?;
 
             info!("batch_index = {}", batch_index);
         }
