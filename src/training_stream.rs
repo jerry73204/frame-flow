@@ -111,7 +111,10 @@ impl TrainingStream {
                                     image_size as i64,
                                     image_size as i64,
                                 )?
-                                .to_device(device);
+                                .to_device(device)
+                                .to_kind(Kind::Float)
+                                .g_div1(255.0)
+                                .set_requires_grad(false);
                                 Ok(image)
                             })
                             .try_collect()?;

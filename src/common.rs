@@ -7,6 +7,7 @@ pub use futures::{
 };
 pub use indexmap::IndexMap;
 pub use itertools::{izip, Itertools};
+pub use noisy_float::types::R64;
 pub use par_stream::{ParStreamExt, TryParStreamExt};
 pub use rand::prelude::*;
 pub use serde::{Deserialize, Serialize};

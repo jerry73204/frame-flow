@@ -45,7 +45,7 @@ impl<const DEPTH: usize> DiscriminatorInit<DEPTH> {
             )?;
 
             let down_sample = ConvNDInitDyn {
-                stride: vec![stride, ndims],
+                stride: vec![stride; ndims],
                 ..ConvNDInitDyn::new(ndims, 1)
             }
             .build(path / format!("down_sample_{}", index), out_c, out_c)?;
