@@ -1,4 +1,12 @@
 {
-    "input_url": "/home/jerry73204/Downloads/1227-Demo.mp4",
-    "device": "cuda(0)",
+    "dataset": {
+        "dir": "/home/jerry73204/wtf",
+        "height": 256,
+        "width": 256,
+    },
+    "train": {
+        "device": "cuda(0)",
+        "peek_len": 10,
+        "pred_len": 5,
+    },
 }
