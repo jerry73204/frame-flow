@@ -1,7 +1,8 @@
-use super::attention::{Attention, AttentionInit};
+use super::attention::{Attention, AttentionGrad, AttentionInit};
 use crate::common::*;
 use tch_goodies::module::{
-    ConvBn, ConvBnInitDyn, ConvND, ConvNDInitDyn, DarkBatchNorm, DarkBatchNormConfig,
+    ConvBn, ConvBnGrad, ConvBnInitDyn, ConvND, ConvNDGrad, ConvNDInitDyn, DarkBatchNorm,
+    DarkBatchNormConfig, DarkBatchNormGrad,
 };
 
 #[derive(Debug, Clone)]
@@ -221,6 +222,26 @@ impl Block {
             mask: output_mask,
         })
     }
+
+    pub fn grad(&self) -> BlockGrad {
+        let Self {
+            attention_bns,
+            attentions,
+            shortcut_conv,
+            merge_conv,
+            pre_attention_conv,
+            post_attention_conv,
+        } = self;
+
+        BlockGrad {
+            attention_bns: attention_bns.iter().map(|bn| bn.grad()).collect(),
+            attentions: attentions.iter().map(|att| att.grad()).collect(),
+            shortcut_conv: shortcut_conv.grad(),
+            merge_conv: merge_conv.grad(),
+            pre_attention_conv: pre_attention_conv.grad(),
+            post_attention_conv: post_attention_conv.grad(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -228,6 +249,16 @@ pub struct BlockOutput {
     pub feature: Tensor,
     pub contexts: Vec<Tensor>,
     pub mask: Option<Tensor>,
+}
+
+#[derive(Debug, TensorLike)]
+pub struct BlockGrad {
+    pub attention_bns: Vec<DarkBatchNormGrad>,
+    pub attentions: Vec<AttentionGrad>,
+    pub shortcut_conv: ConvNDGrad,
+    pub merge_conv: ConvNDGrad,
+    pub pre_attention_conv: ConvBnGrad,
+    pub post_attention_conv: ConvBnGrad,
 }
 
 #[cfg(test)]

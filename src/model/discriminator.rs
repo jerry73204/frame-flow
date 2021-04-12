@@ -1,6 +1,6 @@
 use crate::common::*;
 use nn::Module;
-use tch_goodies::module::{ConvBn, ConvBnInitDyn, ConvND, ConvNDInitDyn};
+use tch_goodies::module::{ConvBn, ConvBnGrad, ConvBnInitDyn, ConvND, ConvNDGrad, ConvNDInitDyn};
 
 #[derive(Debug, Clone)]
 pub struct DiscriminatorInit<const DEPTH: usize> {
@@ -104,6 +104,37 @@ impl Discriminator {
 
         Ok(xs)
     }
+
+    pub fn grad(&self) -> DiscriminatorGrad {
+        let Self {
+            convs,
+            down_samples,
+            linear: nn::Linear { ws, bs, .. },
+            ..
+        } = self;
+
+        DiscriminatorGrad {
+            convs: convs.iter().map(|conv| conv.grad()).collect(),
+            down_samples: down_samples.iter().map(|down| down.grad()).collect(),
+            linear: LinearGrad {
+                ws: ws.grad(),
+                bs: bs.grad(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, TensorLike)]
+pub struct LinearGrad {
+    pub ws: Tensor,
+    pub bs: Tensor,
+}
+
+#[derive(Debug, TensorLike)]
+pub struct DiscriminatorGrad {
+    pub convs: Vec<ConvBnGrad>,
+    pub down_samples: Vec<ConvNDGrad>,
+    pub linear: LinearGrad,
 }
 
 #[cfg(test)]

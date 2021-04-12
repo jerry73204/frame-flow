@@ -1,6 +1,6 @@
-use super::block::{Block, BlockInit, BlockOutput};
+use super::block::{Block, BlockGrad, BlockInit, BlockOutput};
 use crate::common::*;
-use tch_goodies::module::{ConvND, ConvNDInitDyn};
+use tch_goodies::module::{ConvND, ConvNDGrad, ConvNDInitDyn};
 
 #[derive(Debug, Clone)]
 pub struct GeneratorInit<const DEPTH: usize> {
@@ -343,12 +343,46 @@ impl Generator {
             contexts: output_contexts,
         })
     }
+
+    pub fn grad(&self) -> GeneratorGrad {
+        let Self {
+            enc_blocks,
+            dec_blocks,
+            down_samples,
+            up_samples,
+            top_block,
+            first_conv,
+            last_conv,
+            ..
+        } = self;
+
+        GeneratorGrad {
+            enc_blocks: enc_blocks.iter().map(|block| block.grad()).collect(),
+            dec_blocks: dec_blocks.iter().map(|block| block.grad()).collect(),
+            down_samples: down_samples.iter().map(|down| down.grad()).collect(),
+            up_samples: up_samples.iter().map(|down| down.grad()).collect(),
+            top_block: top_block.grad(),
+            first_conv: first_conv.grad(),
+            last_conv: last_conv.grad(),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct GeneratorOutput {
     pub output: Tensor,
     pub contexts: Vec<Tensor>,
+}
+
+#[derive(Debug)]
+pub struct GeneratorGrad {
+    pub enc_blocks: Vec<BlockGrad>,
+    pub dec_blocks: Vec<BlockGrad>,
+    pub down_samples: Vec<ConvNDGrad>,
+    pub up_samples: Vec<ConvNDGrad>,
+    pub top_block: BlockGrad,
+    pub first_conv: ConvNDGrad,
+    pub last_conv: ConvNDGrad,
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use crate::common::*;
-use tch_goodies::module::{ConvND, ConvNDInit, ConvNDInitDyn, ConvParam};
+use tch_goodies::module::{ConvND, ConvNDGrad, ConvNDInit, ConvNDInitDyn, ConvParam};
 
 #[derive(Debug, Clone)]
 pub struct AttentionInit<InputConvParam, ContextConvParam>
@@ -266,6 +266,31 @@ impl Attention {
 
         Ok((output, output_mask))
     }
+
+    pub fn grad(&self) -> AttentionGrad {
+        let Self {
+            merge_weight,
+            query_conv,
+            key_conv,
+            value_conv,
+            ..
+        } = self;
+
+        AttentionGrad {
+            merge_weight: merge_weight.grad(),
+            query_conv: query_conv.grad(),
+            key_conv: key_conv.grad(),
+            value_conv: value_conv.grad(),
+        }
+    }
+}
+
+#[derive(Debug, TensorLike)]
+pub struct AttentionGrad {
+    pub merge_weight: Tensor,
+    pub query_conv: ConvNDGrad,
+    pub key_conv: ConvNDGrad,
+    pub value_conv: ConvNDGrad,
 }
 
 #[cfg(test)]

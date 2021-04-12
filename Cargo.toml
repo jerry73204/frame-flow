@@ -15,7 +15,7 @@ structopt = "0.3.21"
 tch-serde = "0.4.0"
 rand = "0.8.3"
 itertools = "0.10.0"
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "78e166f2e0b159b6e6fdc7037d5f8dc651a1a048" }
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "c461baca23ec115e9bfbf754027c53a89d50652e" }
 unzip-n = "0.1.2"
 approx = "0.4.0"
 tch-tensor-like = "0.3.0"
