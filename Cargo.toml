@@ -15,21 +15,21 @@ structopt = "0.3.21"
 tch-serde = "0.4.0"
 rand = "0.8.3"
 itertools = "0.10.0"
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "5d0d747fe8f90b35ea6665327a1dc86dc6a29c83" }
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "78e166f2e0b159b6e6fdc7037d5f8dc651a1a048" }
 unzip-n = "0.1.2"
 approx = "0.4.0"
 tch-tensor-like = "0.3.0"
 tokio = { version = "1.4.0", features = ["fs"] }
 tokio-stream = { version = "0.1.5", features = ["fs"] }
-futures = "0.3.13"
+futures = "0.3.14"
 par-stream = { version = "0.3.1", features = ["runtime_tokio"] }
 csv = "1.1.6"
 indexmap = "1.6.2"
 collected = "0.1.2"
-tracing = "0.1.23"
-tracing-subscriber = "0.2.15"
-opentelemetry-jaeger = "0.11.0"
-tracing-opentelemetry = "0.11.0"
+tracing = "0.1.25"
+tracing-subscriber = "0.2.17"
+opentelemetry-jaeger = "0.12.1"
+tracing-opentelemetry = "0.12.0"
 noisy_float = { version = "0.2.0", features = ["serde"] }
 tfrecord = { version = "0.7.0", features = ["full"] }
 chrono = "0.4.19"
