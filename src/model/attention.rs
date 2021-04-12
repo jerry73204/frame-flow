@@ -75,6 +75,9 @@ where
             context_channels,
             num_heads * value_channels,
         )?;
+
+        // let bound = (6f64 / (num_heads * value_channels + output_channels) as f64).sqrt();
+
         let merge_weight = path.var(
             "merge_weight",
             &[
@@ -82,7 +85,14 @@ where
                 value_channels as i64,
                 output_channels as i64,
             ],
-            nn::Init::KaimingUniform,
+            // nn::Init::Uniform {
+            //     lo: -bound,
+            //     up: bound,
+            // },
+            nn::Init::Randn {
+                mean: 0.0,
+                stdev: (1.0 / (num_heads * value_channels) as f64).sqrt(),
+            },
         );
 
         Ok(Attention {
@@ -158,25 +168,39 @@ impl Attention {
 
         // convolutions
         let (query, new_input_shape) = {
-            let orig = query_conv.forward(input).sigmoid() * 2.0 - 1.0;
+            let orig = query_conv.forward(input);
             let shape = orig.size()[2..].to_owned();
             let new = orig.view([batch_size, num_heads, key_channels, -1]);
             (new, shape)
         };
         let (key, new_context_shape) = {
-            // notice the sigmoid() here
-            let orig = key_conv.forward(context).sigmoid() * 2.0 - 1.0;
+            let orig = key_conv.forward(context);
             let shape = orig.size()[2..].to_owned();
             let new = orig.view([batch_size, num_heads, key_channels, -1]);
             (new, shape)
         };
         let value = {
-            let orig = value_conv.forward(context).sigmoid() * 2.0 - 1.0;
+            let orig = value_conv.forward(context);
             debug_assert_eq!(orig.size()[2..], new_context_shape);
             orig.view([batch_size, num_heads, value_channels, -1])
         };
         let new_input_numel: i64 = new_input_shape.iter().product();
         let new_context_numel: i64 = new_context_shape.iter().product();
+
+        let key = key.softmax(3, Kind::Float);
+
+        // let key =
+        //     key / (key_channels as f64).sqrt() / (new_context_numel as f64).sqrt() * 2f64.sqrt();
+        // let value = value / (new_context_numel as f64).sqrt();
+        // let query = query / (key_channels as f64).sqrt();
+
+        // let key = key.mish();
+        // let value = value.mish();
+        // let query = query.mish();
+
+        // dbg!(query.mean(Kind::Float));
+        // dbg!(key.mean(Kind::Float));
+        // dbg!(value.mean(Kind::Float));
 
         debug_assert!(!query.has_nan(), "NaN detected");
         debug_assert!(!key.has_nan(), "NaN detected");
@@ -205,15 +229,14 @@ impl Attention {
                 .view([new_context_numel, new_input_numel])
                 .permute(&[1, 0])
                 .reshape(&[new_input_numel, new_context_numel]);
-            let mask = mask / mask_divisor;
-
-            mask
+            mask / mask_divisor
         });
 
         let head_outputs = match &output_mask {
             Some(mask) => Tensor::einsum("bhky,bhvy,bhkx,xy->bhvx", &[&key, &value, &query, mask]),
             None => Tensor::einsum("bhky,bhvy,bhkx->bhvx", &[&key, &value, &query]),
         };
+        let head_outputs = head_outputs * 2f64.sqrt() / ((key_channels) as f64).sqrt();
 
         debug_assert!(!head_outputs.has_nan(), "NaN detected");
 
@@ -228,8 +251,7 @@ impl Attention {
         });
 
         // merge head outputs
-        let output =
-            Tensor::einsum("hvo,bhvx->box", &[merge_weight, &head_outputs]).sigmoid() * 2.0 - 1.0;
+        let output = Tensor::einsum("hvo,bhvx->box", &[merge_weight, &head_outputs]);
         debug_assert!(!output.has_nan(), "NaN detected");
 
         let output = {

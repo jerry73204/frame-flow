@@ -1,6 +1,8 @@
 use super::attention::{Attention, AttentionInit};
 use crate::common::*;
-use tch_goodies::module::{ConvBn, ConvBnInitDyn, ConvND, ConvNDInitDyn};
+use tch_goodies::module::{
+    ConvBn, ConvBnInitDyn, ConvND, ConvNDInitDyn, DarkBatchNorm, DarkBatchNormConfig,
+};
 
 #[derive(Debug, Clone)]
 pub struct BlockInit {
@@ -29,6 +31,8 @@ impl BlockInit {
             conv_ksize,
             conv_transposed,
         } = self;
+        // let var_min = Some(r64(1e-4));
+        let var_min = None;
 
         let shortcut_conv = ConvNDInitDyn {
             transposed: conv_transposed,
@@ -41,6 +45,10 @@ impl BlockInit {
                 transposed: conv_transposed,
                 ..ConvNDInitDyn::new(ndims, 1)
             },
+            bn: DarkBatchNormConfig {
+                var_min,
+                ..Default::default()
+            },
             ..ConvBnInitDyn::new(ndims, 1)
         }
         .build(
@@ -52,6 +60,10 @@ impl BlockInit {
             conv: ConvNDInitDyn {
                 transposed: conv_transposed,
                 ..ConvNDInitDyn::new(ndims, 1)
+            },
+            bn: DarkBatchNormConfig {
+                var_min,
+                ..Default::default()
             },
             ..ConvBnInitDyn::new(ndims, 1)
         }
@@ -82,6 +94,19 @@ impl BlockInit {
                 .build(path / format!("attention_{}", index))
             })
             .try_collect()?;
+        let attention_bns: Vec<_> = (0..repeat)
+            .map(|index| {
+                DarkBatchNorm::new(
+                    path / format!("attention_bn_{}", index),
+                    ndims,
+                    context_channels as i64,
+                    DarkBatchNormConfig {
+                        var_min,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
 
         let merge_conv = ConvNDInitDyn {
             transposed: conv_transposed,
@@ -91,6 +116,7 @@ impl BlockInit {
 
         Ok(Block {
             attentions,
+            attention_bns,
             shortcut_conv,
             merge_conv,
             pre_attention_conv,
@@ -101,6 +127,7 @@ impl BlockInit {
 
 #[derive(Debug)]
 pub struct Block {
+    attention_bns: Vec<DarkBatchNorm>,
     attentions: Vec<Attention>,
     shortcut_conv: ConvND,
     merge_conv: ConvND,
@@ -121,6 +148,7 @@ impl Block {
         train: bool,
     ) -> Result<BlockOutput> {
         let Self {
+            ref mut attention_bns,
             ref attentions,
             ref shortcut_conv,
             ref merge_conv,
@@ -139,34 +167,53 @@ impl Block {
         let mask = mask.map(|mask| mask.detach());
 
         let shortcut = shortcut_conv.forward(input);
+
         let (branch, output_contexts, output_mask) = {
             let xs = pre_attention_conv.forward_t(input, train)?;
             let mut output_contexts = vec![];
 
             let (xs, mask) = match input_contexts {
-                Some(input_contexts) => izip!(attentions.iter(), input_contexts).try_fold(
-                    (xs, mask),
-                    |(xs, mask), (attention, input_context)| -> Result<_> {
-                        let (xs, mask) = attention.forward(&xs, &input_context, mask.as_ref())?;
-                        output_contexts.push(xs.shallow_clone());
-                        Ok((xs, mask))
-                    },
-                )?,
-                None => attentions.iter().try_fold(
-                    (xs, mask),
-                    |(xs, mask), attention| -> Result<_> {
-                        let (xs, mask) = attention.forward(&xs, &xs, mask.as_ref())?;
-                        output_contexts.push(xs.shallow_clone());
-                        Ok((xs, mask))
-                    },
-                )?,
+                Some(input_contexts) => {
+                    izip!(attentions.iter(), attention_bns.iter_mut(), input_contexts)
+                        .enumerate()
+                        .try_fold(
+                            (xs, mask),
+                            |(xs, mask), (_index, (attention, bn, input_context))| -> Result<_> {
+                                // eprintln!("attention {}", index);
+                                // dbg!(xs.mean(Kind::Float));
+                                let xs = bn.forward_t(&xs, train)?;
+                                // dbg!(xs.mean(Kind::Float));
+                                let (xs, mask) =
+                                    attention.forward(&xs, &input_context, mask.as_ref())?;
+                                output_contexts.push(xs.shallow_clone());
+                                Ok((xs, mask))
+                            },
+                        )?
+                }
+                None => izip!(attentions.iter(), attention_bns.iter_mut())
+                    .enumerate()
+                    .try_fold(
+                        (xs, mask),
+                        |(xs, mask), (_index, (attention, bn))| -> Result<_> {
+                            // eprintln!("attention (no context) {}", index);
+                            // dbg!(xs.mean(Kind::Float));
+                            let xs = bn.forward_t(&xs, train)?;
+                            // dbg!(xs.mean(Kind::Float));
+                            let (xs, mask) = attention.forward(&xs, &xs, mask.as_ref())?;
+                            output_contexts.push(xs.shallow_clone());
+                            Ok((xs, mask))
+                        },
+                    )?,
             };
 
             let xs = post_attention_conv.forward_t(&xs, train)?;
             (xs, output_contexts, mask)
         };
+        // dbg!(branch.max(), branch.min());
+
         let merge = Tensor::cat(&[shortcut, branch], 1);
         let output = merge_conv.forward(&merge);
+        // dbg!(output.max(), output.min());
 
         Ok(BlockOutput {
             feature: output,

@@ -206,7 +206,11 @@ impl Generator {
         );
 
         // first conv
+        // eprintln!("first_conv");
+
+        // dbg!(input.mean(Kind::Float));
         let xs = first_conv.forward(input);
+        // dbg!(xs.mean(Kind::Float));
 
         // encoder
         let (xs, contexts_vec, mut output_paddings_vec) = {
@@ -227,9 +231,11 @@ impl Generator {
                         down_samples.iter_mut(),
                         input_contexts_iter
                     )
+                    .enumerate()
                     .try_fold(
                         xs,
-                        |xs, (block, down_sample, in_contexts)| -> Result<_> {
+                        |xs, (index, (block, down_sample, in_contexts))| -> Result<_> {
+                            eprintln!("enc_block {}", index);
                             let BlockOutput {
                                 feature: xs,
                                 contexts: out_contexts,
@@ -252,9 +258,10 @@ impl Generator {
                         },
                     )?
                 }
-                None => izip!(enc_blocks.iter_mut(), down_samples.iter_mut()).try_fold(
-                    xs,
-                    |xs, (block, down_sample)| -> Result<_> {
+                None => izip!(enc_blocks.iter_mut(), down_samples.iter_mut())
+                    .enumerate()
+                    .try_fold(xs, |xs, (index, (block, down_sample))| -> Result<_> {
+                        eprintln!("enc_block {}", index);
                         let BlockOutput {
                             feature: xs,
                             contexts: out_contexts,
@@ -274,8 +281,7 @@ impl Generator {
                         output_paddings_vec.push(output_paddings);
 
                         Ok(xs)
-                    },
-                )?,
+                    })?,
             };
 
             (xs, contexts_vec, output_paddings_vec)
@@ -305,9 +311,11 @@ impl Generator {
                 contexts_vec,
                 output_paddings_vec
             )
+            .enumerate()
             .try_fold(
                 xs,
-                |xs, (block, up_sample, contexts, output_paddings)| -> Result<_> {
+                |xs, (index, (block, up_sample, contexts, output_paddings))| -> Result<_> {
+                    eprintln!("dec_block {}", index);
                     let xs = up_sample.forward_ext(&xs, Some(&output_paddings));
 
                     let BlockOutput {

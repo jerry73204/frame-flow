@@ -122,10 +122,10 @@ async fn main() -> Result<()> {
         input_channels: image_dim + latent_dim + 1,
         output_channels: 3,
         num_heads: 4,
-        strides: [2, 2, 2],
-        block_channels: [4, 8, 16],
-        context_channels: [4, 8, 16],
-        repeats: [3, 3, 3],
+        strides: [1, 2, 2, 2],
+        block_channels: [16, 16, 16, 16],
+        context_channels: [16, 16, 16, 16],
+        repeats: [3, 3, 3, 3],
     }
     .build(&generator_vs.root() / "generator")?;
 
@@ -162,6 +162,24 @@ async fn main() -> Result<()> {
 
     // training worker
     let train_fut = tokio::task::spawn_blocking(move || -> Result<()> {
+        // warm-up
+
+        // let warm_up_steps = 16;
+
+        // for _ in 0..warm_up_steps {
+        //     let input = Tensor::randn(
+        //         &[
+        //             batch_size as i64,
+        //             (image_dim + 1 + latent_dim) as i64,
+        //             image_size as i64,
+        //             image_size as i64,
+        //         ],
+        //         (Kind::Float, device),
+        //     ) * 0.5
+        //         + 0.5;
+        //     let _ = generator.forward_t(&input, NONE_TENSORS, true)?;
+        // }
+
         for (train_step, _) in iter::repeat(()).enumerate() {
             let record = train_rx.blocking_recv().unwrap()?;
             let TrainingRecord {
@@ -293,7 +311,13 @@ async fn main() -> Result<()> {
                     .map(|steps| train_step % steps == 0)
                     .unwrap_or(false);
 
-                let true_image = save_image.then(|| true_sequence.shallow_clone());
+                let true_image = save_image.then(|| {
+                    let seq: Vec<_> = true_sequence
+                        .iter()
+                        .map(|image| image.shallow_clone())
+                        .collect();
+                    seq
+                });
                 let fake_image = save_image.then(|| {
                     let seq: Vec<_> = fake_sequence
                         .iter()
@@ -378,7 +402,7 @@ async fn main() -> Result<()> {
     .map(|result| Fallible::Ok(result??));
 
     // run all tasks
-    futures::try_join!(data_fut, train_fut)?;
+    futures::try_join!(data_fut, train_fut, log_fut)?;
 
     Ok(())
 }

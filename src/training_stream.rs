@@ -86,9 +86,8 @@ impl TrainingStream {
             batch_size,
             device,
             seq_len,
-            ref cache_dir,
             image_size,
-            image_dim,
+            ..
         } = *self;
 
         // load subsequence samples
@@ -112,7 +111,7 @@ impl TrainingStream {
                                     image_size as i64,
                                 )?
                                 .to_device(device);
-                                let image = image / 127.5 - 1.0;
+                                let image = image / 255.0;
                                 let image = image.to_kind(Kind::Float).set_requires_grad(false);
                                 Ok(image)
                             })
