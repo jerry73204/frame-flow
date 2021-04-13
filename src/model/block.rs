@@ -2,7 +2,7 @@ use super::attention::{Attention, AttentionGrad, AttentionInit};
 use crate::common::*;
 use tch_goodies::module::{
     ConvBn, ConvBnGrad, ConvBnInitDyn, ConvND, ConvNDGrad, ConvNDInitDyn, DarkBatchNorm,
-    DarkBatchNormConfig, DarkBatchNormGrad,
+    DarkBatchNormGrad, DarkBatchNormInit,
 };
 
 #[derive(Debug, Clone)]
@@ -46,7 +46,7 @@ impl BlockInit {
                 transposed: conv_transposed,
                 ..ConvNDInitDyn::new(ndims, 1)
             },
-            bn: DarkBatchNormConfig {
+            bn: DarkBatchNormInit {
                 var_min,
                 ..Default::default()
             },
@@ -62,7 +62,7 @@ impl BlockInit {
                 transposed: conv_transposed,
                 ..ConvNDInitDyn::new(ndims, 1)
             },
-            bn: DarkBatchNormConfig {
+            bn: DarkBatchNormInit {
                 var_min,
                 ..Default::default()
             },
@@ -97,14 +97,14 @@ impl BlockInit {
             .try_collect()?;
         let attention_bns: Vec<_> = (0..repeat)
             .map(|index| {
-                DarkBatchNorm::new(
+                DarkBatchNormInit {
+                    var_min,
+                    ..Default::default()
+                }
+                .build(
                     path / format!("attention_bn_{}", index),
                     ndims,
                     context_channels as i64,
-                    DarkBatchNormConfig {
-                        var_min,
-                        ..Default::default()
-                    },
                 )
             })
             .collect();
@@ -142,19 +142,19 @@ impl Block {
     }
 
     pub fn forward_t(
-        &mut self,
+        &self,
         input: impl Borrow<Tensor>,
         contexts: impl OptionalTensorList,
         mask: Option<&Tensor>,
         train: bool,
     ) -> Result<BlockOutput> {
         let Self {
-            ref mut attention_bns,
+            ref attention_bns,
             ref attentions,
             ref shortcut_conv,
             ref merge_conv,
-            ref mut pre_attention_conv,
-            ref mut post_attention_conv,
+            ref pre_attention_conv,
+            ref post_attention_conv,
         } = *self;
         let input_contexts = contexts.into_optional_tensor_list();
         ensure!(
@@ -175,7 +175,7 @@ impl Block {
 
             let (xs, mask) = match input_contexts {
                 Some(input_contexts) => {
-                    izip!(attentions.iter(), attention_bns.iter_mut(), input_contexts)
+                    izip!(attentions.iter(), attention_bns.iter(), input_contexts)
                         .enumerate()
                         .try_fold(
                             (xs, mask),
@@ -191,7 +191,7 @@ impl Block {
                             },
                         )?
                 }
-                None => izip!(attentions.iter(), attention_bns.iter_mut())
+                None => izip!(attentions.iter(), attention_bns.iter())
                     .enumerate()
                     .try_fold(
                         (xs, mask),
@@ -221,6 +221,36 @@ impl Block {
             contexts: output_contexts,
             mask: output_mask,
         })
+    }
+
+    pub fn clamp_bn_var(&mut self) {
+        let Self {
+            attention_bns,
+            pre_attention_conv,
+            post_attention_conv,
+            ..
+        } = self;
+
+        attention_bns.iter_mut().for_each(|bn| {
+            bn.clamp_bn_var();
+        });
+        pre_attention_conv.clamp_bn_var();
+        post_attention_conv.clamp_bn_var();
+    }
+
+    pub fn denormalize_bn(&mut self) {
+        let Self {
+            attention_bns,
+            pre_attention_conv,
+            post_attention_conv,
+            ..
+        } = self;
+
+        attention_bns.iter_mut().for_each(|bn| {
+            bn.denormalize_bn();
+        });
+        pre_attention_conv.denormalize_bn();
+        post_attention_conv.denormalize_bn();
     }
 
     pub fn grad(&self) -> BlockGrad {
@@ -278,7 +308,7 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let root = vs.root();
 
-        let mut block = BlockInit {
+        let block = BlockInit {
             input_channels: cx,
             context_channels: cxx,
             output_channels: cy,

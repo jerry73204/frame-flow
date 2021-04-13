@@ -282,6 +282,9 @@ async fn main() -> Result<()> {
                 f64::from(&loss)
             };
 
+            discriminator.clamp_bn_var();
+            generator.clamp_bn_var();
+
             info!(
                 "batch_index = {}\tdis_loss = {:.5}\tgen_loss = {:.5}",
                 batch_index, dis_loss, gen_loss

@@ -177,7 +177,7 @@ pub struct Generator {
 
 impl Generator {
     pub fn forward_t(
-        &mut self,
+        &self,
         input: &Tensor,
         contexts: impl OptionalTensorList,
         train: bool,
@@ -226,42 +226,41 @@ impl Generator {
                         Some(&input_contexts[curr..next])
                     });
 
-                    izip!(
-                        enc_blocks.iter_mut(),
-                        down_samples.iter_mut(),
-                        input_contexts_iter
-                    )
-                    .enumerate()
-                    .try_fold(
-                        xs,
-                        |xs, (index, (block, down_sample, in_contexts))| -> Result<_> {
-                            eprintln!("enc_block {}", index);
-                            let BlockOutput {
-                                feature: xs,
-                                contexts: out_contexts,
-                                ..
-                            } = block.forward_t(xs, in_contexts, None, train)?;
-                            let before_shape = xs.size();
-                            let xs = down_sample.forward(&xs);
-                            let after_shape = xs.size();
-                            let output_paddings: Vec<_> =
-                                izip!(&before_shape[2..], &after_shape[2..], down_sample.stride())
-                                    .map(|(&before_size, &after_size, &stride)| {
-                                        before_size - ((after_size - 1) * stride + 1)
-                                    })
-                                    .collect();
+                    izip!(enc_blocks.iter(), down_samples.iter(), input_contexts_iter)
+                        .enumerate()
+                        .try_fold(
+                            xs,
+                            |xs, (index, (block, down_sample, in_contexts))| -> Result<_> {
+                                // eprintln!("enc_block {}", index);
+                                let BlockOutput {
+                                    feature: xs,
+                                    contexts: out_contexts,
+                                    ..
+                                } = block.forward_t(xs, in_contexts, None, train)?;
+                                let before_shape = xs.size();
+                                let xs = down_sample.forward(&xs);
+                                let after_shape = xs.size();
+                                let output_paddings: Vec<_> = izip!(
+                                    &before_shape[2..],
+                                    &after_shape[2..],
+                                    down_sample.stride()
+                                )
+                                .map(|(&before_size, &after_size, &stride)| {
+                                    before_size - ((after_size - 1) * stride + 1)
+                                })
+                                .collect();
 
-                            contexts_vec.push(out_contexts);
-                            output_paddings_vec.push(output_paddings);
+                                contexts_vec.push(out_contexts);
+                                output_paddings_vec.push(output_paddings);
 
-                            Ok(xs)
-                        },
-                    )?
+                                Ok(xs)
+                            },
+                        )?
                 }
-                None => izip!(enc_blocks.iter_mut(), down_samples.iter_mut())
+                None => izip!(enc_blocks.iter(), down_samples.iter())
                     .enumerate()
                     .try_fold(xs, |xs, (index, (block, down_sample))| -> Result<_> {
-                        eprintln!("enc_block {}", index);
+                        // eprintln!("enc_block {}", index);
                         let BlockOutput {
                             feature: xs,
                             contexts: out_contexts,
@@ -288,6 +287,7 @@ impl Generator {
         };
 
         // top
+        // eprintln!("top");
         let BlockOutput { feature: xs, .. } = top_block.forward_t(xs, NONE_TENSORS, None, train)?;
 
         // reverse contexts
@@ -306,8 +306,8 @@ impl Generator {
             let mut output_contexts = vec![];
 
             let xs = izip!(
-                dec_blocks.iter_mut(),
-                up_samples.iter_mut(),
+                dec_blocks.iter(),
+                up_samples.iter(),
                 contexts_vec,
                 output_paddings_vec
             )
@@ -315,7 +315,7 @@ impl Generator {
             .try_fold(
                 xs,
                 |xs, (index, (block, up_sample, contexts, output_paddings))| -> Result<_> {
-                    eprintln!("dec_block {}", index);
+                    // eprintln!("dec_block {}", index);
                     let xs = up_sample.forward_ext(&xs, Some(&output_paddings));
 
                     let BlockOutput {
@@ -342,6 +342,44 @@ impl Generator {
             output: xs,
             contexts: output_contexts,
         })
+    }
+
+    pub fn clamp_bn_var(&mut self) {
+        let Self {
+            enc_blocks,
+            dec_blocks,
+            top_block,
+            ..
+        } = self;
+
+        enc_blocks.iter_mut().for_each(|block| {
+            block.clamp_bn_var();
+        });
+
+        dec_blocks.iter_mut().for_each(|block| {
+            block.clamp_bn_var();
+        });
+
+        top_block.clamp_bn_var();
+    }
+
+    pub fn denormalize_bn(&mut self) {
+        let Self {
+            enc_blocks,
+            dec_blocks,
+            top_block,
+            ..
+        } = self;
+
+        enc_blocks.iter_mut().for_each(|block| {
+            block.denormalize_bn();
+        });
+
+        dec_blocks.iter_mut().for_each(|block| {
+            block.denormalize_bn();
+        });
+
+        top_block.denormalize_bn();
     }
 
     pub fn grad(&self) -> GeneratorGrad {
@@ -399,7 +437,7 @@ mod tests {
 
         let vs = nn::VarStore::new(Device::Cpu);
         let root = vs.root();
-        let mut generator = GeneratorInit {
+        let generator = GeneratorInit {
             ndims: 2,
             input_channels: cx,
             output_channels: cy,

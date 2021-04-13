@@ -76,10 +76,10 @@ pub struct Discriminator {
 }
 
 impl Discriminator {
-    pub fn forward_t(&mut self, input: &Tensor, train: bool) -> Result<Tensor> {
+    pub fn forward_t(&self, input: &Tensor, train: bool) -> Result<Tensor> {
         let Self {
             ndims,
-            ref mut convs,
+            ref convs,
             ref down_samples,
             ref linear,
         } = *self;
@@ -103,6 +103,22 @@ impl Discriminator {
         let xs = linear.forward(&xs);
 
         Ok(xs)
+    }
+
+    pub fn clamp_bn_var(&mut self) {
+        let Self { convs, .. } = self;
+
+        convs.iter_mut().for_each(|conv| {
+            conv.clamp_bn_var();
+        });
+    }
+
+    pub fn denormalize_bn(&mut self) {
+        let Self { convs, .. } = self;
+
+        convs.iter_mut().for_each(|conv| {
+            conv.denormalize_bn();
+        });
     }
 
     pub fn grad(&self) -> DiscriminatorGrad {
@@ -151,7 +167,7 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let root = vs.root();
 
-        let mut discriminator = DiscriminatorInit {
+        let discriminator = DiscriminatorInit {
             ndims: 2,
             ksize: 3,
             input_channels: cx,
