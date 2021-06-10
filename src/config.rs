@@ -30,6 +30,7 @@ pub struct Training {
     #[serde(with = "tch_serde::serde_device")]
     pub device: Device,
     pub learning_rate: R64,
+    pub warm_up_steps: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

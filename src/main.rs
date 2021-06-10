@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
                 peek_len,
                 pred_len,
                 learning_rate,
+                warm_up_steps,
             },
         logging:
             config::Logging {
@@ -164,21 +165,19 @@ async fn main() -> Result<()> {
     let train_fut = tokio::task::spawn_blocking(move || -> Result<()> {
         // warm-up
 
-        // let warm_up_steps = 16;
-
-        // for _ in 0..warm_up_steps {
-        //     let input = Tensor::randn(
-        //         &[
-        //             batch_size as i64,
-        //             (image_dim + 1 + latent_dim) as i64,
-        //             image_size as i64,
-        //             image_size as i64,
-        //         ],
-        //         (Kind::Float, device),
-        //     ) * 0.5
-        //         + 0.5;
-        //     let _ = generator.forward_t(&input, NONE_TENSORS, true)?;
-        // }
+        for _ in 0..warm_up_steps {
+            let input = Tensor::randn(
+                &[
+                    batch_size as i64,
+                    (image_dim + 1 + latent_dim) as i64,
+                    image_size as i64,
+                    image_size as i64,
+                ],
+                (Kind::Float, device),
+            ) * 0.5
+                + 0.5;
+            let _ = generator.forward_t(&input, NONE_TENSORS, true)?;
+        }
 
         for (train_step, _) in iter::repeat(()).enumerate() {
             let record = train_rx.blocking_recv().unwrap()?;
