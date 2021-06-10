@@ -1,6 +1,147 @@
-use super::block::{Block, BlockGrad, BlockInit, BlockOutput};
+use super::{
+    block::{Block, BlockGrad, BlockInit, BlockOutput},
+    misc::PaddingKind,
+    resnet_block::ResnetBlockInit,
+};
 use crate::common::*;
 use tch_goodies::module::{ConvND, ConvNDGrad, ConvNDInitDyn};
+
+#[derive(Debug, Clone)]
+pub struct ResnetGeneratorInit<const NUM_BLOCKS: usize> {
+    pub input_channels: usize,
+    pub output_channels: usize,
+    pub conv_filters: usize,
+    pub padding_kind: PaddingKind,
+    pub dropout: bool,
+}
+
+impl<const NUM_BLOCKS: usize> ResnetGeneratorInit<NUM_BLOCKS> {
+    pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> ResnetGenerator {
+        let path = path.borrow();
+        let Self {
+            input_channels: in_c,
+            output_channels: out_c,
+            conv_filters: inner_c,
+            padding_kind,
+            dropout,
+        } = self;
+        let in_c = in_c as i64;
+        let out_c = out_c as i64;
+        let inner_c = inner_c as i64;
+        let bias = true;
+
+        let seq = nn::seq_t()
+            .add_fn(|xs| xs.reflection_pad2d(&[3, 3]))
+            .add(nn::conv2d(
+                path / "conv1",
+                in_c,
+                inner_c,
+                7,
+                nn::ConvConfig {
+                    padding: 0,
+                    bias,
+                    ..Default::default()
+                },
+            ))
+            .add(nn::batch_norm2d(
+                path / "norm1",
+                inner_c,
+                Default::default(),
+            ))
+            .add_fn(|xs| xs.relu());
+
+        const NUM_DOWN_SAMPLING: usize = 2;
+        let seq = (0..NUM_DOWN_SAMPLING).fold(seq, |seq, index| {
+            let path = path / format!("down_{}", index);
+            let scale = 2i64.pow(index as u32);
+            seq.add(nn::conv2d(
+                &path / "conv",
+                inner_c * scale,
+                inner_c * scale * 2,
+                3,
+                nn::ConvConfig {
+                    stride: 2,
+                    padding: 1,
+                    bias,
+                    ..Default::default()
+                },
+            ))
+            .add(nn::batch_norm2d(
+                &path / "norm",
+                inner_c * scale * 2,
+                Default::default(),
+            ))
+            .add_fn(|xs| xs.relu())
+        });
+
+        let seq = {
+            let scale = 2i64.pow(NUM_DOWN_SAMPLING as u32);
+
+            (0..NUM_BLOCKS).fold(seq, |seq, index| {
+                seq.add(
+                    ResnetBlockInit {
+                        channels: (inner_c * scale) as usize,
+                        padding_kind,
+                        bias,
+                        dropout,
+                    }
+                    .build(path / format!("resnet_block_{}", index)),
+                )
+            })
+        };
+
+        let seq = (0..NUM_DOWN_SAMPLING).fold(seq, |seq, index| {
+            let path = path / format!("up_{}", index);
+            let scale = 2i64.pow((NUM_DOWN_SAMPLING - index) as u32);
+            seq.add(nn::conv_transpose2d(
+                &path / "conv_transpose",
+                inner_c * scale,
+                inner_c * scale / 2,
+                3,
+                nn::ConvTransposeConfig {
+                    stride: 2,
+                    padding: 1,
+                    output_padding: 1,
+                    bias,
+                    ..Default::default()
+                },
+            ))
+            .add(nn::batch_norm2d(
+                &path / "norm",
+                inner_c * scale / 2,
+                Default::default(),
+            ))
+            .add_fn(|xs| xs.relu())
+        });
+
+        let seq = seq
+            .add_fn(|xs| xs.reflection_pad2d(&[3, 3]))
+            .add(nn::conv2d(
+                path / "conv2",
+                inner_c,
+                out_c,
+                7,
+                nn::ConvConfig {
+                    padding: 0,
+                    ..Default::default()
+                },
+            ))
+            .add_fn(|xs| xs.tanh());
+
+        ResnetGenerator { seq }
+    }
+}
+
+#[derive(Debug)]
+pub struct ResnetGenerator {
+    seq: nn::SequentialT,
+}
+
+impl ModuleT for ResnetGenerator {
+    fn forward_t(&self, xs: &Tensor, train: bool) -> Tensor {
+        self.seq.forward_t(xs, train)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct GeneratorInit<const DEPTH: usize> {

@@ -24,7 +24,7 @@ pub use std::{
 pub use structopt::StructOpt;
 pub use tch::{
     kind::FLOAT_CPU,
-    nn::{self, OptimizerConfig},
+    nn::{self, ModuleT, OptimizerConfig},
     vision, Device, IndexOp, Kind, Tensor,
 };
 pub use tch_goodies::{Activation, OptionalTensorList, TensorExt, TensorList, NONE_TENSORS};
