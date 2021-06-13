@@ -3,17 +3,25 @@ use crate::common::*;
 
 #[derive(Debug, Clone)]
 pub struct ResnetBlockInit {
-    pub channels: usize,
     pub padding_kind: PaddingKind,
     pub dropout: bool,
     pub bias: bool,
 }
 
+impl Default for ResnetBlockInit {
+    fn default() -> Self {
+        Self {
+            padding_kind: PaddingKind::Reflect,
+            dropout: false,
+            bias: true,
+        }
+    }
+}
+
 impl ResnetBlockInit {
-    pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> ResnetBlock {
+    pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>, channels: usize) -> ResnetBlock {
         let path = path.borrow();
         let Self {
-            channels,
             padding_kind,
             dropout,
             bias,

@@ -1,5 +1,5 @@
 use crate::common::*;
-use tch_goodies::module::{ConvND, ConvNDGrad, ConvNDInit, ConvNDInitDyn, ConvParam};
+use tch_modules::{ConvND, ConvNDGrad, ConvNDInit, ConvNDInitDyn, ConvParam};
 
 #[derive(Debug, Clone)]
 pub struct AttentionInit<InputConvParam, ContextConvParam>
@@ -296,7 +296,7 @@ pub struct AttentionGrad {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch_goodies::module::Conv2DInit;
+    use tch_modules::Conv2DInit;
 
     #[test]
     fn attention_test() -> Result<()> {

@@ -1,6 +1,6 @@
 use super::attention::{Attention, AttentionGrad, AttentionInit};
 use crate::common::*;
-use tch_goodies::module::{
+use tch_modules::{
     ConvBn, ConvBnGrad, ConvBnInitDyn, ConvND, ConvNDGrad, ConvNDInitDyn, DarkBatchNorm,
     DarkBatchNormGrad, DarkBatchNormInit,
 };
@@ -103,7 +103,6 @@ impl BlockInit {
                 }
                 .build(
                     path / format!("attention_bn_{}", index),
-                    ndims,
                     context_channels as i64,
                 )
             })
@@ -170,7 +169,7 @@ impl Block {
         let shortcut = shortcut_conv.forward(input);
 
         let (branch, output_contexts, output_mask) = {
-            let xs = pre_attention_conv.forward_t(input, train)?;
+            let xs = pre_attention_conv.forward_t(input, train);
             let mut output_contexts = vec![];
 
             let (xs, mask) = match input_contexts {
@@ -182,7 +181,7 @@ impl Block {
                             |(xs, mask), (_index, (attention, bn, input_context))| -> Result<_> {
                                 // eprintln!("attention {}", index);
                                 // dbg!(xs.mean(Kind::Float));
-                                let xs = bn.forward_t(&xs, train)?;
+                                let xs = bn.forward_t(&xs, train);
                                 // dbg!(xs.mean(Kind::Float));
                                 let (xs, mask) =
                                     attention.forward(&xs, &input_context, mask.as_ref())?;
@@ -198,7 +197,7 @@ impl Block {
                         |(xs, mask), (_index, (attention, bn))| -> Result<_> {
                             // eprintln!("attention (no context) {}", index);
                             // dbg!(xs.mean(Kind::Float));
-                            let xs = bn.forward_t(&xs, train)?;
+                            let xs = bn.forward_t(&xs, train);
                             // dbg!(xs.mean(Kind::Float));
                             let (xs, mask) = attention.forward(&xs, &xs, mask.as_ref())?;
                             output_contexts.push(xs.shallow_clone());
@@ -207,7 +206,7 @@ impl Block {
                     )?,
             };
 
-            let xs = post_attention_conv.forward_t(&xs, train)?;
+            let xs = post_attention_conv.forward_t(&xs, train);
             (xs, output_contexts, mask)
         };
         // dbg!(branch.max(), branch.min());

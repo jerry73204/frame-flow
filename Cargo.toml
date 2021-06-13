@@ -15,7 +15,6 @@ structopt = "0.3.21"
 tch-serde = "0.4.0"
 rand = "0.8.3"
 itertools = "0.10.0"
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "7bedbb2b10cf5c794f1efd77606ca635f69ca364" }
 unzip-n = "0.1.2"
 approx = "0.5.0"
 tch-tensor-like = "0.3.0"
@@ -33,6 +32,10 @@ tracing-opentelemetry = "0.13.0"
 noisy_float = { version = "0.2.0", features = ["serde"] }
 tfrecord = { version = "0.7.0", features = ["full"] }
 chrono = "0.4.19"
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "20b75a10e1d53c1c8f151b56b705e940a16f88e9" }
+tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "20b75a10e1d53c1c8f151b56b705e940a16f88e9" }
+# tch-goodies = { version = "0.1.0", path = "../yolo-dl/tch-goodies" }
+# tch-modules = { version = "0.1.0", path = "../yolo-dl/tch-modules" }
 
 [profile.release]
 debug = true
