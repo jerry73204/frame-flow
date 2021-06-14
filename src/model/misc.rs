@@ -40,7 +40,7 @@ pub enum Norm {
     None,
 }
 
-impl ModuleT for Norm {
+impl nn::ModuleT for Norm {
     fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
         match self {
             Self::BatchNorm(norm) => norm.forward_t(input, train),

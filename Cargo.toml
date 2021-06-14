@@ -32,8 +32,8 @@ tracing-opentelemetry = "0.13.0"
 noisy_float = { version = "0.2.0", features = ["serde"] }
 tfrecord = { version = "0.7.0", features = ["full"] }
 chrono = "0.4.19"
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "20b75a10e1d53c1c8f151b56b705e940a16f88e9" }
-tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "20b75a10e1d53c1c8f151b56b705e940a16f88e9" }
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "1b0a8c9604dc5848d112d1fc40175c00643fac7d" }
+tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "1b0a8c9604dc5848d112d1fc40175c00643fac7d" }
 # tch-goodies = { version = "0.1.0", path = "../yolo-dl/tch-goodies" }
 # tch-modules = { version = "0.1.0", path = "../yolo-dl/tch-modules" }
 

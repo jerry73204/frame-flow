@@ -106,7 +106,7 @@ pub struct ResnetBlock {
     seq: nn::SequentialT,
 }
 
-impl ModuleT for ResnetBlock {
+impl nn::ModuleT for ResnetBlock {
     fn forward_t(&self, xs: &Tensor, train: bool) -> Tensor {
         xs + self.seq.forward_t(xs, train)
     }

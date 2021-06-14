@@ -119,7 +119,7 @@ mod unet {
         block: UnetBlock,
     }
 
-    impl ModuleT for UnetGenerator {
+    impl nn::ModuleT for UnetGenerator {
         fn forward_t(&self, xs: &Tensor, train: bool) -> Tensor {
             self.block.forward_t(xs, train)
         }
@@ -262,7 +262,7 @@ mod resnet {
         seq: nn::SequentialT,
     }
 
-    impl ModuleT for ResnetGenerator {
+    impl nn::ModuleT for ResnetGenerator {
         fn forward_t(&self, xs: &Tensor, train: bool) -> Tensor {
             self.seq.forward_t(xs, train)
         }
