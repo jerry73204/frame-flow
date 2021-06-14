@@ -1,11 +1,12 @@
 pub use anyhow::{ensure, format_err, Context, Error, Result};
 pub use approx::assert_abs_diff_eq;
-pub use collected::MaxCollector;
+pub use collected::{GroupHashMap, MaxVal};
 pub use futures::{
     future::FutureExt,
     stream::{self, Stream, StreamExt, TryStreamExt},
 };
-pub use indexmap::IndexMap;
+pub use indexmap::{IndexMap, IndexSet};
+pub use iterator_ext::IteratorExt;
 pub use itertools::{izip, Itertools};
 pub use noisy_float::types::{r64, R64};
 pub use par_stream::{ParStreamExt, TryParStreamExt};
@@ -14,7 +15,7 @@ pub use serde::{Deserialize, Serialize};
 pub use std::{
     array,
     borrow::{Borrow, Cow},
-    collections::{self, HashMap},
+    collections::{self, HashMap, HashSet},
     fs,
     iter::{self, FromIterator, Sum},
     num::NonZeroUsize,
@@ -27,7 +28,10 @@ pub use tch::{
     nn::{self, Module as _, ModuleT as _, OptimizerConfig},
     vision, Device, IndexOp, Kind, Tensor,
 };
-pub use tch_goodies::{Activation, OptionalTensorList, TensorExt, TensorList, NONE_TENSORS};
+pub use tch_goodies::{
+    Activation, OptionalTensorList, PixelCyCxHW, PixelLabel, PixelSize, TensorExt, TensorList,
+    NONE_TENSORS,
+};
 pub use tch_tensor_like::TensorLike;
 pub use tfrecord::{EventWriter, EventWriterInit};
 pub use tokio_stream::wrappers::ReadDirStream;

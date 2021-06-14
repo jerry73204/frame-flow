@@ -136,7 +136,7 @@ impl TrainingStream {
         // convert to batched type
         let stream = stream.try_par_map_unordered(None, move |(batch_index, chunk)| {
             move || {
-                let (max_record_index, sequence_vec): (MaxCollector<_>, Vec<_>) =
+                let (max_record_index, sequence_vec): (MaxVal<_>, Vec<_>) =
                     chunk.into_iter().unzip_n();
                 let record_index = max_record_index.unwrap();
 
