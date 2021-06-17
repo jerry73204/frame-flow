@@ -10,7 +10,7 @@ pub use iterator_ext::IteratorExt;
 pub use itertools::{izip, Itertools};
 pub use noisy_float::types::{r64, R64};
 pub use par_stream::{ParStreamExt, TryParStreamExt};
-pub use rand::prelude::*;
+pub use rand::{distributions as dists, prelude::*};
 pub use serde::{Deserialize, Serialize};
 pub use std::{
     array,
@@ -29,8 +29,8 @@ pub use tch::{
     vision, Device, IndexOp, Kind, Tensor,
 };
 pub use tch_goodies::{
-    Activation, OptionalTensorList, PixelCyCxHW, PixelLabel, PixelSize, TensorExt, TensorList,
-    NONE_TENSORS,
+    Activation, OptionalTensorList, PixelCyCxHW, PixelLabel, PixelSize, RatioCyCxHW, RatioLabel,
+    TensorExt, TensorList, NONE_TENSORS,
 };
 pub use tch_tensor_like::TensorLike;
 pub use tfrecord::{EventWriter, EventWriterInit};

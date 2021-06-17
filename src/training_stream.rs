@@ -1,7 +1,4 @@
-use crate::{
-    common::*,
-    dataset::{Dataset, DatasetInit},
-};
+use crate::{common::*, dataset::SimpleDataset};
 
 #[derive(Debug, TensorLike)]
 pub struct TrainingRecord {
@@ -46,12 +43,7 @@ where
             image_dim,
         } = self;
 
-        let dataset = DatasetInit {
-            dir: dataset_dir,
-            file_name_digits,
-        }
-        .load()
-        .await?;
+        let dataset: SimpleDataset = todo!();
 
         Ok(TrainingStream {
             dataset: Arc::new(dataset),
@@ -68,7 +60,7 @@ where
 
 #[derive(Debug)]
 pub struct TrainingStream {
-    dataset: Arc<Dataset>,
+    dataset: Arc<SimpleDataset>,
     latent_dim: usize,
     batch_size: usize,
     device: Device,
@@ -101,12 +93,12 @@ impl TrainingStream {
                     let dataset = dataset.clone();
 
                     async move {
-                        let paths = dataset.sample(seq_len)?;
-                        let images: Vec<_> = paths
-                            .into_iter()
-                            .map(|path| -> Result<_> {
+                        let samples = dataset.sample(seq_len)?;
+                        let images: Vec<_> = samples
+                            .iter()
+                            .map(|sample| -> Result<_> {
                                 let image = vision::image::load_and_resize(
-                                    path,
+                                    &sample.image_file,
                                     image_size as i64,
                                     image_size as i64,
                                 )?
