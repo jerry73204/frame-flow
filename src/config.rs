@@ -15,18 +15,55 @@ impl Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Dataset {
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Dataset {
+    Iii(IiiDataset),
+    Simple(SimpleDataset),
+}
+
+impl Dataset {
+    pub fn image_dim(&self) -> usize {
+        match self {
+            Self::Iii(dataset) => dataset.image_dim(),
+            Self::Simple(dataset) => dataset.image_dim(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IiiDataset {
     pub dataset_dir: PathBuf,
-    pub cache_dir: PathBuf,
-    pub image_size: NonZeroUsize,
-    pub image_dim: NonZeroUsize,
+    pub classes_file: PathBuf,
+    pub class_whitelist: Option<HashSet<String>>,
+    pub blacklist_files: Option<HashSet<PathBuf>>,
+}
+
+impl IiiDataset {
+    pub fn image_dim(&self) -> usize {
+        3
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimpleDataset {
+    pub dataset_dir: PathBuf,
+    pub file_name_digits: NonZeroUsize,
+}
+
+impl SimpleDataset {
+    pub fn image_dim(&self) -> usize {
+        3
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Training {
+    pub cache_dir: PathBuf,
     pub batch_size: NonZeroUsize,
-    pub peek_len: usize,
-    pub pred_len: usize,
+    pub image_size: NonZeroUsize,
+    pub latent_dim: NonZeroUsize,
+    pub peek_len: NonZeroUsize,
+    pub pred_len: NonZeroUsize,
     #[serde(with = "tch_serde::serde_device")]
     pub device: Device,
     pub learning_rate: R64,

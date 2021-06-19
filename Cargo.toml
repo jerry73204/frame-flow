@@ -38,6 +38,7 @@ tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.
 iii-formosa-dataset = "0.2.0"
 glob = "0.3.0"
 serde-xml-rs = "0.4.1"
+owning_ref = "0.4.1"
 # tch-goodies = { version = "0.1.0", path = "../yolo-dl/tch-goodies" }
 # tch-modules = { version = "0.1.0", path = "../yolo-dl/tch-modules" }
 

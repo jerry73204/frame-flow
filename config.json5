@@ -1,16 +1,19 @@
 {
     "dataset": {
-        "dataset_dir": "/home/aeon/dataset/frame-flow/2020-10-21",
-        "cache_dir": "/home/aeon/frame-flow-cache",
-        "image_size": 64,
-        "image_dim": 3,
+        "type": "iii",
+        "dataset_dir": "/mnt/external1/wayside-dataset/資策會資料_vol_1/ntu_delivery",
+        "classes_file": "cfg/class/iii.class",
     },
     "train": {
-        "batch_size": 40,
+        "cache_dir": "/home/aeon/frame-flow-cache",
+        "batch_size": 8,
+        "image_size": 64,
+        "latent_dim": 8,
         "device": "cuda(3)",
-        "peek_len": 9,
+        "peek_len": 4,
         "pred_len": 1,
-        "learning_rate": 0.001,
+        "learning_rate": 0.0001,
+        "warm_up_steps": 100,
     },
     "logging": {
         "log_dir": "log",

@@ -137,6 +137,9 @@ impl Attention {
         let input_mask = mask.into();
         ensure!(context.size()[0] == batch_size, "batch size mismatch");
 
+        // dbg!(input.mean(Kind::Float), context.mean(Kind::Float));
+        // dbg!(input.std(true), context.std(true));
+
         let Self {
             num_heads,
             key_channels,
@@ -238,6 +241,8 @@ impl Attention {
         };
         let head_outputs = head_outputs * 2f64.sqrt() / ((key_channels) as f64).sqrt();
 
+        // dbg!(head_outputs.mean(Kind::Float));
+        // dbg!(head_outputs.std(true));
         debug_assert!(!head_outputs.has_nan(), "NaN detected");
 
         // transform mask shape
@@ -252,6 +257,8 @@ impl Attention {
 
         // merge head outputs
         let output = Tensor::einsum("hvo,bhvx->box", &[merge_weight, &head_outputs]);
+        // dbg!(output.mean(Kind::Float));
+        // dbg!(output.std(true));
         debug_assert!(!output.has_nan(), "NaN detected");
 
         let output = {

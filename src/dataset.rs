@@ -469,7 +469,7 @@ mod simple_dataset {
             let mut rng = rand::thread_rng();
             let dist = dists::WeightedIndex::new(weights).unwrap();
             let series_index = dist.sample(&mut rng);
-            let series = &self.series[series_index];
+            let series = &series[series_index];
 
             // sample images
             let end = series.samples.len() - length;

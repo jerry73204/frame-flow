@@ -1,183 +1,146 @@
-use crate::{common::*, dataset::SimpleDataset};
+use crate::{
+    common::*,
+    config,
+    dataset::{Dataset, IiiDataset, SimpleDataset},
+    message as msg,
+};
 
-#[derive(Debug, TensorLike)]
-pub struct TrainingRecord {
-    pub sequence: Vec<Tensor>,
-    pub noise: Tensor,
-    pub batch_index: usize,
-    pub record_index: usize,
-}
+pub async fn training_stream(
+    dataset_cfg: &config::Dataset,
+    train_cfg: &config::Training,
+) -> Result<impl Stream<Item = Result<msg::TrainingMessage>>> {
+    let config::Training {
+        ref cache_dir,
+        latent_dim,
+        batch_size,
+        device,
+        image_size,
+        peek_len,
+        pred_len,
+        ..
+    } = *train_cfg;
+    let seq_len = peek_len.get() + pred_len.get();
+    let image_size = image_size.get() as i64;
+    let image_dim = dataset_cfg.image_dim() as i64;
+    let batch_size = batch_size.get();
+    let latent_dim = latent_dim.get() as i64;
 
-#[derive(Debug, Clone)]
-pub struct TrainingStreamInit<P1, P2>
-where
-    P1: AsRef<Path>,
-    P2: AsRef<Path>,
-{
-    pub dataset_dir: P1,
-    pub cache_dir: P2,
-    pub file_name_digits: usize,
-    pub latent_dim: usize,
-    pub batch_size: usize,
-    pub device: Device,
-    pub seq_len: usize,
-    pub image_size: usize,
-    pub image_dim: usize,
-}
-
-impl<P1, P2> TrainingStreamInit<P1, P2>
-where
-    P1: AsRef<Path>,
-    P2: AsRef<Path>,
-{
-    pub async fn build(self) -> Result<TrainingStream> {
-        let Self {
-            dataset_dir,
-            file_name_digits,
-            latent_dim,
-            batch_size,
-            device,
-            seq_len,
-            cache_dir,
-            image_size,
-            image_dim,
-        } = self;
-
-        let dataset: SimpleDataset = todo!();
-
-        Ok(TrainingStream {
-            dataset: Arc::new(dataset),
-            latent_dim,
-            batch_size,
-            device,
-            seq_len,
-            cache_dir: cache_dir.as_ref().to_owned(),
-            image_size,
-            image_dim,
-        })
-    }
-}
-
-#[derive(Debug)]
-pub struct TrainingStream {
-    dataset: Arc<SimpleDataset>,
-    latent_dim: usize,
-    batch_size: usize,
-    device: Device,
-    seq_len: usize,
-    cache_dir: PathBuf,
-    image_size: usize,
-    image_dim: usize,
-}
-
-impl TrainingStream {
-    pub fn stream(&self) -> impl Stream<Item = Result<TrainingRecord>> {
-        let Self {
-            ref dataset,
-            latent_dim,
-            batch_size,
-            device,
-            seq_len,
-            image_size,
+    dbg!();
+    let dataset: Dataset = match *dataset_cfg {
+        config::Dataset::Iii(config::IiiDataset {
+            ref dataset_dir,
+            ref classes_file,
+            ref class_whitelist,
+            ref blacklist_files,
             ..
-        } = *self;
+        }) => IiiDataset::load(
+            dataset_dir,
+            classes_file,
+            class_whitelist.clone(),
+            blacklist_files.clone().unwrap_or_else(HashSet::new),
+        )
+        .await?
+        .into(),
+        config::Dataset::Simple(config::SimpleDataset {
+            ref dataset_dir,
+            file_name_digits,
+            ..
+        }) => SimpleDataset::load(dataset_dir, file_name_digits.get())
+            .await?
+            .into(),
+    };
+    let dataset = Arc::new(dataset);
+    dbg!();
 
-        // load subsequence samples
-        let stream = {
-            let dataset = dataset.clone();
-
-            stream::repeat(())
-                .wrapping_enumerate()
-                .map(|(record_index, _)| Result::Ok(record_index))
-                .try_par_then_unordered(None, move |record_index| {
-                    let dataset = dataset.clone();
-
-                    async move {
-                        let samples = dataset.sample(seq_len)?;
-                        let images: Vec<_> = samples
-                            .iter()
-                            .map(|sample| -> Result<_> {
-                                let image = vision::image::load_and_resize(
-                                    &sample.image_file,
-                                    image_size as i64,
-                                    image_size as i64,
-                                )?
-                                .to_device(device);
-                                let image = image / 255.0;
-                                let image = image.to_kind(Kind::Float).set_requires_grad(false);
-                                Ok(image)
-                            })
-                            .try_collect()?;
-
-                        Fallible::Ok((record_index, images))
-                    }
-                })
-        };
-
-        // group into chunks
-        let stream = stream
-            .chunks(batch_size)
+    // load subsequence samples
+    let stream = {
+        stream::repeat(())
             .wrapping_enumerate()
-            .par_map_unordered(None, |(index, results)| {
-                move || {
-                    let chunk: Vec<_> = results.into_iter().try_collect()?;
-                    Fallible::Ok((index, chunk))
+            .map(|(record_index, _)| Result::Ok(record_index))
+            .try_par_then_unordered(None, move |record_index| {
+                let dataset = dataset.clone();
+
+                async move {
+                    let samples = dataset.sample(seq_len)?;
+                    let images: Vec<_> = samples
+                        .iter()
+                        .map(|sample| -> Result<_> {
+                            let image = vision::image::load_and_resize(
+                                &sample.image_file,
+                                image_size,
+                                image_size,
+                            )?
+                            .to_device(device);
+                            let image = image / 255.0;
+                            let image = image.to_kind(Kind::Float).set_requires_grad(false);
+                            Ok(image)
+                        })
+                        .try_collect()?;
+
+                    Fallible::Ok((record_index, images))
                 }
-            });
+            })
+    };
 
-        // convert to batched type
-        let stream = stream.try_par_map_unordered(None, move |(batch_index, chunk)| {
+    // group into chunks
+    let stream = stream
+        .chunks(batch_size)
+        .wrapping_enumerate()
+        .par_map_unordered(None, |(index, results)| {
             move || {
-                let (max_record_index, sequence_vec): (MaxVal<_>, Vec<_>) =
-                    chunk.into_iter().unzip_n();
-                let record_index = max_record_index.unwrap();
-
-                let mut sequence_iter_vec: Vec<_> = sequence_vec
-                    .into_iter()
-                    .map(|seq| seq.into_iter())
-                    .collect();
-
-                let sequence: Vec<_> = (0..seq_len)
-                    .map(|_seq_index| {
-                        let samples_vec: Vec<_> = (0..batch_size)
-                            .map(|batch_index| sequence_iter_vec[batch_index].next().unwrap())
-                            .collect();
-
-                        let samples = Tensor::stack(&samples_vec, 0);
-                        samples
-                    })
-                    .collect();
-
-                Fallible::Ok((batch_index, record_index, sequence))
+                let chunk: Vec<_> = results.into_iter().try_collect()?;
+                Fallible::Ok((index, chunk))
             }
         });
 
-        // generate noise for each batch
-        let stream =
-            stream.try_par_map_unordered(None, move |(batch_index, record_index, sequence)| {
-                move || {
-                    let noise = Tensor::rand(
-                        &[batch_size as i64, latent_dim as i64],
-                        (Kind::Float, device),
-                    );
-                    Ok((batch_index, record_index, sequence, noise))
-                }
-            });
+    // convert to batched type
+    let stream = stream.try_par_map_unordered(None, move |(batch_index, chunk)| {
+        move || {
+            let (max_record_index, sequence_vec): (MaxVal<_>, Vec<_>) = chunk.into_iter().unzip_n();
+            let record_index = max_record_index.unwrap();
 
-        // convert to output type
-        let stream =
-            stream.try_par_map_unordered(None, |(batch_index, record_index, sequence, noise)| {
-                move || {
-                    let record = TrainingRecord {
-                        batch_index,
-                        record_index,
-                        sequence,
-                        noise,
-                    };
-                    Ok(record)
-                }
-            });
+            let mut sequence_iter_vec: Vec<_> = sequence_vec
+                .into_iter()
+                .map(|seq| seq.into_iter())
+                .collect();
 
-        stream
-    }
+            let sequence: Vec<_> = (0..seq_len)
+                .map(|_seq_index| {
+                    let samples_vec: Vec<_> = (0..batch_size)
+                        .map(|batch_index| sequence_iter_vec[batch_index].next().unwrap())
+                        .collect();
+
+                    let samples = Tensor::stack(&samples_vec, 0);
+                    samples
+                })
+                .collect();
+
+            Fallible::Ok((batch_index, record_index, sequence))
+        }
+    });
+
+    // generate noise for each batch
+    let stream =
+        stream.try_par_map_unordered(None, move |(batch_index, record_index, sequence)| {
+            move || {
+                let noise = Tensor::rand(&[batch_size as i64, latent_dim], (Kind::Float, device));
+                Ok((batch_index, record_index, sequence, noise))
+            }
+        });
+
+    // convert to output type
+    let stream =
+        stream.try_par_map_unordered(None, |(batch_index, record_index, sequence, noise)| {
+            move || {
+                let record = msg::TrainingMessage {
+                    batch_index,
+                    record_index,
+                    sequence,
+                    noise,
+                };
+                Ok(record)
+            }
+        });
+
+    Ok(stream)
 }
