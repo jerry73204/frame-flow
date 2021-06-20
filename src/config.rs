@@ -36,6 +36,7 @@ pub struct IiiDataset {
     pub classes_file: PathBuf,
     pub class_whitelist: Option<HashSet<String>>,
     pub blacklist_files: Option<HashSet<PathBuf>>,
+    pub min_seq_len: Option<usize>,
 }
 
 impl IiiDataset {

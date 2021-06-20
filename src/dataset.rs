@@ -67,6 +67,7 @@ mod iii_dataset {
             dataset_dir: impl AsRef<Path>,
             classes_file: impl AsRef<Path>,
             class_whitelist: Option<HashSet<String>>,
+            min_seq_len: Option<usize>,
             blacklist_files: HashSet<PathBuf>,
         ) -> Result<Self> {
             let dataset_dir = dataset_dir.as_ref();
@@ -81,7 +82,7 @@ mod iii_dataset {
             let xml_files = {
                 let dataset_dir = dataset_dir.to_owned();
                 tokio::task::spawn_blocking(move || {
-                    list_iii_xml_files(dataset_dir, blacklist_files)
+                    list_iii_xml_files(dataset_dir, min_seq_len, blacklist_files)
                 })
                 .await??
             };
@@ -237,28 +238,72 @@ mod iii_dataset {
 
     fn list_iii_xml_files(
         dataset_dir: impl AsRef<Path>,
+        min_seq_len: Option<usize>,
         blacklist_files: HashSet<PathBuf>,
     ) -> Result<HashMap<PathBuf, Vec<PathBuf>>> {
         let dataset_dir = dataset_dir.as_ref();
 
-        let xml_files: HashMap<_, Vec<_>> = glob::glob(&format!("{}/*/*", dataset_dir.display()))?
-            .map_err(Error::from)
-            .try_filter(|path| Ok(path.is_dir()))
-            .and_then(|dir| {
-                let xml_files: Vec<_> = glob::glob(&format!("{}/*.xml", dir.display()))?
-                    .try_filter(|file| {
-                        let suffix = file.strip_prefix(dataset_dir).unwrap();
-                        let ok = !blacklist_files.contains(suffix);
-                        if !ok {
-                            warn!("ignore blacklisted file '{}'", file.display());
-                        }
-                        Ok(ok)
-                    })
-                    .try_collect()?;
+        let xml_files: GroupHashMap<_, _> =
+            glob::glob(&format!("{}/**/*.xml", dataset_dir.display()))?
+                .map_err(Error::from)
+                .try_filter(|path| Ok(path.is_file()))
+                .try_filter_map(|file| {
+                    let suffix = file.strip_prefix(dataset_dir).unwrap();
 
-                Ok((dir, xml_files))
+                    // ignore blacklisted files
+                    let ok = !blacklist_files.contains(suffix);
+                    if !ok {
+                        warn!("ignore blacklisted file '{}'", file.display());
+                        return Ok(None);
+                    }
+
+                    // check if file names are numbers
+                    let timestamp: usize = file
+                        .file_stem()
+                        .ok_or_else(|| {
+                            format_err!(
+                                "the file name must be a number, but get '{}'",
+                                file.display()
+                            )
+                        })?
+                        .to_str()
+                        .ok_or_else(|| {
+                            format_err!("expect unicode file name, but get '{}'", file.display())
+                        })?
+                        .parse()
+                        .map_err(|_| {
+                            format_err!(
+                                "the file name must be a number, but get '{}'",
+                                file.display()
+                            )
+                        })?;
+
+                    let key = suffix.parent().unwrap().to_owned();
+
+                    Ok(Some((key, (file, timestamp))))
+                })
+                .try_collect()?;
+
+        let xml_files: HashMap<_, _> = xml_files
+            .into_inner()
+            .into_iter()
+            .filter_map(|(key, mut files)| {
+                // ignore series that has too few images
+                if Some(files.len()) < min_seq_len {
+                    warn!(
+                        "ignore '{}' directory because it has too few images",
+                        key.display()
+                    );
+                    return None;
+                }
+
+                // sort files by timestamp
+                files.sort_by_cached_key(|(_file, timestamp)| *timestamp);
+                let files: Vec<_> = files.into_iter().map(|(file, _)| file).collect();
+
+                Some((key, files))
             })
-            .try_collect()?;
+            .collect();
 
         Ok(xml_files)
     }

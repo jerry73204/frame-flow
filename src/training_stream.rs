@@ -25,18 +25,19 @@ pub async fn training_stream(
     let batch_size = batch_size.get();
     let latent_dim = latent_dim.get() as i64;
 
-    dbg!();
     let dataset: Dataset = match *dataset_cfg {
         config::Dataset::Iii(config::IiiDataset {
             ref dataset_dir,
             ref classes_file,
             ref class_whitelist,
             ref blacklist_files,
+            min_seq_len,
             ..
         }) => IiiDataset::load(
             dataset_dir,
             classes_file,
             class_whitelist.clone(),
+            min_seq_len,
             blacklist_files.clone().unwrap_or_else(HashSet::new),
         )
         .await?
@@ -50,7 +51,6 @@ pub async fn training_stream(
             .into(),
     };
     let dataset = Arc::new(dataset);
-    dbg!();
 
     // load subsequence samples
     let stream = {
