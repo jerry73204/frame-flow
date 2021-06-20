@@ -3,6 +3,15 @@
         "type": "iii",
         "dataset_dir": "/mnt/external1/wayside-dataset/資策會資料_vol_1/ntu_delivery",
         "classes_file": "cfg/class/iii.class",
+        "min_seq_len": 5,
+    },
+    "model": {
+        "detector": {
+            "model_file": "cfg/model/yolov4-csp-custom-2021-03-11.json5",
+            "weights_file": "cfg/weights/2021-03-28-12-02-57.728+0800_4582000_04.74864.ckpt",
+        },
+        "generator": {
+        },
     },
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",

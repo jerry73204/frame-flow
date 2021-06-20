@@ -4,6 +4,7 @@ use crate::common::*;
 pub struct Config {
     pub dataset: Dataset,
     pub train: Training,
+    pub model: Model,
     pub logging: Logging,
 }
 
@@ -76,4 +77,21 @@ pub struct Logging {
     pub log_dir: PathBuf,
     pub save_image_steps: Option<NonZeroUsize>,
     pub save_checkpoint_steps: Option<NonZeroUsize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Model {
+    pub detector: DetectionModel,
+    pub generator: GeneratorModel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionModel {
+    pub model_file: PathBuf,
+    pub weights_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratorModel {
+    pub weight_file: Option<PathBuf>,
 }

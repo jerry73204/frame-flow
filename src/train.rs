@@ -1,11 +1,31 @@
 use crate::{common::*, config, message as msg, FILE_STRFTIME};
+use yolo_dl::model::YoloModel;
 
 pub fn training_worker(
     config: ArcRef<config::Config>,
     mut train_rx: mpsc::Receiver<msg::TrainingMessage>,
     log_tx: mpsc::Sender<msg::LogMessage>,
 ) -> Result<()> {
-    dbg!();
+    let device = config.train.device;
+
+    // load detector model
+    let (detector_vs, detector_model) = {
+        let config::DetectionModel {
+            ref model_file,
+            ref weights_file,
+            ..
+        } = config.model.detector;
+
+        let mut vs = nn::VarStore::new(device);
+        let root = vs.root();
+        let model = YoloModel::open_newslab_v1(root, model_file)?;
+
+        if let Some(weights_file) = weights_file {
+            vs.load_partial(weights_file)?;
+        }
+
+        (vs, model)
+    };
 
     for msg in train_rx.blocking_recv() {
         let msg::TrainingMessage {
