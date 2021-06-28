@@ -6,6 +6,7 @@ pub struct Config {
     pub train: Training,
     pub model: Model,
     pub logging: Logging,
+    pub loss: Loss,
 }
 
 impl Config {
@@ -83,6 +84,7 @@ pub struct Logging {
 pub struct Model {
     pub detector: DetectionModel,
     pub generator: GeneratorModel,
+    pub discriminator: DiscriminatorModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,5 +95,28 @@ pub struct DetectionModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratorModel {
-    pub weight_file: Option<PathBuf>,
+    pub weights_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscriminatorModel {
+    pub weights_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Loss {
+    pub detector: train::config::Loss,
+    /* pub image_recon: GanLoss,
+     * pub det_recon: GanLoss, */
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum GanLoss {
+    #[serde(rename = "l2")]
+    L2,
+    #[serde(rename = "bce_with_logits")]
+    BceWithLogits,
+    #[serde(rename = "wgan")]
+    WGan,
 }

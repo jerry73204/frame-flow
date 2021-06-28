@@ -1,10 +1,11 @@
-use super::misc::PaddingKind;
+use super::misc::{NormKind, PaddingKind};
 use crate::common::*;
 
 #[derive(Debug, Clone)]
 pub struct ResnetBlockInit {
     pub padding_kind: PaddingKind,
     pub dropout: bool,
+    pub norm_kind: NormKind,
     pub bias: bool,
 }
 
@@ -12,6 +13,7 @@ impl Default for ResnetBlockInit {
     fn default() -> Self {
         Self {
             padding_kind: PaddingKind::Reflect,
+            norm_kind: NormKind::BatchNorm,
             dropout: false,
             bias: true,
         }
@@ -23,42 +25,26 @@ impl ResnetBlockInit {
         let path = path.borrow();
         let Self {
             padding_kind,
+            norm_kind,
             dropout,
             bias,
         } = self;
         let channels = channels as i64;
 
-        let seq = nn::seq_t();
-
-        let (seq, conv_pad) = match padding_kind {
-            PaddingKind::Reflect => {
-                let seq = seq.add_fn(|xs| xs.reflection_pad2d(&[1, 1]));
-                (seq, 0)
-            }
-            PaddingKind::Replicate => {
-                let seq = seq.add_fn(|xs| xs.replication_pad2d(&[1, 1]));
-                (seq, 0)
-            }
-            PaddingKind::Zero => (seq, 1),
-        };
-
-        let seq = seq
+        let seq = nn::seq_t()
+            .add(padding_kind.build([1, 1, 1, 1]))
             .add(nn::conv2d(
                 path / "conv1",
                 channels,
                 channels,
                 3,
                 nn::ConvConfig {
-                    padding: conv_pad,
+                    padding: 0,
                     bias,
                     ..Default::default()
                 },
             ))
-            .add(nn::batch_norm2d(
-                path / "norm1",
-                channels,
-                Default::default(),
-            ))
+            .add(norm_kind.build(path / "norm1", channels))
             .add_fn(|xs| xs.relu());
 
         let seq = if dropout {
@@ -67,35 +53,20 @@ impl ResnetBlockInit {
             seq
         };
 
-        let (seq, conv_pad) = match padding_kind {
-            PaddingKind::Reflect => {
-                let seq = seq.add_fn(|xs| xs.reflection_pad2d(&[1, 1]));
-                (seq, 0)
-            }
-            PaddingKind::Replicate => {
-                let seq = seq.add_fn(|xs| xs.replication_pad2d(&[1, 1]));
-                (seq, 0)
-            }
-            PaddingKind::Zero => (seq, 1),
-        };
-
         let seq = seq
+            .add(padding_kind.build([1, 1, 1, 1]))
             .add(nn::conv2d(
                 path / "conv2",
                 channels,
                 channels,
                 3,
                 nn::ConvConfig {
-                    padding: conv_pad,
+                    padding: 0,
                     bias,
                     ..Default::default()
                 },
             ))
-            .add(nn::batch_norm2d(
-                path / "norm2",
-                channels,
-                Default::default(),
-            ));
+            .add(norm_kind.build(path / "norm2", channels));
 
         ResnetBlock { seq }
     }

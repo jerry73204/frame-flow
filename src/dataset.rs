@@ -11,7 +11,7 @@ mod dataset {
     pub struct Sample {
         pub image_file: PathBuf,
         pub size: PixelSize<usize>,
-        pub boxes: Vec<RatioLabel>,
+        pub boxes: Vec<PixelRectLabel<R64>>,
     }
 
     #[derive(Debug)]
@@ -135,7 +135,7 @@ mod iii_dataset {
 
                             let size = {
                                 let iii::Size { width, height, .. } = annotation.size;
-                                PixelSize::new(height, width).unwrap()
+                                PixelSize::from_hw(height, width).unwrap()
                             };
 
                             let boxes: Vec<_> = annotation
@@ -152,21 +152,16 @@ mod iii_dataset {
                                 })
                                 .map(|(obj, class_index)| -> Result<_> {
                                     let iii::BndBox {
-                                        xmin: l_pixel,
-                                        ymin: t_pixel,
-                                        xmax: r_pixel,
-                                        ymax: b_pixel,
+                                        xmin: l,
+                                        ymin: t,
+                                        xmax: r,
+                                        ymax: b,
                                     } = obj.bndbox;
-
-                                    let t_ratio = t_pixel / size.h() as f64;
-                                    let b_ratio = b_pixel / size.h() as f64;
-                                    let l_ratio = l_pixel / size.w() as f64;
-                                    let r_ratio = r_pixel / size.w() as f64;
                                     let bbox =
-                                        RatioCyCxHW::from_tlbr(t_ratio, l_ratio, b_ratio, r_ratio)?;
+                                        PixelCyCxHW::from_tlbr(t, l, b, r)?.cast::<R64>().unwrap();
 
-                                    let labeled_bbox = RatioLabel {
-                                        cycxhw: bbox,
+                                    let labeled_bbox = PixelRectLabel {
+                                        rect: bbox,
                                         class: class_index,
                                     };
                                     Ok(labeled_bbox)
@@ -408,7 +403,7 @@ mod simple_dataset {
             let series: IndexMap<_, _> = series_entries
                 .into_iter()
                 .map(|(series_name, series_entry)| -> Result<_> {
-                    let image_size = PixelSize::new(series_entry.height, series_entry.width)?;
+                    let image_size = PixelSize::from_hw(series_entry.height, series_entry.width)?;
 
                     let mut labels = {
                         let labels: GroupHashMap<_, _> = label_entries
@@ -418,15 +413,13 @@ mod simple_dataset {
                             .map(|label_entry: LabelEntry| -> Result<_> {
                                 let LabelEntry {
                                     index,
-                                    top: t_pixel,
-                                    left: l_pixel,
-                                    height: h_pixel,
-                                    width: w_pixel,
+                                    top: t,
+                                    left: l,
+                                    height: h,
+                                    width: w,
                                     class: class_name,
                                     ..
                                 } = label_entry;
-                                let cy_pixel = t_pixel + h_pixel / 2.0;
-                                let cx_pixel = l_pixel + w_pixel / 2.0;
                                 let class = classes.get_index_of(&class_name).ok_or_else(|| {
                                     format_err!(
                                         "the class name '{}' is not foudn in class file '{}'",
@@ -435,17 +428,8 @@ mod simple_dataset {
                                     )
                                 })?;
 
-                                let cy_ratio = cy_pixel / image_size.h() as f64;
-                                let cx_ratio = cx_pixel / image_size.w() as f64;
-                                let h_ratio = h_pixel / image_size.h() as f64;
-                                let w_ratio = w_pixel / image_size.w() as f64;
-
-                                let label = RatioLabel {
-                                    cycxhw: RatioCyCxHW::from_cycxhw(
-                                        cy_ratio, cx_ratio, h_ratio, w_ratio,
-                                    )?
-                                    .cast()
-                                    .unwrap(),
+                                let label = PixelRectLabel {
+                                    rect: PixelCyCxHW::from_tlhw(t, l, h, w)?.cast().unwrap(),
                                     class,
                                 };
 

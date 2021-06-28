@@ -4,8 +4,10 @@ pub mod dataset;
 pub mod logging;
 pub mod message;
 pub mod model;
+// pub mod sampler;
 pub mod train;
 pub mod training_stream;
+pub mod utils;
 
 pub(crate) const FILE_STRFTIME: &str = "%Y-%m-%d-%H-%M-%S.%3f%z";
 
@@ -51,8 +53,8 @@ pub async fn start(config: config::Config) -> Result<()> {
     // let mut discriminator_opt = nn::adam(0.5, 0.999, 0.).build(&discriminator_vs, learning_rate)?;
 
     let config = ArcRef::new(Arc::new(config));
-    let (train_tx, train_rx) = tokio::sync::mpsc::channel(2);
-    let (log_tx, log_rx) = tokio::sync::mpsc::channel(1);
+    let (train_tx, train_rx) = mpsc::channel(2);
+    let (log_tx, log_rx) = mpsc::channel(1);
 
     // data stream to channel worker
     let data_fut = {
@@ -80,7 +82,7 @@ pub async fn start(config: config::Config) -> Result<()> {
         let config = config.clone();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
-            train::training_worker(config, train_rx, log_tx)
+            train::training_worker(config, checkpoint_dir, train_rx, log_tx)
         })
         .map(|result| Fallible::Ok(result??))
     };

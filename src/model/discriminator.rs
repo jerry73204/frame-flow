@@ -28,22 +28,25 @@ mod n_layers {
             let bias = norm_kind == NormKind::InstanceNorm;
             let in_c = in_c as i64;
             let inner_c = inner_c as i64;
-            let ksize = 4;
+            let ksize = 3;
             let padding = 1;
 
-            let seq = nn::seq_t()
-                .add(nn::conv2d(
-                    path / "conv1",
-                    in_c,
-                    inner_c,
-                    ksize,
-                    nn::ConvConfig {
-                        stride: 2,
-                        padding,
-                        ..Default::default()
-                    },
-                ))
-                .add_fn(|xs| xs.leaky_relu());
+            let seq = {
+                let path = path / "first_block";
+                nn::seq_t()
+                    .add(nn::conv2d(
+                        &path / "conv",
+                        in_c,
+                        inner_c,
+                        ksize,
+                        nn::ConvConfig {
+                            stride: 2,
+                            padding,
+                            ..Default::default()
+                        },
+                    ))
+                    .add_fn(|xs| xs.leaky_relu())
+            };
 
             let seq = (0..N_BLOCKS)
                 .scan(1, |saved_mult, index| {
@@ -107,6 +110,10 @@ mod n_layers {
                         ..Default::default()
                     },
                 ))
+                .add_fn(|xs| {
+                    let batch_size = xs.size()[0];
+                    xs.view([batch_size])
+                })
             };
 
             NLayerDiscriminator { seq }

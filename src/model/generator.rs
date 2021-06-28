@@ -166,7 +166,7 @@ mod resnet {
             let bias = norm_kind == NormKind::InstanceNorm;
 
             let seq = nn::seq_t()
-                .add_fn(|xs| xs.reflection_pad2d(&[3, 3]))
+                .add(padding_kind.build([3, 3, 3, 3]))
                 .add(nn::conv2d(
                     path / "conv1",
                     in_c,
@@ -208,6 +208,7 @@ mod resnet {
                     seq.add(
                         ResnetBlockInit {
                             padding_kind,
+                            norm_kind,
                             bias,
                             dropout,
                         }
@@ -240,7 +241,7 @@ mod resnet {
             });
 
             let seq = seq
-                .add_fn(|xs| xs.reflection_pad2d(&[3, 3]))
+                .add(padding_kind.build([3, 3, 3, 3]))
                 .add(nn::conv2d(
                     path / "conv2",
                     inner_c,

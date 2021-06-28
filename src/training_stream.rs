@@ -52,95 +52,109 @@ pub async fn training_stream(
     };
     let dataset = Arc::new(dataset);
 
-    // load subsequence samples
+    // load sequence samples
     let stream = {
-        stream::repeat(())
-            .wrapping_enumerate()
-            .map(|(record_index, _)| Result::Ok(record_index))
-            .try_par_then_unordered(None, move |record_index| {
-                let dataset = dataset.clone();
+        stream::repeat(()).par_then_unordered(None, move |()| {
+            let dataset = dataset.clone();
 
-                async move {
-                    let samples = dataset.sample(seq_len)?;
-                    let images: Vec<_> = samples
-                        .iter()
-                        .map(|sample| -> Result<_> {
-                            let image = vision::image::load_and_resize(
-                                &sample.image_file,
-                                image_size,
-                                image_size,
-                            )?
-                            .to_device(device);
-                            let image = image / 255.0;
-                            let image = image.to_kind(Kind::Float).set_requires_grad(false);
-                            Ok(image)
-                        })
-                        .try_collect()?;
+            async move {
+                let samples = dataset.sample(seq_len)?;
+                let pairs: Vec<_> = samples
+                    .iter()
+                    .map(|sample| -> Result<_> {
+                        let image = vision::image::load(&sample.image_file)?;
+                        let orig_size = {
+                            let (orig_c, orig_h, orig_w) = image.size3().unwrap();
+                            assert_eq!(orig_c, 3);
+                            PixelSize::from_hw(orig_h, orig_w)
+                                .unwrap()
+                                .cast::<R64>()
+                                .unwrap()
+                        };
+                        let new_size = PixelSize::from_hw(image_size, image_size)
+                            .unwrap()
+                            .cast::<R64>()
+                            .unwrap();
+                        let transform =
+                            PixelRectTransform::from_resizing_letterbox(&orig_size, &new_size);
 
-                    Fallible::Ok((record_index, images))
-                }
-            })
+                        let image = image
+                            .resize2d_letterbox(image_size, image_size)?
+                            .g_div_scalar(255.0)
+                            .to_kind(Kind::Float)
+                            .to_device(device)
+                            .set_requires_grad(false);
+
+                        let boxes: Vec<_> = sample
+                            .boxes
+                            .iter()
+                            .map(|rect| (&transform * rect).to_ratio_label(&new_size))
+                            .collect();
+
+                        Ok((image, boxes))
+                    })
+                    .try_collect()?;
+                let (image_seq, boxes_seq) = pairs.into_iter().unzip_n_vec();
+
+                Fallible::Ok((image_seq, boxes_seq))
+            }
+        })
     };
 
     // group into chunks
     let stream = stream
         .chunks(batch_size)
         .wrapping_enumerate()
-        .par_map_unordered(None, |(index, results)| {
+        .par_map_unordered(None, |(batch_index, results)| {
             move || {
                 let chunk: Vec<_> = results.into_iter().try_collect()?;
-                Fallible::Ok((index, chunk))
+                Fallible::Ok((batch_index, chunk))
             }
         });
 
     // convert to batched type
     let stream = stream.try_par_map_unordered(None, move |(batch_index, chunk)| {
         move || {
-            let (max_record_index, sequence_vec): (MaxVal<_>, Vec<_>) = chunk.into_iter().unzip_n();
-            let record_index = max_record_index.unwrap();
+            let (
+                image_seq_batch, // sample index -> sequence index -> image
+                boxes_seq_batch, // sample index -> sequence index -> boxes set
+            ) = chunk.into_iter().unzip_n_vec();
 
-            let mut sequence_iter_vec: Vec<_> = sequence_vec
+            // transpose to
+            // sequence index -> sample index -> X
+            let image_batch_seq: Vec<Tensor> = image_seq_batch
+                .transpose()
+                .unwrap()
                 .into_iter()
-                .map(|seq| seq.into_iter())
+                .map(|image_batch| Tensor::stack(&image_batch, 0))
+                .collect();
+            let boxes_batch_seq: Vec<Vec<Vec<RatioRectLabel<_>>>> =
+                boxes_seq_batch.transpose().unwrap();
+
+            let seq_len = image_batch_seq.len();
+            let noise_seq: Vec<Tensor> = (0..seq_len)
+                .map(|_| Tensor::randn(&[batch_size as i64, latent_dim], (Kind::Float, device)))
                 .collect();
 
-            let sequence: Vec<_> = (0..seq_len)
-                .map(|_seq_index| {
-                    let samples_vec: Vec<_> = (0..batch_size)
-                        .map(|batch_index| sequence_iter_vec[batch_index].next().unwrap())
-                        .collect();
-
-                    let samples = Tensor::stack(&samples_vec, 0);
-                    samples
-                })
-                .collect();
-
-            Fallible::Ok((batch_index, record_index, sequence))
+            Fallible::Ok((batch_index, image_batch_seq, boxes_batch_seq, noise_seq))
         }
     });
 
-    // generate noise for each batch
-    let stream =
-        stream.try_par_map_unordered(None, move |(batch_index, record_index, sequence)| {
-            move || {
-                let noise = Tensor::rand(&[batch_size as i64, latent_dim], (Kind::Float, device));
-                Ok((batch_index, record_index, sequence, noise))
-            }
-        });
-
     // convert to output type
-    let stream =
-        stream.try_par_map_unordered(None, |(batch_index, record_index, sequence, noise)| {
+    let stream = stream.try_par_map_unordered(
+        None,
+        |(batch_index, image_batch_seq, boxes_batch_seq, noise_seq)| {
             move || {
                 let record = msg::TrainingMessage {
                     batch_index,
-                    record_index,
-                    sequence,
-                    noise,
+                    image_batch_seq,
+                    boxes_batch_seq,
+                    noise_seq,
                 };
                 Ok(record)
             }
-        });
+        },
+    );
 
     Ok(stream)
 }

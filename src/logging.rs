@@ -25,39 +25,72 @@ pub async fn logging_worker(
             None => break,
         };
 
-        let msg::LogMessage {
-            step,
-            dis_loss,
-            gen_loss,
-            learning_rate,
-            true_image,
-            fake_image,
-        } = msg;
-        let step = step as i64;
+        match msg {
+            msg::LogMessage::Loss {
+                step,
+                learning_rate,
+                sequence,
+            } => {
+                let step = step as i64;
 
-        event_writer
-            .write_scalar_async("loss/discriminator_loss", step, dis_loss as f32)
-            .await?;
-        event_writer
-            .write_scalar_async("loss/generator_loss", step, gen_loss as f32)
-            .await?;
-        event_writer
-            .write_scalar_async("params/learning_rate", step, learning_rate as f32)
-            .await?;
+                for (seq_index, log_step) in sequence.into_iter().enumerate() {
+                    let msg::LossLog {
+                        det_recon_loss,
+                        discriminator_loss,
+                        generator_loss,
+                    } = log_step;
 
-        if let Some(true_image) = true_image {
-            for (index, image) in true_image.into_iter().enumerate() {
-                event_writer
-                    .write_image_list_async(format!("image/true_image/{}", index), step, image)
-                    .await?;
+                    event_writer
+                        .write_scalar_async(
+                            format!("loss/det_recon_loss/{}", seq_index),
+                            step,
+                            det_recon_loss as f32,
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            format!("loss/discriminator_loss/{}", seq_index),
+                            step,
+                            discriminator_loss as f32,
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            format!("loss/generator_loss/{}", seq_index),
+                            step,
+                            generator_loss as f32,
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async("params/learning_rate", step, learning_rate as f32)
+                        .await?;
+                }
             }
-        }
+            msg::LogMessage::Image { step, sequence } => {
+                let step = step as i64;
 
-        if let Some(fake_image) = fake_image {
-            for (index, image) in fake_image.into_iter().enumerate() {
-                event_writer
-                    .write_image_list_async(format!("image/fake_image/{}", index), step, image)
-                    .await?;
+                for (seq_index, log_step) in sequence.into_iter().enumerate() {
+                    let msg::ImageLog {
+                        true_image,
+                        fake_image,
+                    } = log_step;
+
+                    event_writer
+                        .write_image_list_async(
+                            format!("image/true_image/{}", seq_index),
+                            step,
+                            true_image,
+                        )
+                        .await?;
+
+                    event_writer
+                        .write_image_list_async(
+                            format!("image/fake_image/{}", seq_index),
+                            step,
+                            fake_image,
+                        )
+                        .await?;
+                }
             }
         }
     }
