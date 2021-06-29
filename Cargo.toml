@@ -33,10 +33,10 @@ tracing-subscriber = "0.2.19"
 noisy_float = { version = "0.2.0", features = ["serde"] }
 tfrecord = { version = "0.8.0", features = ["full"] }
 chrono = "0.4.19"
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "6ac6dc96e1e3e5b3d026a44d4ff382cb39983085" }
-tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "6ac6dc96e1e3e5b3d026a44d4ff382cb39983085" }
-yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "6ac6dc96e1e3e5b3d026a44d4ff382cb39983085" }
-train = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "6ac6dc96e1e3e5b3d026a44d4ff382cb39983085" }
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "b73829972b232769e57a7327d7c5182ccc2b467e" }
+tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "b73829972b232769e57a7327d7c5182ccc2b467e" }
+yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "b73829972b232769e57a7327d7c5182ccc2b467e" }
+train = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "b73829972b232769e57a7327d7c5182ccc2b467e" }
 iii-formosa-dataset = "0.2.0"
 glob = "0.3.0"
 serde-xml-rs = "0.4.1"
@@ -49,8 +49,8 @@ by_address = "1.0.4"
 
 [profile.release]
 debug = true
-debug-assertions = false
-overflow-checks = false
+debug-assertions = true
+overflow-checks = true
 ## enabling 'lto' improves the performance but results in
 ## very long compilation time.
 lto = false

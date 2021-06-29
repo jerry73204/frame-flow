@@ -5,8 +5,40 @@ use nn::Module;
 use tch_modules::{ConvBn, ConvBnGrad, ConvBnInitDyn, ConvND, ConvNDGrad, ConvNDInitDyn};
 
 pub use custom::*;
+pub use discriminator::*;
 pub use n_layers::*;
 pub use pixel::*;
+
+mod discriminator {
+    use super::*;
+
+    #[derive(Debug)]
+    pub enum Discriminator {
+        NLayers(NLayerDiscriminator),
+        Pixel(PixelDiscriminator),
+    }
+
+    impl nn::ModuleT for Discriminator {
+        fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
+            match self {
+                Discriminator::NLayers(model) => model.forward_t(input, train),
+                Discriminator::Pixel(model) => model.forward_t(input, train),
+            }
+        }
+    }
+
+    impl From<PixelDiscriminator> for Discriminator {
+        fn from(v: PixelDiscriminator) -> Self {
+            Self::Pixel(v)
+        }
+    }
+
+    impl From<NLayerDiscriminator> for Discriminator {
+        fn from(v: NLayerDiscriminator) -> Self {
+            Self::NLayers(v)
+        }
+    }
+}
 
 mod n_layers {
     use super::*;
@@ -229,7 +261,7 @@ mod custom {
     use super::*;
 
     #[derive(Debug, Clone)]
-    pub struct DiscriminatorInit<const DEPTH: usize> {
+    pub struct CustomDiscriminatorInit<const DEPTH: usize> {
         pub ndims: usize,
         pub ksize: usize,
         pub input_channels: usize,
@@ -237,8 +269,8 @@ mod custom {
         pub strides: [usize; DEPTH],
     }
 
-    impl<const DEPTH: usize> DiscriminatorInit<DEPTH> {
-        pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> Result<Discriminator> {
+    impl<const DEPTH: usize> CustomDiscriminatorInit<DEPTH> {
+        pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> Result<CustomDiscriminator> {
             ensure!(DEPTH > 0, "zero depth is not allowed");
 
             let path = path.borrow();
@@ -284,7 +316,7 @@ mod custom {
 
             let linear = nn::linear(path / "linear", last_channels as i64, 1, Default::default());
 
-            Ok(Discriminator {
+            Ok(CustomDiscriminator {
                 ndims,
                 convs,
                 down_samples,
@@ -294,14 +326,14 @@ mod custom {
     }
 
     #[derive(Debug)]
-    pub struct Discriminator {
+    pub struct CustomDiscriminator {
         ndims: usize,
         convs: Vec<ConvBn>,
         down_samples: Vec<ConvND>,
         linear: nn::Linear,
     }
 
-    impl Discriminator {
+    impl CustomDiscriminator {
         pub fn forward_t(&self, input: &Tensor, train: bool) -> Result<Tensor> {
             let Self {
                 ndims,
@@ -347,7 +379,7 @@ mod custom {
             });
         }
 
-        pub fn grad(&self) -> DiscriminatorGrad {
+        pub fn grad(&self) -> CustomDiscriminatorGrad {
             let Self {
                 convs,
                 down_samples,
@@ -355,7 +387,7 @@ mod custom {
                 ..
             } = self;
 
-            DiscriminatorGrad {
+            CustomDiscriminatorGrad {
                 convs: convs.iter().map(|conv| conv.grad()).collect(),
                 down_samples: down_samples.iter().map(|down| down.grad()).collect(),
                 linear: LinearGrad {
@@ -373,7 +405,7 @@ mod custom {
     }
 
     #[derive(Debug, TensorLike)]
-    pub struct DiscriminatorGrad {
+    pub struct CustomDiscriminatorGrad {
         pub convs: Vec<ConvBnGrad>,
         pub down_samples: Vec<ConvNDGrad>,
         pub linear: LinearGrad,
@@ -394,7 +426,7 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let root = vs.root();
 
-        let discriminator = DiscriminatorInit {
+        let discriminator = CustomDiscriminatorInit {
             ndims: 2,
             ksize: 3,
             input_channels: cx,

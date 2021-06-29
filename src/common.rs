@@ -1,4 +1,4 @@
-pub use anyhow::{ensure, format_err, Context, Error, Result};
+pub use anyhow::{bail, ensure, format_err, Context, Error, Result};
 pub use approx::assert_abs_diff_eq;
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};

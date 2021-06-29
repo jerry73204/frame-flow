@@ -21,6 +21,7 @@ impl Config {
 pub enum Dataset {
     Iii(IiiDataset),
     Simple(SimpleDataset),
+    Mnist(MnistDataset),
 }
 
 impl Dataset {
@@ -28,6 +29,7 @@ impl Dataset {
         match self {
             Self::Iii(dataset) => dataset.image_dim(),
             Self::Simple(dataset) => dataset.image_dim(),
+            Dataset::Mnist(dataset) => dataset.image_dim(),
         }
     }
 }
@@ -60,16 +62,27 @@ impl SimpleDataset {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MnistDataset {
+    pub dataset_dir: PathBuf,
+}
+
+impl MnistDataset {
+    pub fn image_dim(&self) -> usize {
+        3
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Training {
     pub cache_dir: PathBuf,
     pub batch_size: NonZeroUsize,
     pub image_size: NonZeroUsize,
     pub latent_dim: NonZeroUsize,
-    pub peek_len: NonZeroUsize,
+    pub peek_len: usize,
     pub pred_len: NonZeroUsize,
     #[serde(with = "tch_serde::serde_device")]
     pub device: Device,
-    pub learning_rate: R64,
+    pub lr_schedule: train::config::LearningRateSchedule,
     pub warm_up_steps: usize,
 }
 
@@ -95,7 +108,16 @@ pub struct DetectionModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratorModel {
+    pub kind: GeneratorModelKind,
     pub weights_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GeneratorModelKind {
+    #[serde(rename = "n_layers")]
+    NLayers,
+    #[serde(rename = "unet")]
+    UNet,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,17 +128,18 @@ pub struct DiscriminatorModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Loss {
     pub detector: train::config::Loss,
-    /* pub image_recon: GanLoss,
-     * pub det_recon: GanLoss, */
+    pub image_recon: GanLoss,
+    // pub det_recon: GanLoss,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GanLoss {
-    #[serde(rename = "l2")]
-    L2,
-    #[serde(rename = "bce_with_logits")]
-    BceWithLogits,
+    #[serde(rename = "dc_gan")]
+    DcGan,
+    #[serde(rename = "relativistic_gan")]
+    RelativisticGan,
     #[serde(rename = "wgan")]
     WGan,
+    #[serde(rename = "wgan_gp")]
+    WGanGp,
 }

@@ -35,6 +35,7 @@ pub async fn logging_worker(
 
                 for (seq_index, log_step) in sequence.into_iter().enumerate() {
                     let msg::LossLog {
+                        det_loss,
                         det_recon_loss,
                         discriminator_loss,
                         generator_loss,
@@ -42,21 +43,28 @@ pub async fn logging_worker(
 
                     event_writer
                         .write_scalar_async(
-                            format!("loss/det_recon_loss/{}", seq_index),
+                            format!("det_loss/{}", seq_index),
+                            step,
+                            det_loss as f32,
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            format!("det_recon_loss/{}", seq_index),
                             step,
                             det_recon_loss as f32,
                         )
                         .await?;
                     event_writer
                         .write_scalar_async(
-                            format!("loss/discriminator_loss/{}", seq_index),
+                            format!("discriminator_loss/{}", seq_index),
                             step,
                             discriminator_loss as f32,
                         )
                         .await?;
                     event_writer
                         .write_scalar_async(
-                            format!("loss/generator_loss/{}", seq_index),
+                            format!("generator_loss/{}", seq_index),
                             step,
                             generator_loss as f32,
                         )
@@ -77,7 +85,7 @@ pub async fn logging_worker(
 
                     event_writer
                         .write_image_list_async(
-                            format!("image/true_image/{}", seq_index),
+                            format!("true_image/{}", seq_index),
                             step,
                             true_image,
                         )
@@ -85,7 +93,7 @@ pub async fn logging_worker(
 
                     event_writer
                         .write_image_list_async(
-                            format!("image/fake_image/{}", seq_index),
+                            format!("fake_image/{}", seq_index),
                             step,
                             fake_image,
                         )

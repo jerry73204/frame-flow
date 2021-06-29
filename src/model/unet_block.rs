@@ -25,6 +25,7 @@ impl UnetBlockInit {
         let in_c = in_c as i64;
         let inner_c = inner_c as i64;
         let outer_c = outer_c as i64;
+        let module_kind = module.kind();
 
         let down_conv = nn::conv2d(
             path / "down_conv",
@@ -41,25 +42,24 @@ impl UnetBlockInit {
 
         let seq = match module {
             UnetModule::Standard(f) => {
-                let up_conv = nn::conv_transpose2d(
-                    path / "up_conv",
-                    inner_c * 2,
-                    outer_c,
-                    4,
-                    nn::ConvTransposeConfig {
-                        stride: 2,
-                        padding: 1,
-                        bias,
-                        ..Default::default()
-                    },
-                );
                 let seq = nn::seq_t()
                     .add_fn(|xs| xs.relu())
                     .add(down_conv)
                     .add(norm_kind.build(path / "down_norm", inner_c))
                     .add_fn_t(f)
                     .add_fn(|xs| xs.relu())
-                    .add(up_conv)
+                    .add(nn::conv_transpose2d(
+                        path / "up_conv",
+                        inner_c * 2,
+                        outer_c,
+                        4,
+                        nn::ConvTransposeConfig {
+                            stride: 2,
+                            padding: 1,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
                     .add(norm_kind.build(path / "up_norm", outer_c));
 
                 if dropout {
@@ -68,8 +68,11 @@ impl UnetBlockInit {
                     seq
                 }
             }
-            UnetModule::OuterMost(f) => {
-                let up_conv = nn::conv_transpose2d(
+            UnetModule::OuterMost(f) => nn::seq_t()
+                .add(down_conv)
+                .add_fn_t(f)
+                .add_fn(|xs| xs.relu())
+                .add(nn::conv_transpose2d(
                     path / "up_conv",
                     inner_c * 2,
                     outer_c,
@@ -79,16 +82,13 @@ impl UnetBlockInit {
                         padding: 1,
                         ..Default::default()
                     },
-                );
-                nn::seq_t()
-                    .add(down_conv)
-                    .add_fn_t(f)
-                    .add_fn(|xs| xs.relu())
-                    .add(up_conv)
-                    .add_fn(|xs| xs.tanh())
-            }
-            UnetModule::InnerMost => {
-                let up_conv = nn::conv_transpose2d(
+                ))
+                .add_fn(|xs| xs.tanh()),
+            UnetModule::InnerMost => nn::seq_t()
+                .add_fn(|xs| xs.relu())
+                .add(down_conv)
+                .add_fn(|xs| xs.relu())
+                .add(nn::conv_transpose2d(
                     path / "up_conv",
                     inner_c,
                     outer_c,
@@ -99,17 +99,14 @@ impl UnetBlockInit {
                         bias,
                         ..Default::default()
                     },
-                );
-                nn::seq_t()
-                    .add_fn(|xs| xs.relu())
-                    .add(down_conv)
-                    .add_fn(|xs| xs.relu())
-                    .add(up_conv)
-                    .add(norm_kind.build(path / "up_norm", outer_c))
-            }
+                ))
+                .add(norm_kind.build(path / "up_norm", outer_c)),
         };
 
-        UnetBlock { seq }
+        UnetBlock {
+            seq,
+            kind: module_kind,
+        }
     }
 }
 
@@ -143,6 +140,14 @@ where
     pub fn outer_most(f: F) -> Self {
         Self::OuterMost(f)
     }
+
+    fn kind(&self) -> UnetBlockKind {
+        match self {
+            UnetModule::Standard(_) => UnetBlockKind::Standard,
+            UnetModule::OuterMost(_) => UnetBlockKind::OuterMost,
+            UnetModule::InnerMost => UnetBlockKind::InnerMost,
+        }
+    }
 }
 
 impl UnetModule<Box<dyn Fn(&Tensor, bool) -> Tensor + Send>> {
@@ -151,13 +156,26 @@ impl UnetModule<Box<dyn Fn(&Tensor, bool) -> Tensor + Send>> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum UnetBlockKind {
+    Standard,
+    InnerMost,
+    OuterMost,
+}
+
 #[derive(Debug)]
 pub struct UnetBlock {
     seq: nn::SequentialT,
+    kind: UnetBlockKind,
 }
 
 impl nn::ModuleT for UnetBlock {
     fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
-        self.seq.forward_t(input, train)
+        match self.kind {
+            UnetBlockKind::Standard | UnetBlockKind::InnerMost => {
+                Tensor::cat(&[input, &self.seq.forward_t(input, train)], 1)
+            }
+            UnetBlockKind::OuterMost => self.seq.forward_t(input, train),
+        }
     }
 }

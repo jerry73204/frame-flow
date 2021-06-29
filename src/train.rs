@@ -2,8 +2,8 @@ use crate::{
     common::*,
     config, message as msg,
     model::{
-        self, DetectionEmbeddingInit, GanLoss, NLayerDiscriminatorInit, NormKind,
-        ResnetGeneratorInit,
+        self, DetectionEmbeddingInit, Discriminator, Generator, NLayerDiscriminatorInit, NormKind,
+        PixelDiscriminatorInit, ResnetGeneratorInit, UnetGeneratorInit, WGanGpInit,
     },
     FILE_STRFTIME,
 };
@@ -16,9 +16,18 @@ pub fn training_worker(
     log_tx: mpsc::Sender<msg::LogMessage>,
 ) -> Result<()> {
     let device = config.train.device;
+    let gan_loss = config.loss.image_recon;
     let latent_dim = config.train.latent_dim.get();
     let image_dim = config.dataset.image_dim();
-    let batch_size = config.train.batch_size.get() as i64;
+    let batch_size = config.train.batch_size.get();
+
+    // learning rate scheduler
+    let mut train_step = 0;
+    let mut lr_scheduler = train::utils::LrScheduler::new(&config.train.lr_schedule, 0)?;
+    let mut rate_counter = train::utils::RateCounter::with_second_intertal();
+    let mut lr = lr_scheduler.next();
+
+    let gp = WGanGpInit::default().build()?;
 
     // load detector model
     let (mut detector_vs, mut detector_model) = {
@@ -57,18 +66,30 @@ pub fn training_worker(
         }
         .build(&root / "embedding");
 
-        let gen_model = ResnetGeneratorInit::<9>::default().build(
-            &root / "generator",
-            embedding_dim + latent_dim,
-            image_dim,
-            64,
-        );
+        let gen_model: Generator = match config.model.generator.kind {
+            config::GeneratorModelKind::NLayers => ResnetGeneratorInit::<9>::default()
+                .build(
+                    &root / "generator",
+                    embedding_dim + latent_dim,
+                    image_dim,
+                    64,
+                )
+                .into(),
+            config::GeneratorModelKind::UNet => UnetGeneratorInit::<8>::default()
+                .build(
+                    &root / "generator",
+                    embedding_dim + latent_dim,
+                    image_dim,
+                    64,
+                )
+                .into(),
+        };
 
         if let Some(weights_file) = weights_file {
             vs.load_partial(weights_file)?;
         }
 
-        let opt = nn::adam(0.5, 0.999, 0.).build(&vs, config.train.learning_rate.raw())?;
+        let opt = nn::adam(0.5, 0.999, 0.).build(&vs, lr)?;
 
         (vs, embedding, gen_model, opt)
     };
@@ -81,133 +102,204 @@ pub fn training_worker(
         let mut vs = nn::VarStore::new(device);
         let root = vs.root();
 
-        let disc_model =
-            NLayerDiscriminatorInit::<7>::default().build(&root / "discriminator", image_dim, 64);
+        let disc_model: Discriminator = NLayerDiscriminatorInit::<7>::default()
+            .build(&root / "discriminator", image_dim, 64)
+            .into();
+
+        // let disc_model: Discriminator =
+        //     PixelDiscriminatorInit::<7>::default().build(&root / "discriminator", image_dim, 64);
 
         if let Some(weights_file) = weights_file {
             vs.load_partial(weights_file)?;
         }
 
-        let opt = nn::adam(0.5, 0.999, 0.).build(&vs, config.train.learning_rate.raw())?;
+        let opt = nn::adam(0.5, 0.999, 0.).build(&vs, lr)?;
 
         (vs, disc_model, opt)
     };
 
-    // let (loss_vs, detector_loss_fn, gan_loss_fn, det_recon_loss_fn) = {
-    //     let vs = nn::VarStore::new(device);
-    //     let root = vs.root();
-    //     let det_loss_fn = config
-    //         .loss
-    //         .detector
-    //         .yolo_loss_init()
-    //         .build(&root / "detector_loss")?;
-    //     let image_recon_loss_fn = GanLoss::new(
-    //         &root / "image_reconstruction_loss",
-    //         &config.loss.image_recon,
-    //         Reduction::Mean,
-    //     );
-    //     let det_recon_loss_fn = GanLoss::new(
-    //         &root / "detection_reconstruction_loss",
-    //         &config.loss.det_recon,
-    //         Reduction::Mean,
-    //     );
-    //     (vs, det_loss_fn, image_recon_loss_fn, det_recon_loss_fn)
-    // };
+    let (_loss_vs, detector_loss_fn) = {
+        let vs = nn::VarStore::new(device);
+        let root = vs.root();
+        let det_loss_fn = config
+            .loss
+            .detector
+            .yolo_loss_init()
+            .build(&root / "detector_loss")?;
+        (vs, det_loss_fn)
+    };
 
-    let mut train_step = 0;
+    const CRITIC_STEPS: usize = 5;
+    const GENERATE_STEPS: usize = 1;
 
     while let Some(msg) = train_rx.blocking_recv() {
         let msg::TrainingMessage {
             batch_index: _,
             image_batch_seq,
-            noise_seq,
             boxes_batch_seq,
-        } = msg;
+            ..
+        } = msg.to_device(device);
+        let seq_len = image_batch_seq.len();
 
         detector_vs.freeze();
 
-        let log_seq: Vec<_> = izip!(&image_batch_seq, &noise_seq, &boxes_batch_seq)
+        let log_seq: Vec<_> = izip!(&image_batch_seq, &boxes_batch_seq)
             .enumerate()
-            .map(|(_seq_index, (image, noise, _boxes))| -> Result<_> {
+            .map(|(_seq_index, (image, boxes))| -> Result<_> {
                 let det = detector_model.forward_t(image, false)?;
+                let (det_loss, _) =
+                    detector_loss_fn.forward(&det.shallow_clone().try_into()?, boxes);
+                let image = image * 2.0 - 1.0;
 
                 // train discriminator
                 let discriminator_loss = {
+                    let mut step = 0;
                     generator_vs.freeze();
                     discriminator_vs.unfreeze();
 
-                    let image_recon = {
-                        let embedding = embedding_model.forward_t(&det, true)?;
-                        let noise = {
-                            let (b, c) = noise.size2()?;
-                            let (_b, _c, h, w) = embedding.size4()?;
-                            noise.view([b, c, 1, 1]).expand(&[b, c, h, w], false)
+                    loop {
+                        if gan_loss == config::GanLoss::WGan {
+                            const WEIGHT_CLAMP: f64 = 0.01;
+
+                            discriminator_vs.freeze();
+                            discriminator_vs
+                                .trainable_variables()
+                                .iter_mut()
+                                .for_each(|var| {
+                                    let _ = var.clamp_(-WEIGHT_CLAMP, WEIGHT_CLAMP);
+                                });
+                            discriminator_vs.unfreeze();
+                        }
+
+                        let image_recon = {
+                            let embedding = embedding_model.forward_t(&det, true)?;
+                            let noise = {
+                                let (b, _c, h, w) = embedding.size4()?;
+                                Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
+                                    .expand(&[b, latent_dim as i64, h, w], false)
+                            };
+                            let input = Tensor::cat(&[embedding, noise], 1);
+                            generator_model.forward_t(&input, true)
                         };
-                        let input = Tensor::cat(&[embedding, noise], 1);
-                        generator_model.forward_t(&input, true)
-                    };
-                    debug_assert_eq!(image.size(), image_recon.size());
+                        debug_assert_eq!(image.size(), image_recon.size());
+                        let real_score = discriminator_model.forward_t(&image, true);
+                        let fake_score =
+                            discriminator_model.forward_t(&image_recon.detach().copy(), true);
 
-                    let image_score = discriminator_model.forward_t(&image, true);
+                        let discriminator_loss = match gan_loss {
+                            config::GanLoss::DcGan => {
+                                let ones =
+                                    Tensor::ones(&[batch_size as i64], (Kind::Float, device));
+                                let zeros =
+                                    Tensor::zeros(&[batch_size as i64], (Kind::Float, device));
 
-                    let image_recon_score = discriminator_model.forward_t(&image_recon, true);
+                                real_score.binary_cross_entropy_with_logits::<Tensor>(
+                                    &ones,
+                                    None,
+                                    None,
+                                    Reduction::Mean,
+                                ) + fake_score.binary_cross_entropy_with_logits::<Tensor>(
+                                    &zeros,
+                                    None,
+                                    None,
+                                    Reduction::Mean,
+                                )
+                            }
+                            config::GanLoss::RelativisticGan => {
+                                mse_loss(&real_score, &(fake_score.mean(Kind::Float) + 1.0))
+                                    + mse_loss(&fake_score, &(real_score.mean(Kind::Float) - 1.0))
+                            }
+                            config::GanLoss::WGan => (&fake_score - &real_score).mean(Kind::Float),
+                            config::GanLoss::WGanGp => {
+                                let discriminator_loss =
+                                    (&fake_score - &real_score).mean(Kind::Float);
+                                let gp_loss = gp.forward(
+                                    &image,
+                                    &image_recon,
+                                    |xs, train| discriminator_model.forward_t(xs, train),
+                                    true,
+                                )?;
+                                discriminator_loss + gp_loss
+                            }
+                        };
 
-                    let discriminator_loss =
-                        mse_loss(&image_score, &(image_recon_score.mean(Kind::Float) + 1.0))
-                            + mse_loss(&image_recon_score, &(image_score.mean(Kind::Float) - 1.0));
-                    debug_assert_eq!(discriminator_loss.numel(), 1);
+                        discriminator_opt.backward_step(&discriminator_loss);
 
-                    discriminator_opt.backward_step(&discriminator_loss);
-
-                    discriminator_loss
+                        step += 1;
+                        if step == CRITIC_STEPS {
+                            break discriminator_loss;
+                        }
+                    }
                 };
 
                 // train generator
                 let (image_recon, det_recon_loss, generator_loss) = {
+                    let mut step = 0;
                     generator_vs.unfreeze();
                     discriminator_vs.freeze();
 
-                    let image_recon = {
-                        let embedding = embedding_model.forward_t(&det, true)?;
-                        let noise = {
-                            let (b, c) = noise.size2()?;
-                            let (_b, _c, h, w) = embedding.size4()?;
-                            noise.view([b, c, 1, 1]).expand(&[b, c, h, w], false)
+                    loop {
+                        let image_recon = {
+                            let embedding = embedding_model.forward_t(&det, true)?;
+                            let noise = {
+                                let (b, _c, h, w) = embedding.size4()?;
+                                Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
+                                    .expand(&[b, latent_dim as i64, h, w], false)
+                            };
+                            let input = Tensor::cat(&[embedding, noise], 1);
+                            generator_model.forward_t(&input, true)
                         };
-                        let input = Tensor::cat(&[embedding, noise], 1);
-                        generator_model.forward_t(&input, true)
-                    };
-                    debug_assert_eq!(image.size(), image_recon.size());
+                        debug_assert_eq!(image.size(), image_recon.size());
+                        let det_recon =
+                            detector_model.forward_t(&(&image_recon / 2.0 + 0.5), true)?;
+                        let det_recon_loss = model::dense_detectino_similarity(&det, &det_recon)?;
+                        // let (det_recon_loss, _) =
+                        //     detector_loss_fn.forward(&det_recon.shallow_clone().try_into()?, boxes);
+                        let fake_score = discriminator_model.forward_t(&image_recon, true);
+                        let generator_loss = match gan_loss {
+                            config::GanLoss::DcGan => {
+                                let ones =
+                                    Tensor::ones(&[batch_size as i64], (Kind::Float, device));
+                                fake_score.binary_cross_entropy_with_logits::<Tensor>(
+                                    &ones,
+                                    None,
+                                    None,
+                                    Reduction::Mean,
+                                )
+                            }
+                            config::GanLoss::RelativisticGan => {
+                                let real_score = discriminator_model.forward_t(&image, true);
 
-                    let det_recon = detector_model.forward_t(&image_recon, true)?;
+                                mse_loss(&real_score, &(fake_score.mean(Kind::Float) + 1.0))
+                                    + mse_loss(&fake_score, &(real_score.mean(Kind::Float) - 1.0))
+                            }
+                            config::GanLoss::WGan | config::GanLoss::WGanGp => {
+                                (-&fake_score).mean(Kind::Float)
+                            }
+                        };
 
-                    // let det_loss =
-                    //     detector_loss_fn.forward(&det.shallow_clone().try_into()?, boxes);
-                    let det_recon_loss = model::dense_detectino_similarity(&det, &det_recon)?;
-                    debug_assert_eq!(det_recon_loss.numel(), 1);
+                        // let loss = &det_recon_loss + &generator_loss;
+                        let loss = &generator_loss;
 
-                    let image_score = discriminator_model.forward_t(&image, true);
+                        generator_opt.backward_step(&loss);
 
-                    let image_recon_score = discriminator_model.forward_t(&image_recon, true);
+                        step += 1;
 
-                    let generator_loss =
-                        mse_loss(&image_score, &(image_recon_score.mean(Kind::Float) + 1.0))
-                            + mse_loss(&image_recon_score, &(image_score.mean(Kind::Float) - 1.0));
-                    debug_assert_eq!(generator_loss.numel(), 1);
-
-                    generator_opt.backward_step(&(&det_recon_loss + &generator_loss));
-
-                    (image_recon, det_recon_loss, generator_loss)
+                        if step == GENERATE_STEPS {
+                            break (image_recon, det_recon_loss, generator_loss);
+                        }
+                    }
                 };
 
                 let loss_log = msg::LossLog {
+                    det_loss: det_loss.total_loss.into(),
                     det_recon_loss: det_recon_loss.into(),
                     discriminator_loss: discriminator_loss.into(),
                     generator_loss: generator_loss.into(),
                 };
                 let image_log = msg::ImageLog {
-                    true_image: image.shallow_clone(),
-                    fake_image: image_recon,
+                    true_image: image.to_device(Device::Cpu),
+                    fake_image: image_recon.to_device(Device::Cpu),
                 };
 
                 Ok((loss_log, image_log))
@@ -216,10 +308,11 @@ pub fn training_worker(
 
         let (loss_log_seq, image_log_seq) = log_seq.into_iter().unzip_n_vec();
 
+        // send to logger
         {
             let msg = msg::LogMessage::Loss {
                 step: train_step,
-                learning_rate: config.train.learning_rate.raw(),
+                learning_rate: lr,
                 sequence: loss_log_seq,
             };
 
@@ -255,7 +348,27 @@ pub fn training_worker(
             }
         }
 
+        // print message
+        rate_counter.add(seq_len as f64);
+
+        if let Some(batch_rate) = rate_counter.rate() {
+            let record_rate = batch_rate * batch_size as f64;
+            info!(
+                "step: {}\tlr: {:.5}\t{:.2} batch/s\t{:.2} sample/s",
+                train_step,
+                lr_scheduler.lr(),
+                batch_rate,
+                record_rate
+            );
+        } else {
+            info!("step: {}\tlr: {:.5}", train_step, lr_scheduler.lr());
+        }
+
+        // update state
         train_step += 1;
+        lr = lr_scheduler.next();
+        discriminator_opt.set_lr(lr);
+        generator_opt.set_lr(lr);
     }
 
     // // warm-up

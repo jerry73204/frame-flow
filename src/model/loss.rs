@@ -1,87 +1,88 @@
-use crate::{common::*, config};
-use tch_modules::{BceWithLogitsLoss, BceWithLogitsLossInit, L2Loss};
+use crate::common::*;
+// use crate::{common::*, config};
+// use tch_modules::{BceWithLogitsLoss, BceWithLogitsLossInit, L2Loss};
 
-#[derive(Debug)]
-pub enum GanLoss {
-    L2(L2Loss),
-    BceWithLogits(BceWithLogitsLoss),
-    WGan(WGanLoss),
-}
+// #[derive(Debug)]
+// pub enum GanLoss {
+//     L2(L2Loss),
+//     BceWithLogits(BceWithLogitsLoss),
+//     WGan(WGanLoss),
+// }
 
-impl GanLoss {
-    pub fn forward(&self, pred: &Tensor, target: &Tensor) -> Result<Tensor> {
-        ensure!(pred.kind() == Kind::Float);
-        ensure!(target.kind() == Kind::Bool);
+// impl GanLoss {
+//     pub fn forward(&self, pred: &Tensor, target: &Tensor) -> Result<Tensor> {
+//         ensure!(pred.kind() == Kind::Float);
+//         ensure!(target.kind() == Kind::Bool);
 
-        let loss = match self {
-            Self::L2(loss) => loss.forward(pred, &target.to_kind(Kind::Float)),
-            Self::BceWithLogits(loss) => loss.forward(pred, &target.to_kind(Kind::Float)),
-            Self::WGan(loss) => loss.forward(pred, target)?,
-        };
+//         let loss = match self {
+//             Self::L2(loss) => loss.forward(pred, &target.to_kind(Kind::Float)),
+//             Self::BceWithLogits(loss) => loss.forward(pred, &target.to_kind(Kind::Float)),
+//             Self::WGan(loss) => loss.forward(pred, target)?,
+//         };
 
-        Ok(loss)
-    }
-}
+//         Ok(loss)
+//     }
+// }
 
-impl From<L2Loss> for GanLoss {
-    fn from(v: L2Loss) -> Self {
-        Self::L2(v)
-    }
-}
+// impl From<L2Loss> for GanLoss {
+//     fn from(v: L2Loss) -> Self {
+//         Self::L2(v)
+//     }
+// }
 
-impl From<BceWithLogitsLoss> for GanLoss {
-    fn from(v: BceWithLogitsLoss) -> Self {
-        Self::BceWithLogits(v)
-    }
-}
+// impl From<BceWithLogitsLoss> for GanLoss {
+//     fn from(v: BceWithLogitsLoss) -> Self {
+//         Self::BceWithLogits(v)
+//     }
+// }
 
-impl From<WGanLoss> for GanLoss {
-    fn from(v: WGanLoss) -> Self {
-        Self::WGan(v)
-    }
-}
+// impl From<WGanLoss> for GanLoss {
+//     fn from(v: WGanLoss) -> Self {
+//         Self::WGan(v)
+//     }
+// }
 
-impl GanLoss {
-    pub fn new<'a>(
-        path: impl Borrow<nn::Path<'a>>,
-        config: &config::GanLoss,
-        reduction: Reduction,
-    ) -> Self {
-        match config {
-            config::GanLoss::L2 => L2Loss::new(reduction).into(),
-            config::GanLoss::BceWithLogits => {
-                BceWithLogitsLossInit::default(reduction).build(path).into()
-            }
-            config::GanLoss::WGan => WGanLoss::new(reduction).into(),
-        }
-    }
-}
+// impl GanLoss {
+//     pub fn new<'a>(
+//         path: impl Borrow<nn::Path<'a>>,
+//         config: &config::GanLoss,
+//         reduction: Reduction,
+//     ) -> Self {
+//         match config {
+//             config::GanLoss::L2 => L2Loss::new(reduction).into(),
+//             config::GanLoss::BceWithLogits => {
+//                 BceWithLogitsLossInit::default(reduction).build(path).into()
+//             }
+//             config::GanLoss::WGan => WGanLoss::new(reduction).into(),
+//         }
+//     }
+// }
 
-#[derive(Debug)]
-pub struct WGanLoss {
-    reduction: Reduction,
-}
+// #[derive(Debug)]
+// pub struct WGanLoss {
+//     reduction: Reduction,
+// }
 
-impl WGanLoss {
-    pub fn new(reduction: Reduction) -> Self {
-        Self { reduction }
-    }
+// impl WGanLoss {
+//     pub fn new(reduction: Reduction) -> Self {
+//         Self { reduction }
+//     }
 
-    pub fn forward(&self, pred: &Tensor, target: &Tensor) -> Result<Tensor> {
-        ensure!(pred.kind() == Kind::Float);
-        ensure!(target.kind() == Kind::Bool);
+//     pub fn forward(&self, pred: &Tensor, target: &Tensor) -> Result<Tensor> {
+//         ensure!(pred.kind() == Kind::Float);
+//         ensure!(target.kind() == Kind::Bool);
 
-        let loss = pred * target.to_kind(Kind::Float) * -2.0 + 1.0;
-        let loss = match self.reduction {
-            Reduction::None => loss,
-            Reduction::Mean => loss.mean(Kind::Float),
-            Reduction::Sum => loss.sum(Kind::Float),
-            Reduction::Other(_) => unimplemented!(),
-        };
+//         let loss = pred * target.to_kind(Kind::Float) * -2.0 + 1.0;
+//         let loss = match self.reduction {
+//             Reduction::None => loss,
+//             Reduction::Mean => loss.mean(Kind::Float),
+//             Reduction::Sum => loss.sum(Kind::Float),
+//             Reduction::Other(_) => unimplemented!(),
+//         };
 
-        Ok(loss)
-    }
-}
+//         Ok(loss)
+//     }
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WGanGpKind {
@@ -189,9 +190,9 @@ pub fn dense_detectino_similarity(
 impl WGanGp {
     pub fn forward(
         &self,
-        fake: &Tensor,
         real: &Tensor,
-        mut discriminator: impl FnMut(&Tensor, bool) -> Tensor,
+        fake: &Tensor,
+        discriminator: impl FnOnce(&Tensor, bool) -> Tensor,
         train: bool,
     ) -> Result<Tensor> {
         // ensure!(!fake.requires_grad() && !real.requires_grad());
@@ -204,15 +205,15 @@ impl WGanGp {
         let batch_size = fake.size()[0];
 
         let mix = match kind {
-            WGanGpKind::Real => real.shallow_clone(),
-            WGanGpKind::Fake => fake.shallow_clone(),
+            WGanGpKind::Real => real.detach(),
+            WGanGpKind::Fake => fake.detach(),
             WGanGpKind::Mixed => {
-                let α = Tensor::rand(&[batch_size, 1], (fake.kind(), fake.device()))
+                let ratio = Tensor::rand(&[batch_size, 1], (fake.kind(), fake.device()))
                     .expand(&[batch_size, fake.numel() as i64 / batch_size], false)
                     .contiguous()
                     .view(&*fake.size());
 
-                &α * real + (-&α + 1.0) * fake
+                &ratio * real.detach() + (-&ratio + 1.0) * fake.detach()
             }
         }
         .set_requires_grad(true);
@@ -228,6 +229,7 @@ impl WGanGp {
             .pow(2)
             .mean(Kind::Float)
             * λ;
+        debug_assert!(!penalty.has_nan());
 
         Ok(penalty)
     }

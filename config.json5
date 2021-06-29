@@ -1,18 +1,25 @@
 {
     "dataset": {
-        "type": "iii",
-        "dataset_dir": "/home/aeon/dataset/ntu_delivery",
-        "classes_file": "cfg/class/iii.class",
-        "min_seq_len": 5,
+        "type": "mnist",
+        "dataset_dir": "/home/aeon/dataset/mnist",
     },
+    // "dataset": {
+    //     "type": "iii",
+    //     "dataset_dir": "/home/aeon/dataset/ntu_delivery",
+    //     "classes_file": "cfg/class/iii.class",
+    //     "min_seq_len": 5,
+    // },
     "model": {
         "detector": {
             "model_file": "cfg/model/yolov4-csp-custom-2021-03-11.json5",
             "weights_file": "cfg/weights/2021-03-28-12-02-57.728+0800_4582000_04.74864.ckpt",
         },
         "generator": {
+            "kind": "unet",
+            "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/generator_2021-06-29-21-43-16.324+0800_014500.ckpt",
         },
         "discriminator": {
+            "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/discriminator_2021-06-29-21-43-16.292+0800_014500.ckpt",
         },
     },
     "loss": {
@@ -33,22 +40,27 @@
             "objectness_loss_weight": 1.0,
             "classification_loss_weight": 55.0,
         },
-        "gan": {},
+        "image_recon": "wgan_gp",
     },
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
-        "batch_size": 24,
+        "batch_size": 26,
         "image_size": 256,
         "latent_dim": 8,
         "device": "cuda:0",
-        "peek_len": 4,
+        "peek_len": 0,
         "pred_len": 1,
-        "learning_rate": 0.0001,
+        "lr_schedule": {
+            "type": "StepWise",
+            "steps": [
+                [0, 0.0002],
+            ],
+        },
         "warm_up_steps": 100,
     },
     "logging": {
         "log_dir": "log",
         "save_image_steps": 10,
-        "save_checkpoint_steps": 1000,
+        "save_checkpoint_steps": 100,
     },
 }

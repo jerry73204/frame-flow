@@ -8,8 +8,40 @@ use crate::common::*;
 use tch_modules::{ConvND, ConvNDGrad, ConvNDInitDyn};
 
 pub use custom::*;
+pub use generator::*;
 pub use resnet::*;
 pub use unet::*;
+
+mod generator {
+    use super::*;
+
+    #[derive(Debug)]
+    pub enum Generator {
+        Unet(UnetGenerator),
+        Resnet(ResnetGenerator),
+    }
+
+    impl nn::ModuleT for Generator {
+        fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
+            match self {
+                Generator::Unet(model) => model.forward_t(input, train),
+                Generator::Resnet(model) => model.forward_t(input, train),
+            }
+        }
+    }
+
+    impl From<ResnetGenerator> for Generator {
+        fn from(v: ResnetGenerator) -> Self {
+            Self::Resnet(v)
+        }
+    }
+
+    impl From<UnetGenerator> for Generator {
+        fn from(v: UnetGenerator) -> Self {
+            Self::Unet(v)
+        }
+    }
+}
 
 mod unet {
     use super::*;
@@ -140,7 +172,7 @@ mod resnet {
         fn default() -> Self {
             Self {
                 padding_kind: PaddingKind::Reflect,
-                norm_kind: NormKind::InstanceNorm,
+                norm_kind: NormKind::BatchNorm,
                 dropout: false,
             }
         }
@@ -165,25 +197,28 @@ mod resnet {
             let inner_c = inner_c as i64;
             let bias = norm_kind == NormKind::InstanceNorm;
 
-            let seq = nn::seq_t()
-                .add(padding_kind.build([3, 3, 3, 3]))
-                .add(nn::conv2d(
-                    path / "conv1",
-                    in_c,
-                    inner_c,
-                    7,
-                    nn::ConvConfig {
-                        padding: 0,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(path / "norm1", inner_c))
-                .add_fn(|xs| xs.relu());
+            let seq = {
+                let path = path / "first_block";
+                nn::seq_t()
+                    .add(padding_kind.build([3, 3, 3, 3]))
+                    .add(nn::conv2d(
+                        &path / "conv",
+                        in_c,
+                        inner_c,
+                        7,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm", inner_c))
+                    .add_fn(|xs| xs.leaky_relu())
+            };
 
             const NUM_DOWN_SAMPLING: usize = 2;
             let seq = (0..NUM_DOWN_SAMPLING).fold(seq, |seq, index| {
-                let path = path / format!("down_{}", index);
+                let path = path / format!("down_sample_{}", index);
                 let scale = 2i64.pow(index as u32);
                 seq.add(nn::conv2d(
                     &path / "conv",
@@ -198,7 +233,7 @@ mod resnet {
                     },
                 ))
                 .add(norm_kind.build(&path / "norm", inner_c * scale * 2))
-                .add_fn(|xs| xs.relu())
+                .add_fn(|xs| xs.leaky_relu())
             });
 
             let seq = {
@@ -221,7 +256,7 @@ mod resnet {
             };
 
             let seq = (0..NUM_DOWN_SAMPLING).fold(seq, |seq, index| {
-                let path = path / format!("up_{}", index);
+                let path = path / format!("up_sample_{}", index);
                 let scale = 2i64.pow((NUM_DOWN_SAMPLING - index) as u32);
                 seq.add(nn::conv_transpose2d(
                     &path / "conv_transpose",
@@ -237,22 +272,24 @@ mod resnet {
                     },
                 ))
                 .add(norm_kind.build(&path / "norm", inner_c * scale / 2))
-                .add_fn(|xs| xs.relu())
+                .add_fn(|xs| xs.leaky_relu())
             });
 
-            let seq = seq
-                .add(padding_kind.build([3, 3, 3, 3]))
-                .add(nn::conv2d(
-                    path / "conv2",
-                    inner_c,
-                    out_c,
-                    7,
-                    nn::ConvConfig {
-                        padding: 0,
-                        ..Default::default()
-                    },
-                ))
-                .add_fn(|xs| xs.tanh());
+            let seq = {
+                let path = path / "last_block";
+                seq.add(padding_kind.build([3, 3, 3, 3]))
+                    .add(nn::conv2d(
+                        &path / "conv",
+                        inner_c,
+                        out_c,
+                        7,
+                        nn::ConvConfig {
+                            padding: 0,
+                            ..Default::default()
+                        },
+                    ))
+                    .add_fn(|xs| xs.tanh())
+            };
 
             ResnetGenerator { seq }
         }
@@ -274,7 +311,7 @@ mod custom {
     use super::*;
 
     #[derive(Debug, Clone)]
-    pub struct GeneratorInit<const DEPTH: usize> {
+    pub struct CustomGeneratorInit<const DEPTH: usize> {
         pub ndims: usize,
         pub input_channels: usize,
         pub output_channels: usize,
@@ -285,8 +322,8 @@ mod custom {
         pub repeats: [usize; DEPTH],
     }
 
-    impl<const DEPTH: usize> GeneratorInit<DEPTH> {
-        pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> Result<Generator> {
+    impl<const DEPTH: usize> CustomGeneratorInit<DEPTH> {
+        pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> Result<CustomGenerator> {
             ensure!(DEPTH >= 1, "zero depth is not allowed");
 
             let path = path.borrow();
@@ -429,7 +466,7 @@ mod custom {
             }
             .build(path / "top_block")?;
 
-            Ok(Generator {
+            Ok(CustomGenerator {
                 enc_blocks,
                 dec_blocks,
                 down_samples,
@@ -443,7 +480,7 @@ mod custom {
     }
 
     #[derive(Debug)]
-    pub struct Generator {
+    pub struct CustomGenerator {
         enc_blocks: Vec<Block>,
         dec_blocks: Vec<Block>,
         down_samples: Vec<ConvND>,
@@ -454,13 +491,13 @@ mod custom {
         num_contexts: Vec<usize>,
     }
 
-    impl Generator {
+    impl CustomGenerator {
         pub fn forward_t(
             &self,
             input: &Tensor,
             contexts: impl OptionalTensorList,
             train: bool,
-        ) -> Result<GeneratorOutput> {
+        ) -> Result<CustomGeneratorOutput> {
             let Self {
                 enc_blocks,
                 dec_blocks,
@@ -618,7 +655,7 @@ mod custom {
             // reverse output contexts
             output_contexts.reverse();
 
-            Ok(GeneratorOutput {
+            Ok(CustomGeneratorOutput {
                 output: xs,
                 contexts: output_contexts,
             })
@@ -662,7 +699,7 @@ mod custom {
             top_block.denormalize_bn();
         }
 
-        pub fn grad(&self) -> GeneratorGrad {
+        pub fn grad(&self) -> CustomGeneratorGrad {
             let Self {
                 enc_blocks,
                 dec_blocks,
@@ -674,7 +711,7 @@ mod custom {
                 ..
             } = self;
 
-            GeneratorGrad {
+            CustomGeneratorGrad {
                 enc_blocks: enc_blocks.iter().map(|block| block.grad()).collect(),
                 dec_blocks: dec_blocks.iter().map(|block| block.grad()).collect(),
                 down_samples: down_samples.iter().map(|down| down.grad()).collect(),
@@ -687,13 +724,13 @@ mod custom {
     }
 
     #[derive(Debug)]
-    pub struct GeneratorOutput {
+    pub struct CustomGeneratorOutput {
         pub output: Tensor,
         pub contexts: Vec<Tensor>,
     }
 
     #[derive(Debug)]
-    pub struct GeneratorGrad {
+    pub struct CustomGeneratorGrad {
         pub enc_blocks: Vec<BlockGrad>,
         pub dec_blocks: Vec<BlockGrad>,
         pub down_samples: Vec<ConvNDGrad>,
@@ -718,7 +755,7 @@ mod tests {
 
         let vs = nn::VarStore::new(Device::Cpu);
         let root = vs.root();
-        let generator = GeneratorInit {
+        let generator = CustomGeneratorInit {
             ndims: 2,
             input_channels: cx,
             output_channels: cy,
@@ -732,7 +769,7 @@ mod tests {
 
         // first pass, without contexts
         let input = Tensor::rand(&[bs, cx as i64, hx, wx], FLOAT_CPU);
-        let GeneratorOutput {
+        let CustomGeneratorOutput {
             output, contexts, ..
         } = generator.forward_t(&input, NONE_TENSORS, true)?;
         ensure!(
@@ -741,7 +778,7 @@ mod tests {
         );
 
         // second pass, with contexts
-        let GeneratorOutput {
+        let CustomGeneratorOutput {
             output, contexts, ..
         } = generator.forward_t(&input, contexts, true)?;
         ensure!(
@@ -750,7 +787,7 @@ mod tests {
         );
 
         // third pass, with contexts
-        let GeneratorOutput { output, .. } = generator.forward_t(&input, contexts, true)?;
+        let CustomGeneratorOutput { output, .. } = generator.forward_t(&input, contexts, true)?;
         ensure!(
             output.size() == vec![bs, cy as i64, hx, wx],
             "incorrect output shape"

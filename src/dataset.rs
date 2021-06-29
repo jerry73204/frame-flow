@@ -1,31 +1,142 @@
 use crate::common::*;
 
-pub use dataset::Dataset;
+pub use dataset::*;
 pub use iii_dataset::*;
+pub use mnist_dataset::*;
 pub use simple_dataset::*;
 
 mod dataset {
     use super::*;
 
+    #[derive(Debug)]
+    pub enum SampleRef<'a> {
+        File(&'a FileSample),
+        Tensor(&'a TensorSample),
+    }
+
+    impl<'a> SampleRef<'a> {
+        pub fn image(&self) -> Result<Tensor> {
+            let image = match self {
+                Self::File(sample) => vision::image::load(&sample.image_file)?
+                    .to_kind(Kind::Float)
+                    .g_div_scalar(255.0),
+                Self::Tensor(sample) => sample.image.shallow_clone(),
+            };
+            Ok(image)
+        }
+
+        pub fn size(&self) -> PixelSize<usize> {
+            match self {
+                Self::File(sample) => sample.size.clone(),
+                Self::Tensor(sample) => sample.size(),
+            }
+        }
+
+        pub fn boxes(&self) -> &[PixelRectLabel<R64>] {
+            match self {
+                Self::File(sample) => &sample.boxes,
+                Self::Tensor(sample) => &sample.boxes,
+            }
+        }
+    }
+
+    impl<'a> From<&'a TensorSample> for SampleRef<'a> {
+        fn from(v: &'a TensorSample) -> Self {
+            Self::Tensor(v)
+        }
+    }
+
+    impl<'a> From<&'a FileSample> for SampleRef<'a> {
+        fn from(v: &'a FileSample) -> Self {
+            Self::File(v)
+        }
+    }
+
+    #[derive(Debug)]
+    pub enum Sample {
+        File(FileSample),
+        Tensor(TensorSample),
+    }
+
+    impl Sample {
+        pub fn image(&self) -> Result<Tensor> {
+            let image = match self {
+                Self::File(sample) => vision::image::load(&sample.image_file)?,
+                Self::Tensor(sample) => sample.image.shallow_clone(),
+            };
+            Ok(image)
+        }
+
+        pub fn size(&self) -> PixelSize<usize> {
+            match self {
+                Self::File(sample) => sample.size.clone(),
+                Self::Tensor(sample) => sample.size(),
+            }
+        }
+
+        pub fn boxes(&self) -> &[PixelRectLabel<R64>] {
+            match self {
+                Self::File(sample) => &sample.boxes,
+                Self::Tensor(sample) => &sample.boxes,
+            }
+        }
+    }
+
+    impl From<TensorSample> for Sample {
+        fn from(v: TensorSample) -> Self {
+            Self::Tensor(v)
+        }
+    }
+
+    impl From<FileSample> for Sample {
+        fn from(v: FileSample) -> Self {
+            Self::File(v)
+        }
+    }
+
     #[derive(Debug, Clone)]
-    pub struct Sample {
+    pub struct FileSample {
         pub image_file: PathBuf,
         pub size: PixelSize<usize>,
         pub boxes: Vec<PixelRectLabel<R64>>,
     }
 
     #[derive(Debug)]
+    pub struct TensorSample {
+        pub image: Tensor,
+        pub boxes: Vec<PixelRectLabel<R64>>,
+    }
+
+    // HACK: workaround for `Tensor` is not Sync
+    unsafe impl Sync for TensorSample {}
+
+    impl TensorSample {
+        pub fn size(&self) -> PixelSize<usize> {
+            let (_c, h, w) = self.image.size3().unwrap();
+            PixelSize::from_hw(h as usize, w as usize).unwrap()
+        }
+    }
+
+    #[derive(Debug)]
     pub enum Dataset {
         Simple(simple_dataset::SimpleDataset),
         Iii(iii_dataset::IiiDataset),
+        Mnist(mnist_dataset::MnistDataset),
     }
 
     impl Dataset {
-        pub fn sample(&self, length: usize) -> Result<&[Sample]> {
+        pub fn sample(&self, length: usize) -> Result<Vec<SampleRef<'_>>> {
             match self {
                 Self::Simple(dataset) => dataset.sample(length),
                 Self::Iii(dataset) => dataset.sample(length),
+                Dataset::Mnist(dataset) => Ok(dataset.sample(length)),
             }
+        }
+    }
+
+    impl From<mnist_dataset::MnistDataset> for Dataset {
+        fn from(v: mnist_dataset::MnistDataset) -> Self {
+            Self::Mnist(v)
         }
     }
 
@@ -43,7 +154,10 @@ mod dataset {
 }
 
 mod iii_dataset {
-    use super::{dataset::Sample, *};
+    use super::{
+        dataset::{FileSample, SampleRef},
+        *,
+    };
     use iii_formosa_dataset as iii;
 
     const III_IMAGE_CHANNELS: usize = 3;
@@ -59,7 +173,7 @@ mod iii_dataset {
     #[derive(Debug, Clone)]
     struct TimeSeries {
         dir: PathBuf,
-        samples: Vec<Sample>,
+        samples: Vec<FileSample>,
     }
 
     impl IiiDataset {
@@ -168,7 +282,7 @@ mod iii_dataset {
                                 })
                                 .try_collect()?;
 
-                            let sample = Sample {
+                            let sample = FileSample {
                                 image_file,
                                 size,
                                 boxes,
@@ -206,7 +320,7 @@ mod iii_dataset {
             })
         }
 
-        pub fn sample(&self, length: usize) -> Result<&[Sample]> {
+        pub fn sample(&self, length: usize) -> Result<Vec<SampleRef<'_>>> {
             ensure!(length > 0, "zero length is not allowed");
             ensure!(
                 self.min_series_len >= length,
@@ -225,7 +339,10 @@ mod iii_dataset {
             let end = series.samples.len() - length;
             let start_index = rng.gen_range(0..=end);
             let end_index = start_index + length;
-            let samples = &series.samples[start_index..end_index];
+            let samples: Vec<SampleRef<'_>> = series.samples[start_index..end_index]
+                .iter()
+                .map(Into::into)
+                .collect();
 
             Ok(samples)
         }
@@ -314,8 +431,66 @@ mod iii_dataset {
     // }
 }
 
+mod mnist_dataset {
+    use super::{
+        dataset::{SampleRef, TensorSample},
+        *,
+    };
+
+    #[derive(Debug)]
+    pub struct MnistDataset {
+        samples: Vec<TensorSample>,
+    }
+
+    impl MnistDataset {
+        pub fn new(dir: impl AsRef<Path>) -> Result<Self> {
+            let dataset = vision::mnist::load_dir(dir)?;
+            let images = Tensor::cat(
+                &[
+                    dataset.train_images.view([-1, 28, 28]),
+                    dataset.test_images.view([-1, 28, 28]),
+                ],
+                0,
+            );
+            let num_images = images.size3().unwrap().0;
+            let samples: Vec<_> = (0..num_images)
+                .map(|index| {
+                    let image = images
+                        .select(0, index)
+                        .unsqueeze(0)
+                        .expand(&[3, 28, 28], false);
+                    TensorSample {
+                        image,
+                        boxes: vec![],
+                    }
+                })
+                .collect();
+
+            Ok(Self { samples })
+        }
+
+        pub fn sample(&self, length: usize) -> Vec<SampleRef<'_>> {
+            let mut rng = rand::thread_rng();
+            let num_images = self.samples.len();
+
+            let samples: Vec<SampleRef<'_>> = (0..length)
+                .map(|_| {
+                    let index = rng.gen_range(0..num_images);
+                    &self.samples[index]
+                })
+                .map(Into::into)
+                .collect();
+
+            samples
+        }
+    }
+}
+
 mod simple_dataset {
-    use super::{dataset::Sample, *};
+    use super::{
+        dataset::{FileSample, SampleRef},
+        *,
+    };
 
     #[derive(Debug)]
     pub struct SimpleDataset {
@@ -327,7 +502,7 @@ mod simple_dataset {
     #[derive(Debug)]
     struct TimeSeries {
         name: String,
-        samples: Vec<Sample>,
+        samples: Vec<FileSample>,
     }
 
     impl SimpleDataset {
@@ -453,7 +628,7 @@ mod simple_dataset {
                                 image_file.display()
                             );
                             let boxes = labels.remove(&sample_index).unwrap_or_else(|| vec![]);
-                            let sample = Sample {
+                            let sample = FileSample {
                                 image_file,
                                 boxes,
                                 size: image_size.clone(),
@@ -480,7 +655,7 @@ mod simple_dataset {
             })
         }
 
-        pub fn sample(&self, length: usize) -> Result<&[Sample]> {
+        pub fn sample(&self, length: usize) -> Result<Vec<SampleRef<'_>>> {
             let Self {
                 min_length,
                 ref series,
@@ -504,7 +679,10 @@ mod simple_dataset {
             let end = series.samples.len() - length;
             let start_index = rng.gen_range(0..=end);
             let end_index = start_index + length;
-            let samples = &series.samples[start_index..end_index];
+            let samples: Vec<SampleRef<'_>> = series.samples[start_index..end_index]
+                .iter()
+                .map(Into::into)
+                .collect();
 
             Ok(samples)
         }

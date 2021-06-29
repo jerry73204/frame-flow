@@ -15,6 +15,7 @@ pub enum LogMessage {
 
 #[derive(Debug)]
 pub struct LossLog {
+    pub det_loss: f64,
     pub det_recon_loss: f64,
     pub discriminator_loss: f64,
     pub generator_loss: f64,

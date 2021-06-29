@@ -1,7 +1,7 @@
 use crate::{
     common::*,
     config,
-    dataset::{Dataset, IiiDataset, SimpleDataset},
+    dataset::{Dataset, IiiDataset, MnistDataset, SimpleDataset},
     message as msg,
 };
 
@@ -10,18 +10,17 @@ pub async fn training_stream(
     train_cfg: &config::Training,
 ) -> Result<impl Stream<Item = Result<msg::TrainingMessage>>> {
     let config::Training {
-        ref cache_dir,
+        // ref cache_dir,
         latent_dim,
         batch_size,
-        device,
+        // device,
         image_size,
         peek_len,
         pred_len,
         ..
     } = *train_cfg;
-    let seq_len = peek_len.get() + pred_len.get();
+    let seq_len = peek_len + pred_len.get();
     let image_size = image_size.get() as i64;
-    let image_dim = dataset_cfg.image_dim() as i64;
     let batch_size = batch_size.get();
     let latent_dim = latent_dim.get() as i64;
 
@@ -49,6 +48,9 @@ pub async fn training_stream(
         }) => SimpleDataset::load(dataset_dir, file_name_digits.get())
             .await?
             .into(),
+        config::Dataset::Mnist(config::MnistDataset { ref dataset_dir }) => {
+            MnistDataset::new(dataset_dir)?.into()
+        }
     };
     let dataset = Arc::new(dataset);
 
@@ -62,14 +64,11 @@ pub async fn training_stream(
                 let pairs: Vec<_> = samples
                     .iter()
                     .map(|sample| -> Result<_> {
-                        let image = vision::image::load(&sample.image_file)?;
+                        let image = sample.image()?;
+
                         let orig_size = {
-                            let (orig_c, orig_h, orig_w) = image.size3().unwrap();
-                            assert_eq!(orig_c, 3);
-                            PixelSize::from_hw(orig_h, orig_w)
-                                .unwrap()
-                                .cast::<R64>()
-                                .unwrap()
+                            let (_, h, w) = image.size3().unwrap();
+                            PixelSize::from_hw(h, w).unwrap().cast::<R64>().unwrap()
                         };
                         let new_size = PixelSize::from_hw(image_size, image_size)
                             .unwrap()
@@ -78,15 +77,14 @@ pub async fn training_stream(
                         let transform =
                             PixelRectTransform::from_resizing_letterbox(&orig_size, &new_size);
 
+                        // resize image
                         let image = image
                             .resize2d_letterbox(image_size, image_size)?
-                            .g_div_scalar(255.0)
-                            .to_kind(Kind::Float)
-                            .to_device(device)
                             .set_requires_grad(false);
 
+                        // transform boxes
                         let boxes: Vec<_> = sample
-                            .boxes
+                            .boxes()
                             .iter()
                             .map(|rect| (&transform * rect).to_ratio_label(&new_size))
                             .collect();
@@ -133,7 +131,7 @@ pub async fn training_stream(
 
             let seq_len = image_batch_seq.len();
             let noise_seq: Vec<Tensor> = (0..seq_len)
-                .map(|_| Tensor::randn(&[batch_size as i64, latent_dim], (Kind::Float, device)))
+                .map(|_| Tensor::randn(&[batch_size as i64, latent_dim], FLOAT_CPU))
                 .collect();
 
             Fallible::Ok((batch_index, image_batch_seq, boxes_batch_seq, noise_seq))
