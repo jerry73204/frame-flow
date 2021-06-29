@@ -44,7 +44,10 @@
     },
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
-        "batch_size": 26,
+        // resnet
+        "batch_size": 16,
+        // unet
+        // "batch_size": 20,
         "image_size": 256,
         "latent_dim": 8,
         "device": "cuda:0",

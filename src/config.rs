@@ -114,8 +114,8 @@ pub struct GeneratorModel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeneratorModelKind {
-    #[serde(rename = "n_layers")]
-    NLayers,
+    #[serde(rename = "resnet")]
+    Resnet,
     #[serde(rename = "unet")]
     UNet,
 }

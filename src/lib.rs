@@ -53,7 +53,7 @@ pub async fn start(config: config::Config) -> Result<()> {
     // let mut discriminator_opt = nn::adam(0.5, 0.999, 0.).build(&discriminator_vs, learning_rate)?;
 
     let config = ArcRef::new(Arc::new(config));
-    let (train_tx, train_rx) = mpsc::channel(8);
+    let (train_tx, train_rx) = mpsc::channel(16);
     let (log_tx, log_rx) = mpsc::channel(2);
 
     // data stream to channel worker

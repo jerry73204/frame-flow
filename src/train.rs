@@ -3,7 +3,7 @@ use crate::{
     config, message as msg,
     model::{
         self, DetectionEmbeddingInit, Discriminator, Generator, NLayerDiscriminatorInit, NormKind,
-        PixelDiscriminatorInit, ResnetGeneratorInit, UnetGeneratorInit, WGanGpInit,
+        ResnetGeneratorInit, UnetGeneratorInit, WGanGpInit,
     },
     FILE_STRFTIME,
 };
@@ -67,7 +67,7 @@ pub fn training_worker(
         .build(&root / "embedding");
 
         let gen_model: Generator = match config.model.generator.kind {
-            config::GeneratorModelKind::NLayers => ResnetGeneratorInit::<9>::default()
+            config::GeneratorModelKind::Resnet => ResnetGeneratorInit::<1>::default()
                 .build(
                     &root / "generator",
                     embedding_dim + latent_dim,
@@ -75,7 +75,7 @@ pub fn training_worker(
                     64,
                 )
                 .into(),
-            config::GeneratorModelKind::UNet => UnetGeneratorInit::<8>::default()
+            config::GeneratorModelKind::UNet => UnetGeneratorInit::<5>::default()
                 .build(
                     &root / "generator",
                     embedding_dim + latent_dim,
@@ -251,7 +251,7 @@ pub fn training_worker(
                         };
                         debug_assert_eq!(image.size(), image_recon.size());
                         let det_recon =
-                            detector_model.forward_t(&(&image_recon / 2.0 + 0.5), true)?;
+                            detector_model.forward_t(&(&image_recon / 2.0 + 0.5), false)?;
                         let det_recon_loss = model::dense_detectino_similarity(&det, &det_recon)?;
                         // let (det_recon_loss, _) =
                         //     detector_loss_fn.forward(&det_recon.shallow_clone().try_into()?, boxes);
