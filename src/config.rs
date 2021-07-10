@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::{common::*, model::NormKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -83,7 +83,16 @@ pub struct Training {
     #[serde(with = "tch_serde::serde_device")]
     pub device: Device,
     pub lr_schedule: train::config::LearningRateSchedule,
+    #[serde(default = "default_warm_up_steps")]
     pub warm_up_steps: usize,
+    #[serde(default = "default_label_flip_prob")]
+    pub label_flip_prob: R64,
+    #[serde(default = "default_critic_steps")]
+    pub critic_steps: NonZeroUsize,
+    #[serde(default = "default_generate_steps")]
+    pub generate_steps: NonZeroUsize,
+    #[serde(default = "default_critic_noise_prob")]
+    pub critic_noise_prob: R64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +119,7 @@ pub struct DetectionModel {
 pub struct GeneratorModel {
     pub kind: GeneratorModelKind,
     pub weights_file: Option<PathBuf>,
+    pub norm: NormKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -123,6 +133,7 @@ pub enum GeneratorModelKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscriminatorModel {
     pub weights_file: Option<PathBuf>,
+    pub norm: NormKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,12 +145,29 @@ pub struct Loss {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GanLoss {
-    #[serde(rename = "dc_gan")]
     DcGan,
-    #[serde(rename = "relativistic_gan")]
-    RelativisticGan,
-    #[serde(rename = "wgan")]
+    RaSGan,
+    RaLsGan,
     WGan,
-    #[serde(rename = "wgan_gp")]
     WGanGp,
+}
+
+fn default_label_flip_prob() -> R64 {
+    r64(0.0)
+}
+
+fn default_critic_steps() -> NonZeroUsize {
+    NonZeroUsize::new(1).unwrap()
+}
+
+fn default_generate_steps() -> NonZeroUsize {
+    NonZeroUsize::new(1).unwrap()
+}
+
+fn default_warm_up_steps() -> usize {
+    0
+}
+
+fn default_critic_noise_prob() -> R64 {
+    r64(0.0)
 }

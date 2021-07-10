@@ -15,11 +15,13 @@
             "weights_file": "cfg/weights/2021-03-28-12-02-57.728+0800_4582000_04.74864.ckpt",
         },
         "generator": {
-            "kind": "unet",
-            "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/generator_2021-06-29-21-43-16.324+0800_014500.ckpt",
+            "kind": "resnet",
+            "norm": "BatchNorm",
+            // "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/generator_2021-06-29-21-43-16.324+0800_014500.ckpt",
         },
         "discriminator": {
-            "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/discriminator_2021-06-29-21-43-16.292+0800_014500.ckpt",
+            "norm": "InstanceNorm",
+            // "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/discriminator_2021-06-29-21-43-16.292+0800_014500.ckpt",
         },
     },
     "loss": {
@@ -40,7 +42,7 @@
             "objectness_loss_weight": 1.0,
             "classification_loss_weight": 55.0,
         },
-        "image_recon": "wgan_gp",
+        "image_recon": "WGanGp",
     },
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
@@ -49,17 +51,20 @@
         // unet
         // "batch_size": 20,
         "image_size": 256,
-        "latent_dim": 8,
+        "latent_dim": 256,
         "device": "cuda:0",
         "peek_len": 0,
         "pred_len": 1,
         "lr_schedule": {
             "type": "StepWise",
             "steps": [
-                [0, 0.0002],
+                [0, 0.0001],
             ],
         },
-        "warm_up_steps": 100,
+        "warm_up_steps": 20,
+        "label_flip_prob": 0,
+        "critic_noise_prob": 0.5,
+        "critic_steps": 5,
     },
     "logging": {
         "log_dir": "log",

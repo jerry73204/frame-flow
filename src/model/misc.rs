@@ -18,7 +18,7 @@ impl PaddingKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NormKind {
     BatchNorm,
     InstanceNorm,
@@ -29,11 +29,21 @@ impl NormKind {
     pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>, out_dim: i64) -> Norm {
         match self {
             Self::BatchNorm => {
-                let norm = DarkBatchNormInit::default().build(path, out_dim);
+                let norm = DarkBatchNormInit {
+                    var_min: Some(1e-3),
+                    var_max: Some(1e3),
+                    ..Default::default()
+                }
+                .build(path, out_dim);
                 Norm::BatchNorm(norm)
             }
             Self::InstanceNorm => {
-                let norm = InstanceNormInit::default().build(path, out_dim);
+                let norm = InstanceNormInit {
+                    var_min: Some(1e-3),
+                    var_max: Some(1e3),
+                    ..Default::default()
+                }
+                .build(path, out_dim);
                 Norm::InstanceNorm(norm)
             }
             Self::None => Norm::None,

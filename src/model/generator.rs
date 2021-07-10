@@ -1,7 +1,6 @@
 use super::{
     block::{Block, BlockGrad, BlockInit, BlockOutput},
     misc::{NormKind, PaddingKind},
-    resnet_block::ResnetBlockInit,
     unet_block::{UnetBlock, UnetBlockInit, UnetModule},
 };
 use crate::common::*;
@@ -55,7 +54,7 @@ mod unet {
     impl<const NUM_BLOCKS: usize> Default for UnetGeneratorInit<NUM_BLOCKS> {
         fn default() -> Self {
             Self {
-                norm_kind: NormKind::InstanceNorm,
+                norm_kind: NormKind::BatchNorm,
                 dropout: false,
             }
         }
@@ -162,50 +161,58 @@ mod resnet {
     use super::*;
 
     #[derive(Debug, Clone)]
-    pub struct ResnetGeneratorInit<const NUM_BLOCKS: usize> {
+    pub struct ResnetGeneratorInit {
         pub padding_kind: PaddingKind,
         pub norm_kind: NormKind,
         pub dropout: bool,
+        pub ksize: usize,
     }
 
-    impl<const NUM_BLOCKS: usize> Default for ResnetGeneratorInit<NUM_BLOCKS> {
+    impl Default for ResnetGeneratorInit {
         fn default() -> Self {
             Self {
                 padding_kind: PaddingKind::Reflect,
-                norm_kind: NormKind::BatchNorm,
+                norm_kind: NormKind::InstanceNorm,
                 dropout: false,
+                ksize: 5,
             }
         }
     }
 
-    impl<const NUM_BLOCKS: usize> ResnetGeneratorInit<NUM_BLOCKS> {
+    impl ResnetGeneratorInit {
         pub fn build<'a>(
             self,
             path: impl Borrow<nn::Path<'a>>,
             in_c: usize,
             out_c: usize,
             inner_c: usize,
+            num_scale_blocks: usize,
+            num_resnet_blocks: usize,
         ) -> ResnetGenerator {
             let path = path.borrow();
             let Self {
                 padding_kind,
                 norm_kind,
                 dropout,
+                ksize,
             } = self;
             let in_c = in_c as i64;
             let out_c = out_c as i64;
             let inner_c = inner_c as i64;
             let bias = norm_kind == NormKind::InstanceNorm;
+            let padding = ksize / 2;
+            let ksize = ksize as i64;
 
+            // first block
             let seq = {
-                let path = path / "first_block";
+                let path = path / "block_0";
                 nn::seq_t()
-                    .add(padding_kind.build([3, 3, 3, 3]))
+                    .add(padding_kind.build([padding, padding, padding, padding]))
                     .add(nn::conv2d(
                         &path / "conv",
                         in_c,
                         inner_c,
-                        7,
+                        ksize,
                         nn::ConvConfig {
                             padding: 0,
                             bias,
@@ -213,76 +220,109 @@ mod resnet {
                         },
                     ))
                     .add(norm_kind.build(&path / "norm", inner_c))
-                    .add_fn(|xs| xs.leaky_relu())
+                    .add_fn(leaky_relu)
             };
 
-            const NUM_DOWN_SAMPLING: usize = 2;
-            let seq = (0..NUM_DOWN_SAMPLING).fold(seq, |seq, index| {
-                let path = path / format!("down_sample_{}", index);
-                let scale = 2i64.pow(index as u32);
+            // down sampling
+            let seq = (0..num_scale_blocks).fold(seq, |seq, index| {
+                let path = path / format!("block_{}", index + 1);
                 seq.add(nn::conv2d(
                     &path / "conv",
-                    inner_c * scale,
-                    inner_c * scale * 2,
-                    3,
+                    inner_c,
+                    inner_c,
+                    ksize,
                     nn::ConvConfig {
                         stride: 2,
-                        padding: 1,
+                        padding: padding as i64,
                         bias,
                         ..Default::default()
                     },
                 ))
-                .add(norm_kind.build(&path / "norm", inner_c * scale * 2))
-                .add_fn(|xs| xs.leaky_relu())
+                .add(norm_kind.build(&path / "norm", inner_c))
+                .add_fn(leaky_relu)
             });
 
+            // resnet blocks
             let seq = {
-                let scale = 2i64.pow(NUM_DOWN_SAMPLING as u32);
+                (0..num_resnet_blocks).fold(seq, |seq, index| {
+                    let path = path / format!("block_{}", index + num_scale_blocks + 1);
 
-                (0..NUM_BLOCKS).fold(seq, |seq, index| {
-                    seq.add(
-                        ResnetBlockInit {
-                            padding_kind,
-                            norm_kind,
-                            bias,
-                            dropout,
-                        }
-                        .build(
-                            path / format!("resnet_block_{}", index,),
-                            (inner_c * scale) as usize,
-                        ),
-                    )
+                    let branch = {
+                        let branch = nn::seq_t()
+                            .add(padding_kind.build([padding, padding, padding, padding]))
+                            .add(nn::conv2d(
+                                &path / "conv1",
+                                inner_c,
+                                inner_c,
+                                ksize,
+                                nn::ConvConfig {
+                                    padding: 0,
+                                    bias,
+                                    ..Default::default()
+                                },
+                            ))
+                            .add(norm_kind.build(&path / "norm1", inner_c))
+                            .add_fn(|xs| xs.relu());
+
+                        let branch = if dropout {
+                            branch.add_fn_t(|xs, train| xs.dropout(0.5, train))
+                        } else {
+                            branch
+                        };
+
+                        branch
+                            .add(padding_kind.build([padding, padding, padding, padding]))
+                            .add(nn::conv2d(
+                                &path / "conv2",
+                                inner_c,
+                                inner_c,
+                                ksize,
+                                nn::ConvConfig {
+                                    padding: 0,
+                                    bias,
+                                    ..Default::default()
+                                },
+                            ))
+                            .add(norm_kind.build(&path / "norm2", inner_c))
+                    };
+
+                    seq.add_fn_t(move |xs, train| xs + branch.forward_t(xs, train))
                 })
             };
 
-            let seq = (0..NUM_DOWN_SAMPLING).fold(seq, |seq, index| {
-                let path = path / format!("up_sample_{}", index);
-                let scale = 2i64.pow((NUM_DOWN_SAMPLING - index) as u32);
-                seq.add(nn::conv_transpose2d(
-                    &path / "conv_transpose",
-                    inner_c * scale,
-                    inner_c * scale / 2,
-                    3,
-                    nn::ConvTransposeConfig {
-                        stride: 2,
-                        padding: 1,
-                        output_padding: 1,
+            // up sampling
+            let seq = (0..num_scale_blocks).fold(seq, |seq, index| {
+                let path =
+                    path / format!("block_{}", index + num_scale_blocks + num_resnet_blocks + 1);
+                seq.add_fn(|xs| {
+                    let (_, _, h, w) = xs.size4().unwrap();
+                    xs.upsample_nearest2d(&[h * 2, w * 2], None, None)
+                })
+                .add(padding_kind.build([padding, padding, padding, padding]))
+                .add(nn::conv2d(
+                    &path / "conv",
+                    inner_c,
+                    inner_c,
+                    ksize,
+                    nn::ConvConfig {
+                        padding: 0,
                         bias,
                         ..Default::default()
                     },
                 ))
-                .add(norm_kind.build(&path / "norm", inner_c * scale / 2))
-                .add_fn(|xs| xs.leaky_relu())
+                .add(norm_kind.build(&path / "norm", inner_c))
+                .add_fn(leaky_relu)
             });
 
+            // last block
             let seq = {
-                let path = path / "last_block";
-                seq.add(padding_kind.build([3, 3, 3, 3]))
+                let path = path / format!("block_{}", num_scale_blocks * 2 + num_resnet_blocks + 1);
+                seq.add(padding_kind.build([padding, padding, padding, padding]))
                     .add(nn::conv2d(
                         &path / "conv",
                         inner_c,
                         out_c,
-                        7,
+                        ksize,
                         nn::ConvConfig {
                             padding: 0,
                             ..Default::default()
@@ -739,6 +779,10 @@ mod custom {
         pub first_conv: ConvNDGrad,
         pub last_conv: ConvNDGrad,
     }
+}
+
+fn leaky_relu(xs: &Tensor) -> Tensor {
+    xs.maximum(&(xs * 0.2))
 }
 
 #[cfg(test)]

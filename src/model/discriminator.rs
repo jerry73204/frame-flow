@@ -46,6 +46,7 @@ mod n_layers {
     #[derive(Debug, Clone)]
     pub struct NLayerDiscriminatorInit<const N_BLOCKS: usize> {
         pub norm_kind: NormKind,
+        pub ksize: usize,
     }
 
     impl<const N_BLOCKS: usize> NLayerDiscriminatorInit<N_BLOCKS> {
@@ -53,18 +54,19 @@ mod n_layers {
             self,
             path: impl Borrow<nn::Path<'a>>,
             in_c: usize,
-            inner_c: usize,
+            channels: [usize; N_BLOCKS],
         ) -> NLayerDiscriminator {
             let path = path.borrow();
-            let Self { norm_kind } = self;
+            let Self { norm_kind, ksize } = self;
             let bias = norm_kind == NormKind::InstanceNorm;
             let in_c = in_c as i64;
-            let inner_c = inner_c as i64;
-            let ksize = 3;
-            let padding = 1;
+            let ksize = ksize as i64;
+            let padding = ksize / 2;
 
-            let seq = {
-                let path = path / "first_block";
+            let seq = if N_BLOCKS > 0 {
+                let path = path / "block_0";
+                let inner_c = channels[0] as i64;
+
                 nn::seq_t()
                     .add(nn::conv2d(
                         &path / "conv",
@@ -77,23 +79,23 @@ mod n_layers {
                             ..Default::default()
                         },
                     ))
-                    .add_fn(|xs| xs.leaky_relu())
+                    .add(norm_kind.build(&path / "norm", inner_c))
+                    .add_fn(leaky_relu)
+            } else {
+                nn::seq_t()
             };
 
-            let seq = (0..N_BLOCKS)
-                .scan(1, |saved_mult, index| {
-                    let prev_mult = *saved_mult;
-                    let curr_mult = 2i64.pow(index.min(3) as u32);
-                    *saved_mult = curr_mult;
-                    Some((index, prev_mult, curr_mult))
-                })
-                .fold(seq, |seq, (index, prev_mult, curr_mult)| {
+            let seq = izip!(1..N_BLOCKS, &channels[0..], &channels[1..]).fold(
+                seq,
+                |seq, (index, &prev_c, &curr_c)| {
                     let path = path / format!("block_{}", index);
+                    let prev_c = prev_c as i64;
+                    let curr_c = curr_c as i64;
 
                     seq.add(nn::conv2d(
                         &path / "conv",
-                        inner_c * prev_mult,
-                        inner_c * curr_mult,
+                        prev_c,
+                        curr_c,
                         ksize,
                         nn::ConvConfig {
                             stride: 2,
@@ -102,38 +104,41 @@ mod n_layers {
                             ..Default::default()
                         },
                     ))
-                    .add(norm_kind.build(&path / "norm", inner_c * curr_mult))
-                    .add_fn(|xs| xs.leaky_relu())
-                });
+                    .add(norm_kind.build(&path / "norm", curr_c))
+                    .add_fn(leaky_relu)
+                },
+            );
+
+            let last_c = channels[N_BLOCKS - 1] as i64;
 
             let seq = {
                 let path = path / format!("block_{}", N_BLOCKS);
-                let prev_mult = 2i64.pow((N_BLOCKS - 1).min(3) as u32);
-                let curr_mult = 2i64.pow(N_BLOCKS.min(3) as u32);
 
-                seq.add(nn::conv2d(
-                    &path / "conv",
-                    inner_c * prev_mult,
-                    inner_c * curr_mult,
-                    ksize,
-                    nn::ConvConfig {
-                        stride: 1,
-                        padding,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm", inner_c * curr_mult))
-                .add_fn(|xs| xs.leaky_relu())
+                let branch = nn::seq_t()
+                    .add(nn::conv2d(
+                        &path / "conv",
+                        last_c,
+                        last_c,
+                        ksize,
+                        nn::ConvConfig {
+                            stride: 1,
+                            padding,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm", last_c))
+                    .add_fn(leaky_relu);
+
+                seq.add_fn_t(move |xs, train| xs + branch.forward_t(xs, train))
             };
 
             let seq = {
-                let path = path / "last_block";
-                let mult = 2i64.pow(N_BLOCKS.min(3) as u32);
+                let path = path / format!("block_{}", N_BLOCKS + 1);
 
                 seq.add(nn::conv2d(
                     &path / "conv",
-                    inner_c * mult,
+                    last_c,
                     1,
                     ksize,
                     nn::ConvConfig {
@@ -148,7 +153,10 @@ mod n_layers {
                 })
             };
 
-            NLayerDiscriminator { seq }
+            NLayerDiscriminator {
+                seq,
+                num_blocks: N_BLOCKS,
+            }
         }
     }
 
@@ -156,6 +164,7 @@ mod n_layers {
         fn default() -> Self {
             Self {
                 norm_kind: NormKind::BatchNorm,
+                ksize: 5,
             }
         }
     }
@@ -163,10 +172,15 @@ mod n_layers {
     #[derive(Debug)]
     pub struct NLayerDiscriminator {
         seq: nn::SequentialT,
+        num_blocks: usize,
     }
 
-    impl NLayerDiscriminator {
-        pub fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
+    impl nn::ModuleT for NLayerDiscriminator {
+        fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
+            debug_assert!({
+                let (_b, _c, h, w) = input.size4().unwrap();
+                h == w && h == 2i64.pow(self.num_blocks as u32)
+            });
             self.seq.forward_t(input, train)
         }
     }
@@ -205,7 +219,7 @@ mod pixel {
                         ..Default::default()
                     },
                 ))
-                .add_fn(|xs| xs.leaky_relu())
+                .add_fn(leaky_relu)
                 .add(nn::conv2d(
                     path / "conv2",
                     inner_c,
@@ -219,7 +233,7 @@ mod pixel {
                     },
                 ))
                 .add(norm_kind.build(path / "norm1", inner_c * 2))
-                .add_fn(|xs| xs.leaky_relu())
+                .add_fn(leaky_relu)
                 .add(nn::conv2d(
                     path / "conv2",
                     inner_c,
@@ -410,6 +424,10 @@ mod custom {
         pub down_samples: Vec<ConvNDGrad>,
         pub linear: LinearGrad,
     }
+}
+
+fn leaky_relu(xs: &Tensor) -> Tensor {
+    xs.maximum(&(xs * 0.2))
 }
 
 #[cfg(test)]

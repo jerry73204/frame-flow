@@ -19,6 +19,8 @@ pub struct LossLog {
     pub det_recon_loss: f64,
     pub discriminator_loss: f64,
     pub generator_loss: f64,
+    pub gen_grads: Vec<(String, f64)>,
+    pub disc_grads: Vec<(String, f64)>,
 }
 
 #[derive(Debug)]

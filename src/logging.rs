@@ -39,6 +39,8 @@ pub async fn logging_worker(
                         det_recon_loss,
                         discriminator_loss,
                         generator_loss,
+                        disc_grads,
+                        gen_grads,
                     } = log_step;
 
                     event_writer
@@ -72,6 +74,26 @@ pub async fn logging_worker(
                     event_writer
                         .write_scalar_async("params/learning_rate", step, learning_rate as f32)
                         .await?;
+
+                    for (name, grad) in disc_grads {
+                        event_writer
+                            .write_scalar_async(
+                                format!("discriminator_gradients/{}", name),
+                                step,
+                                grad as f32,
+                            )
+                            .await?;
+                    }
+
+                    for (name, grad) in gen_grads {
+                        event_writer
+                            .write_scalar_async(
+                                format!("generator_gradients/{}", name),
+                                step,
+                                grad as f32,
+                            )
+                            .await?;
+                    }
                 }
             }
             msg::LogMessage::Image { step, sequence } => {
