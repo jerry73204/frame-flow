@@ -154,39 +154,35 @@ pub fn training_worker(
     };
 
     // warm up
-
     info!("run warm-up for {} steps", warm_up_steps);
-    for _ in 0..warm_up_steps {
-        let msg = match train_rx.blocking_recv() {
-            Some(msg) => msg,
-            None => break,
-        };
-        let msg::TrainingMessage {
-            batch_index: _,
-            image_batch_seq,
-            ..
-        } = msg.to_device(device);
-
+    tch::no_grad(|| -> Result<_> {
+        detector_vs.freeze();
         generator_vs.freeze();
         discriminator_vs.freeze();
 
-        image_batch_seq.iter().try_for_each(|image| -> Result<_> {
-            debug_assert!(image.kind() == Kind::Float);
-            debug_assert!(f64::from(image.min()) >= 0.0 && f64::from(image.max()) <= 1.0);
+        for round in 0..warm_up_steps {
+            let msg = match train_rx.blocking_recv() {
+                Some(msg) => msg,
+                None => break,
+            };
+            let msg::TrainingMessage {
+                batch_index: _,
+                image_batch_seq,
+                ..
+            } = msg.to_device(device);
 
-            let det = detector_model.forward_t(image, false)?;
-            let image = image * 2.0 - 1.0;
+            image_batch_seq.iter().try_for_each(|image| -> Result<_> {
+                debug_assert!(image.kind() == Kind::Float);
+                debug_assert!(f64::from(image.min()) >= 0.0 && f64::from(image.max()) <= 1.0);
 
-            // train discriminator
+                let det = detector_model.forward_t(image, false)?;
+                let image = image * 2.0 - 1.0;
 
-            for _ in 0..critic_steps {
                 // clamp running_var in norms
-                tch::no_grad(|| {
-                    discriminator_vs.variables().iter().for_each(|(name, var)| {
-                        if name.ends_with(".running_var") {
-                            let _ = var.shallow_clone().clamp_(1e-3, 1e3);
-                        }
-                    });
+                discriminator_vs.variables().iter().for_each(|(name, var)| {
+                    if name.ends_with(".running_var") {
+                        let _ = var.shallow_clone().clamp_(1e-3, 1e3);
+                    }
                 });
 
                 let image_recon = {
@@ -202,12 +198,15 @@ pub fn training_worker(
                 debug_assert_eq!(image.size(), image_recon.size());
                 let _real_score = discriminator_model.forward_t(&image, true);
                 let _fake_score = discriminator_model.forward_t(&image_recon.copy().detach(), true);
-            }
 
-            Ok(())
-        })?;
-    }
+                Ok(())
+            })?;
+        }
 
+        Ok(())
+    })?;
+
+    info!("start training");
     while let Some(msg) = train_rx.blocking_recv() {
         let msg::TrainingMessage {
             batch_index: _,
@@ -257,6 +256,7 @@ pub fn training_worker(
                             generator_model.forward_t(&input, true)
                         };
                         debug_assert_eq!(image.size(), image_recon.size());
+                        debug_assert!(!image_recon.has_nan());
 
                         let (real_image, fake_image) = {
                             let real_image = image.shallow_clone();
@@ -271,8 +271,10 @@ pub fn training_worker(
 
                             let critic_noise = rng.gen_bool(critic_noise_prob);
                             let (real_image, fake_image) = if critic_noise {
-                                let real_noise = real_image.randn_like() * 1e-5;
-                                let fake_noise = fake_image.randn_like() * 1e-5;
+                                let real_noise =
+                                    (real_image.randn_like() * 1e-5).set_requires_grad(false);
+                                let fake_noise =
+                                    (fake_image.randn_like() * 1e-5).set_requires_grad(false);
 
                                 (real_image + real_noise, fake_image + fake_noise)
                             } else {
@@ -341,6 +343,7 @@ pub fn training_worker(
                                 discriminator_loss + gp_loss
                             }
                         };
+                        debug_assert!(!discriminator_loss.has_nan());
 
                         if gan_loss == config::GanLoss::WGan {
                             discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
@@ -452,6 +455,7 @@ pub fn training_worker(
                                 (-&fake_score).mean(Kind::Float)
                             }
                         };
+                        debug_assert!(!generator_loss.has_nan());
 
                         // let loss = &det_recon_loss + &generator_loss;
                         let loss = &generator_loss;

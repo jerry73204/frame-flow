@@ -701,43 +701,43 @@ mod custom {
             })
         }
 
-        pub fn clamp_bn_var(&mut self) {
-            let Self {
-                enc_blocks,
-                dec_blocks,
-                top_block,
-                ..
-            } = self;
+        // pub fn clamp_bn_var(&mut self) {
+        //     let Self {
+        //         enc_blocks,
+        //         dec_blocks,
+        //         top_block,
+        //         ..
+        //     } = self;
 
-            enc_blocks.iter_mut().for_each(|block| {
-                block.clamp_bn_var();
-            });
+        //     enc_blocks.iter_mut().for_each(|block| {
+        //         block.clamp_bn_var();
+        //     });
 
-            dec_blocks.iter_mut().for_each(|block| {
-                block.clamp_bn_var();
-            });
+        //     dec_blocks.iter_mut().for_each(|block| {
+        //         block.clamp_bn_var();
+        //     });
 
-            top_block.clamp_bn_var();
-        }
+        //     top_block.clamp_bn_var();
+        // }
 
-        pub fn denormalize_bn(&mut self) {
-            let Self {
-                enc_blocks,
-                dec_blocks,
-                top_block,
-                ..
-            } = self;
+        // pub fn denormalize_bn(&mut self) {
+        //     let Self {
+        //         enc_blocks,
+        //         dec_blocks,
+        //         top_block,
+        //         ..
+        //     } = self;
 
-            enc_blocks.iter_mut().for_each(|block| {
-                block.denormalize_bn();
-            });
+        //     enc_blocks.iter_mut().for_each(|block| {
+        //         block.denormalize_bn();
+        //     });
 
-            dec_blocks.iter_mut().for_each(|block| {
-                block.denormalize_bn();
-            });
+        //     dec_blocks.iter_mut().for_each(|block| {
+        //         block.denormalize_bn();
+        //     });
 
-            top_block.denormalize_bn();
-        }
+        //     top_block.denormalize_bn();
+        // }
 
         pub fn grad(&self) -> CustomGeneratorGrad {
             let Self {

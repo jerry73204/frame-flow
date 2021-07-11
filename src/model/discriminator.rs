@@ -85,7 +85,7 @@ mod n_layers {
                 nn::seq_t()
             };
 
-            let seq = izip!(1..N_BLOCKS, &channels[0..], &channels[1..]).fold(
+            let seq = izip!(1..(N_BLOCKS - 1), &channels[0..], &channels[1..]).fold(
                 seq,
                 |seq, (index, &prev_c, &curr_c)| {
                     let path = path / format!("block_{}", index);
@@ -109,6 +109,28 @@ mod n_layers {
                 },
             );
 
+            // no normalization in the last block to avoid NaN
+            let seq = {
+                let path = path / format!("block_{}", N_BLOCKS - 1);
+
+                let prev_c = channels[N_BLOCKS - 2] as i64;
+                let curr_c = channels[N_BLOCKS - 1] as i64;
+
+                seq.add(nn::conv2d(
+                    &path / "conv",
+                    prev_c,
+                    curr_c,
+                    ksize,
+                    nn::ConvConfig {
+                        stride: 2,
+                        padding,
+                        bias,
+                        ..Default::default()
+                    },
+                ))
+                .add_fn(leaky_relu)
+            };
+
             let last_c = channels[N_BLOCKS - 1] as i64;
 
             let seq = {
@@ -127,7 +149,6 @@ mod n_layers {
                             ..Default::default()
                         },
                     ))
-                    .add(norm_kind.build(&path / "norm", last_c))
                     .add_fn(leaky_relu);
 
                 seq.add_fn_t(move |xs, train| xs + branch.forward_t(xs, train))
@@ -203,7 +224,7 @@ mod pixel {
         ) -> PixelDiscriminator {
             let path = path.borrow();
             let Self { norm_kind } = self;
-            let bias = norm_kind == NormKind::InstanceNorm;
+            let bias = norm_kind == NormKind::None;
             let in_c = in_c as i64;
             let inner_c = inner_c as i64;
 
@@ -377,21 +398,21 @@ mod custom {
             Ok(xs)
         }
 
-        pub fn clamp_bn_var(&mut self) {
-            let Self { convs, .. } = self;
+        // pub fn clamp_bn_var(&mut self) {
+        //     let Self { convs, .. } = self;
 
-            convs.iter_mut().for_each(|conv| {
-                conv.clamp_bn_var();
-            });
-        }
+        //     convs.iter_mut().for_each(|conv| {
+        //         conv.clamp_bn_var();
+        //     });
+        // }
 
-        pub fn denormalize_bn(&mut self) {
-            let Self { convs, .. } = self;
+        // pub fn denormalize_bn(&mut self) {
+        //     let Self { convs, .. } = self;
 
-            convs.iter_mut().for_each(|conv| {
-                conv.denormalize_bn();
-            });
-        }
+        //     convs.iter_mut().for_each(|conv| {
+        //         conv.denormalize_bn();
+        //     });
+        // }
 
         pub fn grad(&self) -> CustomDiscriminatorGrad {
             let Self {

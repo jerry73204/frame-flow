@@ -222,35 +222,35 @@ impl Block {
         })
     }
 
-    pub fn clamp_bn_var(&mut self) {
-        let Self {
-            attention_bns,
-            pre_attention_conv,
-            post_attention_conv,
-            ..
-        } = self;
+    // pub fn clamp_bn_var(&mut self) {
+    //     let Self {
+    //         attention_bns,
+    //         pre_attention_conv,
+    //         post_attention_conv,
+    //         ..
+    //     } = self;
 
-        attention_bns.iter_mut().for_each(|bn| {
-            bn.clamp_bn_var();
-        });
-        pre_attention_conv.clamp_bn_var();
-        post_attention_conv.clamp_bn_var();
-    }
+    //     attention_bns.iter_mut().for_each(|bn| {
+    //         bn.clamp_bn_var();
+    //     });
+    //     pre_attention_conv.clamp_bn_var();
+    //     post_attention_conv.clamp_bn_var();
+    // }
 
-    pub fn denormalize_bn(&mut self) {
-        let Self {
-            attention_bns,
-            pre_attention_conv,
-            post_attention_conv,
-            ..
-        } = self;
+    // pub fn denormalize_bn(&mut self) {
+    //     let Self {
+    //         attention_bns,
+    //         pre_attention_conv,
+    //         post_attention_conv,
+    //         ..
+    //     } = self;
 
-        attention_bns.iter_mut().for_each(|bn| {
-            bn.denormalize_bn();
-        });
-        pre_attention_conv.denormalize_bn();
-        post_attention_conv.denormalize_bn();
-    }
+    //     attention_bns.iter_mut().for_each(|bn| {
+    //         bn.denormalize_bn();
+    //     });
+    //     pre_attention_conv.denormalize_bn();
+    //     post_attention_conv.denormalize_bn();
+    // }
 
     pub fn grad(&self) -> BlockGrad {
         let Self {
