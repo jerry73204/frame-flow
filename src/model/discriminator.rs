@@ -55,7 +55,7 @@ mod n_layers {
         ) -> NLayerDiscriminator {
             let path = path.borrow();
             let Self { norm_kind, ksize } = self;
-            let bias = norm_kind == NormKind::InstanceNorm;
+            let bias = norm_kind == NormKind::None;
             let in_c = in_c as i64;
             let ksize = ksize as i64;
             let padding = ksize / 2;
@@ -450,7 +450,7 @@ fn leaky_relu(xs: &Tensor) -> Tensor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // use super::*;
 
     // #[test]
     // fn discriminator_test() -> Result<()> {

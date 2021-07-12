@@ -17,6 +17,7 @@ mod generator {
     pub enum Generator {
         Unet(UnetGenerator),
         Resnet(ResnetGenerator),
+        Custom(CustomGenerator),
     }
 
     impl nn::ModuleT for Generator {
@@ -24,6 +25,7 @@ mod generator {
             match self {
                 Generator::Unet(model) => model.forward_t(input, train),
                 Generator::Resnet(model) => model.forward_t(input, train),
+                Generator::Custom(model) => model.forward_t(input, train),
             }
         }
     }
@@ -37,6 +39,12 @@ mod generator {
     impl From<UnetGenerator> for Generator {
         fn from(v: UnetGenerator) -> Self {
             Self::Unet(v)
+        }
+    }
+
+    impl From<CustomGenerator> for Generator {
+        fn from(v: CustomGenerator) -> Self {
+            Self::Custom(v)
         }
     }
 }
@@ -165,6 +173,8 @@ mod resnet {
         pub norm_kind: NormKind,
         pub dropout: bool,
         pub ksize: usize,
+        pub num_scale_blocks: usize,
+        pub num_blocks: usize,
     }
 
     impl Default for ResnetGeneratorInit {
@@ -174,6 +184,8 @@ mod resnet {
                 norm_kind: NormKind::InstanceNorm,
                 dropout: false,
                 ksize: 5,
+                num_scale_blocks: 2,
+                num_blocks: 2,
             }
         }
     }
@@ -185,8 +197,6 @@ mod resnet {
             in_c: usize,
             out_c: usize,
             inner_c: usize,
-            num_scale_blocks: usize,
-            num_resnet_blocks: usize,
         ) -> ResnetGenerator {
             let path = path.borrow();
             let Self {
@@ -194,6 +204,8 @@ mod resnet {
                 norm_kind,
                 dropout,
                 ksize,
+                num_scale_blocks,
+                num_blocks,
             } = self;
             let in_c = in_c as i64;
             let out_c = out_c as i64;
@@ -243,7 +255,7 @@ mod resnet {
 
             // resnet blocks
             let seq = {
-                (0..num_resnet_blocks).fold(seq, |seq, index| {
+                (0..num_blocks).fold(seq, |seq, index| {
                     let path = path / format!("block_{}", index + num_scale_blocks + 1);
 
                     let branch = {
@@ -291,8 +303,7 @@ mod resnet {
 
             // up sampling
             let seq = (0..num_scale_blocks).fold(seq, |seq, index| {
-                let path =
-                    path / format!("block_{}", index + num_scale_blocks + num_resnet_blocks + 1);
+                let path = path / format!("block_{}", index + num_scale_blocks + num_blocks + 1);
                 seq.add_fn(|xs| {
                     let (_, _, h, w) = xs.size4().unwrap();
                     xs.upsample_nearest2d(&[h * 2, w * 2], None, None)
@@ -315,7 +326,7 @@ mod resnet {
 
             // last block
             let seq = {
-                let path = path / format!("block_{}", num_scale_blocks * 2 + num_resnet_blocks + 1);
+                let path = path / format!("block_{}", num_scale_blocks * 2 + num_blocks + 1);
                 seq.add(padding_kind.build([padding, padding, padding, padding]))
                     .add(nn::conv2d(
                         &path / "conv",
@@ -355,6 +366,8 @@ mod custom {
         pub norm_kind: NormKind,
         pub dropout: bool,
         pub ksize: usize,
+        pub num_scale_blocks: usize,
+        pub num_blocks: usize,
     }
 
     impl Default for CustomGeneratorInit {
@@ -364,6 +377,8 @@ mod custom {
                 norm_kind: NormKind::InstanceNorm,
                 dropout: false,
                 ksize: 5,
+                num_scale_blocks: 2,
+                num_blocks: 2,
             }
         }
     }
@@ -375,15 +390,15 @@ mod custom {
             in_c: usize,
             out_c: usize,
             inner_c: usize,
-            num_scale_blocks: usize,
-            num_resnet_blocks: usize,
-        ) -> ResnetGenerator {
+        ) -> CustomGenerator {
             let path = path.borrow();
             let Self {
                 padding_kind,
                 norm_kind,
                 dropout,
                 ksize,
+                num_scale_blocks,
+                num_blocks,
             } = self;
             let in_c = in_c as i64;
             let out_c = out_c as i64;
@@ -433,23 +448,22 @@ mod custom {
 
             // resnet blocks
             let seq = {
-                (0..num_resnet_blocks).fold(seq, |seq, index| {
+                (0..num_blocks).fold(seq, |seq, index| {
                     let path = path / format!("block_{}", index + num_scale_blocks + 1);
 
                     let branch = {
                         let branch = nn::seq_t()
-                            .add(padding_kind.build([padding, padding, padding, padding]))
-                            .add(nn::conv2d(
-                                &path / "conv1",
-                                inner_c,
-                                inner_c,
-                                ksize,
-                                nn::ConvConfig {
-                                    padding: 0,
+                            .add(
+                                SelfAttentionInit::<2> {
+                                    ksize: ksize as usize,
+                                    n_heads: 1,
+                                    key_c: inner_c as usize / 2,
+                                    value_c: inner_c as usize / 2,
                                     bias,
-                                    ..Default::default()
-                                },
-                            ))
+                                }
+                                .build(&path / "attention1", inner_c as usize, inner_c as usize)
+                                .unwrap(),
+                            )
                             .add(norm_kind.build(&path / "norm1", inner_c))
                             .add_fn(|xs| xs.relu());
 
@@ -460,18 +474,17 @@ mod custom {
                         };
 
                         branch
-                            .add(padding_kind.build([padding, padding, padding, padding]))
-                            .add(nn::conv2d(
-                                &path / "conv2",
-                                inner_c,
-                                inner_c,
-                                ksize,
-                                nn::ConvConfig {
-                                    padding: 0,
+                            .add(
+                                SelfAttentionInit::<2> {
+                                    ksize: ksize as usize,
+                                    n_heads: 1,
+                                    key_c: inner_c as usize / 2,
+                                    value_c: inner_c as usize / 2,
                                     bias,
-                                    ..Default::default()
-                                },
-                            ))
+                                }
+                                .build(&path / "attention2", inner_c as usize, inner_c as usize)
+                                .unwrap(),
+                            )
                             .add(norm_kind.build(&path / "norm2", inner_c))
                     };
 
@@ -481,8 +494,7 @@ mod custom {
 
             // up sampling
             let seq = (0..num_scale_blocks).fold(seq, |seq, index| {
-                let path =
-                    path / format!("block_{}", index + num_scale_blocks + num_resnet_blocks + 1);
+                let path = path / format!("block_{}", index + num_scale_blocks + num_blocks + 1);
                 seq.add_fn(|xs| {
                     let (_, _, h, w) = xs.size4().unwrap();
                     xs.upsample_nearest2d(&[h * 2, w * 2], None, None)
@@ -505,7 +517,7 @@ mod custom {
 
             // last block
             let seq = {
-                let path = path / format!("block_{}", num_scale_blocks * 2 + num_resnet_blocks + 1);
+                let path = path / format!("block_{}", num_scale_blocks * 2 + num_blocks + 1);
                 seq.add(padding_kind.build([padding, padding, padding, padding]))
                     .add(nn::conv2d(
                         &path / "conv",
@@ -520,7 +532,7 @@ mod custom {
                     .add_fn(|xs| xs.tanh())
             };
 
-            ResnetGenerator { seq }
+            CustomGenerator { seq }
         }
     }
 
@@ -976,7 +988,7 @@ fn leaky_relu(xs: &Tensor) -> Tensor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // use super::*;
 
     // #[test]
     // fn generator_test() -> Result<()> {

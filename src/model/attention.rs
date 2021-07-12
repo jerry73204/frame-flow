@@ -7,6 +7,7 @@ pub struct SelfAttentionInit<const DIM: usize> {
     pub n_heads: usize,
     pub key_c: usize,
     pub value_c: usize,
+    pub bias: bool,
 }
 
 impl<const DIM: usize> SelfAttentionInit<DIM> {
@@ -21,6 +22,7 @@ impl<const DIM: usize> SelfAttentionInit<DIM> {
             n_heads,
             key_c,
             value_c,
+            bias,
         } = self;
         Ok(SelfAttention {
             attn: AttentionInit::<DIM> {
@@ -28,6 +30,7 @@ impl<const DIM: usize> SelfAttentionInit<DIM> {
                 n_heads,
                 key_c,
                 value_c,
+                bias,
             }
             .build(path, in_c, in_c, out_c)?,
         })
@@ -57,6 +60,7 @@ pub struct AttentionInit<const DIM: usize> {
     pub n_heads: usize,
     pub key_c: usize,
     pub value_c: usize,
+    pub bias: bool,
 }
 
 impl<const DIM: usize> AttentionInit<DIM> {
@@ -73,23 +77,24 @@ impl<const DIM: usize> AttentionInit<DIM> {
             n_heads,
             key_c,
             value_c,
+            bias,
         } = self;
 
-        let query_conv = ConvNDInit::<[usize; DIM]>::new(ksize).build(
-            path / "query_conv",
-            in_c,
-            n_heads * key_c,
-        )?;
-        let key_conv = ConvNDInit::<[usize; DIM]>::new(ksize).build(
-            path / "key_conv",
-            ctx_c,
-            n_heads * key_c,
-        )?;
-        let value_conv = ConvNDInit::<[usize; DIM]>::new(ksize).build(
-            path / "value_conv",
-            ctx_c,
-            n_heads * value_c,
-        )?;
+        let query_conv = ConvNDInit::<[usize; DIM]> {
+            bias,
+            ..ConvNDInit::<[usize; DIM]>::new(ksize)
+        }
+        .build(path / "query_conv", in_c, n_heads * key_c)?;
+        let key_conv = ConvNDInit::<[usize; DIM]> {
+            bias,
+            ..ConvNDInit::<[usize; DIM]>::new(ksize)
+        }
+        .build(path / "key_conv", ctx_c, n_heads * key_c)?;
+        let value_conv = ConvNDInit::<[usize; DIM]> {
+            bias,
+            ..ConvNDInit::<[usize; DIM]>::new(ksize)
+        }
+        .build(path / "value_conv", ctx_c, n_heads * value_c)?;
         let output_conv = ConvNDInit::<[usize; DIM]>::new(ksize).build(
             path / "output_conv",
             n_heads * value_c,
@@ -241,6 +246,7 @@ mod tests {
             n_heads: 8,
             key_c: 4,
             value_c: 6,
+            bias: true,
         }
         .build(&root, cx, cc, o)?;
 

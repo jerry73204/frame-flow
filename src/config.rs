@@ -74,6 +74,7 @@ impl MnistDataset {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Training {
+    pub train_det_similarity: bool,
     pub cache_dir: PathBuf,
     pub batch_size: NonZeroUsize,
     pub image_size: NonZeroUsize,
@@ -124,10 +125,9 @@ pub struct GeneratorModel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeneratorModelKind {
-    #[serde(rename = "resnet")]
     Resnet,
-    #[serde(rename = "unet")]
     UNet,
+    Custom,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

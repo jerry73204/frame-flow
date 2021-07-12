@@ -15,7 +15,8 @@
             "weights_file": "cfg/weights/2021-03-28-12-02-57.728+0800_4582000_04.74864.ckpt",
         },
         "generator": {
-            "kind": "resnet",
+            // "kind": "Custom",
+            "kind": "Resnet",
             "norm": "BatchNorm",
             // "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/generator_2021-06-29-21-43-16.324+0800_014500.ckpt",
         },
@@ -45,6 +46,7 @@
         "image_recon": "WGanGp",
     },
     "train": {
+        "train_det_similarity": false,
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
         "batch_size": 16,

@@ -2,8 +2,8 @@ use crate::{
     common::*,
     config, message as msg,
     model::{
-        self, DetectionEmbeddingInit, Discriminator, Generator, NLayerDiscriminatorInit,
-        ResnetGeneratorInit, UnetGeneratorInit, WGanGpInit,
+        CustomGeneratorInit, DetectionEmbeddingInit, Discriminator, Generator,
+        NLayerDiscriminatorInit, ResnetGeneratorInit, UnetGeneratorInit, WGanGpInit,
     },
     FILE_STRFTIME,
 };
@@ -78,6 +78,8 @@ pub fn training_worker(
         let gen_model: Generator = match config.model.generator.kind {
             config::GeneratorModelKind::Resnet => ResnetGeneratorInit {
                 norm_kind: config.model.generator.norm,
+                num_scale_blocks: 4,
+                num_blocks: 1,
                 ..Default::default()
             }
             .build(
@@ -85,12 +87,23 @@ pub fn training_worker(
                 embedding_dim + latent_dim,
                 image_dim,
                 128,
-                4,
-                1,
             )
             .into(),
             config::GeneratorModelKind::UNet => UnetGeneratorInit::<5> {
                 norm_kind: config.model.generator.norm,
+                ..Default::default()
+            }
+            .build(
+                &root / "generator",
+                embedding_dim + latent_dim,
+                image_dim,
+                128,
+            )
+            .into(),
+            config::GeneratorModelKind::Custom => CustomGeneratorInit {
+                norm_kind: config.model.generator.norm,
+                num_scale_blocks: 3,
+                num_blocks: 3,
                 ..Default::default()
             }
             .build(
@@ -160,7 +173,7 @@ pub fn training_worker(
         generator_vs.freeze();
         discriminator_vs.freeze();
 
-        for round in 0..warm_up_steps {
+        for _round in 0..warm_up_steps {
             let msg = match train_rx.blocking_recv() {
                 Some(msg) => msg,
                 None => break,
@@ -357,10 +370,7 @@ pub fn training_worker(
                                 let vars = discriminator_vs.variables();
                                 let mut vars: Vec<_> = vars
                                     .iter()
-                                    .filter(|(name, var)| {
-                                        (name.ends_with(".weight") || name.ends_with(".bias"))
-                                            && var.requires_grad()
-                                    })
+                                    .filter(|(_name, var)| var.requires_grad())
                                     .collect();
                                 vars.sort_by_cached_key(|(name, _var)| name.to_owned());
                                 vars.into_iter()
@@ -405,9 +415,9 @@ pub fn training_worker(
                         debug_assert_eq!(image.size(), image_recon.size());
                         let det_recon =
                             detector_model.forward_t(&(&image_recon / 2.0 + 0.5), false)?;
-                        let det_recon_loss = model::dense_detectino_similarity(&det, &det_recon)?;
-                        // let (det_recon_loss, _) =
-                        //     detector_loss_fn.forward(&det_recon.shallow_clone().try_into()?, boxes);
+                        // let det_recon_loss = model::dense_detectino_similarity(&det, &det_recon)?;
+                        let (det_recon_loss, _) =
+                            detector_loss_fn.forward(&det_recon.shallow_clone().try_into()?, boxes);
                         let real_score = discriminator_model.forward_t(&image, true);
                         let fake_score = discriminator_model.forward_t(&image_recon, true);
 
@@ -457,9 +467,12 @@ pub fn training_worker(
                         };
                         debug_assert!(!generator_loss.has_nan());
 
-                        // let loss = &det_recon_loss + &generator_loss;
-                        let loss = &generator_loss;
-                        generator_opt.backward_step(loss);
+                        let loss = if config.train.train_det_similarity {
+                            &det_recon_loss.total_loss + &generator_loss
+                        } else {
+                            generator_loss.shallow_clone()
+                        };
+                        generator_opt.backward_step(&loss);
 
                         step += 1;
 
@@ -468,10 +481,7 @@ pub fn training_worker(
                                 let vars = generator_vs.variables();
                                 let mut vars: Vec<_> = vars
                                     .iter()
-                                    .filter(|(name, var)| {
-                                        (name.ends_with(".weight") || name.ends_with(".bias"))
-                                            && var.requires_grad()
-                                    })
+                                    .filter(|(_name, var)| var.requires_grad())
                                     .collect();
                                 vars.sort_by_cached_key(|(name, _var)| name.to_owned());
                                 vars.into_iter()
@@ -489,7 +499,7 @@ pub fn training_worker(
 
                 let loss_log = msg::LossLog {
                     det_loss: det_loss.total_loss.into(),
-                    det_recon_loss: det_recon_loss.into(),
+                    det_recon_loss: det_recon_loss.total_loss.into(),
                     discriminator_loss: discriminator_loss.into(),
                     generator_loss: generator_loss.into(),
                     disc_grads,
