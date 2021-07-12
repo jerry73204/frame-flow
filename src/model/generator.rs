@@ -42,6 +42,117 @@ mod generator {
     }
 }
 
+mod stylegan2 {
+    use super::*;
+
+    pub fn conv2d_resample(
+        xs: &Tensor,
+        weight: &Tensor,
+        filter: &Tensor,
+        up: usize,
+        down: usize,
+        padding: [i64; 4],
+        groups: usize,
+        flip_weight: bool,
+        flip_filter: bool,
+    ) -> Result<Tensor> {
+        let (fh, fw) = filter.size2()?;
+        ensure!(xs.dim() == 4);
+        ensure!(weight.dim() == 4);
+        ensure!(up >= 1);
+        ensure!(down >= 1);
+        ensure!(groups >= 1);
+
+        let padding = if up > 1 {
+            // let [padl, padr, padt, padb] = padding;
+            // [
+            //     (fw + up - 1) / 2,
+            //     (fw - up) / 2,
+            //     (fh + up - 1) / 2,
+            //     (fh - up) / 2,
+            // ]
+            todo!()
+        } else {
+            padding
+        };
+
+        todo!();
+    }
+
+    pub fn upfirdn2d(
+        xs: &Tensor,
+        filter: &Tensor,
+        up: [usize; 2],
+        down: [usize; 2],
+        padding: [i64; 4],
+        flip_filter: bool,
+        gain: f64,
+    ) -> Result<Tensor> {
+        let [upx, upy] = up;
+        let [downx, downy] = down;
+        let [padl, padr, padt, padb] = padding;
+        let upx = upx as i64;
+        let upy = upy as i64;
+        let downx = downx as i64;
+        let downy = downy as i64;
+
+        ensure!(upx >= 1 && upy >= 1 && downx >= 1 && downy >= 1);
+        ensure!(xs.dim() == 4);
+        ensure!(filter.dim() == 2 && filter.kind() == Kind::Float);
+        ensure!(xs.device() == filter.device());
+
+        let (bsize, in_c, in_h, in_w) = xs.size4()?;
+
+        // upsample
+        let xs = xs
+            .reshape(&[bsize, in_c, in_h, 1, in_w, 1])
+            .constant_pad_nd(&[0, upx - 1, 0, 0, 0, upy - 1])
+            .reshape(&[bsize, in_c, in_h * upy, in_w * upx]);
+
+        //  pad
+        let xs = xs.constant_pad_nd(&[padl.max(0), padr.max(0), padt.max(0), padb.max(0)]);
+
+        // crop
+        let xs = {
+            let (_, _, curr_h, curr_w) = xs.size4()?;
+            xs.i((
+                ..,
+                ..,
+                0.max(-padl)..(curr_h - 0.max(-padr)),
+                0.max(-padt)..(curr_w - 0.max(-padb)),
+            ))
+        };
+
+        // setup filter
+        let filter = (filter * gain).to_kind(xs.kind());
+        let filter = if flip_filter {
+            filter
+        } else {
+            filter.flip(&[0, 1])
+        };
+        let filter = filter.unsqueeze(0).unsqueeze(0).repeat(&[in_c, 1, 1, 1]);
+
+        let xs = xs.convolution::<Tensor>(
+            &filter, // weight
+            None,    // bias
+            &[1, 1], // stride
+            &[0, 0], // padding
+            &[1, 1], // dilation
+            false,   // transposed
+            &[0, 0], // output_padding
+            in_c,    // groups
+        );
+
+        // down sample
+        let xs = {
+            let (_, _, curr_h, curr_w) = xs.size4()?;
+            xs.slice(2, 0, curr_h, downy).slice(3, 0, curr_w, downx)
+        };
+
+        Ok(xs)
+    }
+}
+
 mod unet {
     use super::*;
 

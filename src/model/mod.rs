@@ -6,6 +6,7 @@ mod generator;
 mod loss;
 mod misc;
 mod resnet_block;
+mod sde;
 mod unet_block;
 
 pub use attention::*;
