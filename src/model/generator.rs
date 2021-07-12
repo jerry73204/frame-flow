@@ -446,7 +446,7 @@ mod custom {
                 .add_fn(leaky_relu)
             });
 
-            // resnet blocks
+            // attention blocks
             let seq = {
                 (0..num_blocks).fold(seq, |seq, index| {
                     let path = path / format!("block_{}", index + num_scale_blocks + 1);

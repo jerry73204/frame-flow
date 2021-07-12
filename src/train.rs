@@ -210,7 +210,7 @@ pub fn training_worker(
                 };
                 debug_assert_eq!(image.size(), image_recon.size());
                 let _real_score = discriminator_model.forward_t(&image, true);
-                let _fake_score = discriminator_model.forward_t(&image_recon.copy().detach(), true);
+                let _fake_score = discriminator_model.forward_t(&image_recon, true);
 
                 Ok(())
             })?;
@@ -415,7 +415,7 @@ pub fn training_worker(
                         debug_assert_eq!(image.size(), image_recon.size());
                         let det_recon =
                             detector_model.forward_t(&(&image_recon / 2.0 + 0.5), false)?;
-                        // let det_recon_loss = model::dense_detectino_similarity(&det, &det_recon)?;
+                        // let det_recon_loss = crate::model::dense_detectino_similarity(&det, &det_recon)?;
                         let (det_recon_loss, _) =
                             detector_loss_fn.forward(&det_recon.shallow_clone().try_into()?, boxes);
                         let real_score = discriminator_model.forward_t(&image, true);
