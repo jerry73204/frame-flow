@@ -9,7 +9,7 @@ pub use futures::{
 };
 pub use indexmap::{IndexMap, IndexSet};
 pub use iterator_ext::IteratorExt;
-pub use itertools::{iproduct, izip, Itertools};
+pub use itertools::{chain, iproduct, izip, Itertools};
 pub use mona::prelude::*;
 pub use noisy_float::types::{r64, R64};
 pub use num_traits::{Float, Num};

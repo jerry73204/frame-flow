@@ -1,5 +1,5 @@
 mod attention;
-mod block;
+// mod block;
 mod detection_embedding;
 mod discriminator;
 mod generator;
@@ -9,7 +9,7 @@ mod resnet_block;
 mod unet_block;
 
 pub use attention::*;
-pub use block::*;
+// pub use block::*;
 pub use detection_embedding::*;
 pub use discriminator::*;
 pub use generator::*;
