@@ -14,7 +14,7 @@ pub(crate) const FILE_STRFTIME: &str = "%Y-%m-%d-%H-%M-%S.%3f%z";
 use crate::common::*;
 
 pub async fn start(config: config::Config) -> Result<()> {
-    // data logging
+    // prepare logging directories
     let start_time = Local::now();
     let log_dir = config
         .logging
@@ -24,33 +24,12 @@ pub async fn start(config: config::Config) -> Result<()> {
 
     tokio::fs::create_dir_all(&checkpoint_dir).await?;
 
-    // initialize model
-    // let mut generator_vs = nn::VarStore::new(device);
-    // let mut discriminator_vs = nn::VarStore::new(device);
-
-    // let mut generator = GeneratorInit {
-    //     ndims: 2,
-    //     input_channels: image_dim + latent_dim + 1,
-    //     output_channels: 3,
-    //     num_heads: 4,
-    //     strides: [1, 2, 2, 2],
-    //     block_channels: [16, 16, 16, 16],
-    //     context_channels: [16, 16, 16, 16],
-    //     repeats: [3, 3, 3, 3],
-    // }
-    // .build(&generator_vs.root() / "generator")?;
-
-    // let mut discriminator = DiscriminatorInit {
-    //     ndims: 3,
-    //     ksize: 3,
-    //     input_channels: 3,
-    //     channels: [4, 8, 16],
-    //     strides: [2, 2, 2],
-    // }
-    // .build(&discriminator_vs.root() / "discriminator")?;
-
-    // let mut generator_opt = nn::adam(0.5, 0.999, 0.).build(&generator_vs, learning_rate)?;
-    // let mut discriminator_opt = nn::adam(0.5, 0.999, 0.).build(&discriminator_vs, learning_rate)?;
+    // save config
+    {
+        let config_file = log_dir.join("config.json5");
+        let text = serde_json::to_string_pretty(&config)?;
+        tokio::fs::write(config_file, text).await?;
+    }
 
     let config = ArcRef::new(Arc::new(config));
     let (train_tx, train_rx) = mpsc::channel(16);
