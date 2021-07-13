@@ -77,7 +77,7 @@ mod n_layers {
                         },
                     ))
                     .add(norm_kind.build(&path / "norm", inner_c))
-                    .add_fn(leaky_relu)
+                    .add_fn(|xs| xs.lrelu())
             } else {
                 nn::seq_t()
             };
@@ -102,7 +102,7 @@ mod n_layers {
                         },
                     ))
                     .add(norm_kind.build(&path / "norm", curr_c))
-                    .add_fn(leaky_relu)
+                    .add_fn(|xs| xs.lrelu())
                 },
             );
 
@@ -125,7 +125,7 @@ mod n_layers {
                         ..Default::default()
                     },
                 ))
-                .add_fn(leaky_relu)
+                .add_fn(|xs| xs.lrelu())
             };
 
             let last_c = channels[N_BLOCKS - 1] as i64;
@@ -146,7 +146,7 @@ mod n_layers {
                             ..Default::default()
                         },
                     ))
-                    .add_fn(leaky_relu);
+                    .add_fn(|xs| xs.lrelu());
 
                 seq.add_fn_t(move |xs, train| xs + branch.forward_t(xs, train))
             };
@@ -237,7 +237,7 @@ mod pixel {
                         ..Default::default()
                     },
                 ))
-                .add_fn(leaky_relu)
+                .add_fn(|xs| xs.lrelu())
                 .add(nn::conv2d(
                     path / "conv2",
                     inner_c,
@@ -251,7 +251,7 @@ mod pixel {
                     },
                 ))
                 .add(norm_kind.build(path / "norm1", inner_c * 2))
-                .add_fn(leaky_relu)
+                .add_fn(|xs| xs.lrelu())
                 .add(nn::conv2d(
                     path / "conv2",
                     inner_c,
@@ -443,10 +443,6 @@ mod pixel {
 //         pub linear: LinearGrad,
 //     }
 // }
-
-fn leaky_relu(xs: &Tensor) -> Tensor {
-    xs.maximum(&(xs * 0.2))
-}
 
 #[cfg(test)]
 mod tests {

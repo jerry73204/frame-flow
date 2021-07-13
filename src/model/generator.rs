@@ -231,7 +231,7 @@ mod resnet {
                         },
                     ))
                     .add(norm_kind.build(&path / "norm", inner_c))
-                    .add_fn(leaky_relu)
+                    .add_fn(|xs| xs.lrelu())
             };
 
             // down sampling
@@ -250,7 +250,7 @@ mod resnet {
                     },
                 ))
                 .add(norm_kind.build(&path / "norm", inner_c))
-                .add_fn(leaky_relu)
+                .add_fn(|xs| xs.lrelu())
             });
 
             // resnet blocks
@@ -273,7 +273,7 @@ mod resnet {
                                 },
                             ))
                             .add(norm_kind.build(&path / "norm1", inner_c))
-                            .add_fn(|xs| xs.relu());
+                            .add_fn(|xs| xs.lrelu());
 
                         let branch = if dropout {
                             branch.add_fn_t(|xs, train| xs.dropout(0.5, train))
@@ -321,7 +321,7 @@ mod resnet {
                     },
                 ))
                 .add(norm_kind.build(&path / "norm", inner_c))
-                .add_fn(leaky_relu)
+                .add_fn(|xs| xs.lrelu())
             });
 
             // last block
@@ -424,7 +424,7 @@ mod custom {
                         },
                     ))
                     .add(norm_kind.build(&path / "norm", inner_c))
-                    .add_fn(leaky_relu)
+                    .add_fn(|xs| xs.lrelu())
             };
 
             // down sampling
@@ -443,7 +443,7 @@ mod custom {
                     },
                 ))
                 .add(norm_kind.build(&path / "norm", inner_c))
-                .add_fn(leaky_relu)
+                .add_fn(|xs| xs.lrelu())
             });
 
             // attention blocks
@@ -465,7 +465,7 @@ mod custom {
                                 .unwrap(),
                             )
                             .add(norm_kind.build(&path / "norm1", inner_c))
-                            .add_fn(|xs| xs.relu());
+                            .add_fn(|xs| xs.lrelu());
 
                         let branch = if dropout {
                             branch.add_fn_t(|xs, train| xs.dropout(0.5, train))
@@ -512,7 +512,7 @@ mod custom {
                     },
                 ))
                 .add(norm_kind.build(&path / "norm", inner_c))
-                .add_fn(leaky_relu)
+                .add_fn(|xs| xs.lrelu())
             });
 
             // last block
@@ -981,10 +981,6 @@ mod custom {
 //         pub last_conv: ConvNDGrad,
 //     }
 // }
-
-fn leaky_relu(xs: &Tensor) -> Tensor {
-    xs.maximum(&(xs * 0.2))
-}
 
 #[cfg(test)]
 mod tests {
