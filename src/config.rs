@@ -74,7 +74,6 @@ impl MnistDataset {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Training {
-    pub train_det_similarity: bool,
     pub cache_dir: PathBuf,
     pub batch_size: NonZeroUsize,
     pub image_size: NonZeroUsize,
@@ -88,10 +87,10 @@ pub struct Training {
     pub warm_up_steps: usize,
     #[serde(default = "default_label_flip_prob")]
     pub label_flip_prob: R64,
-    #[serde(default = "default_critic_steps")]
-    pub critic_steps: NonZeroUsize,
-    #[serde(default = "default_generate_steps")]
-    pub generate_steps: NonZeroUsize,
+    pub train_detector_steps: usize,
+    pub train_discriminator_steps: usize,
+    pub train_generator_steps: usize,
+    pub train_consistency_steps: usize,
     #[serde(default = "default_critic_noise_prob")]
     pub critic_noise_prob: R64,
 }
@@ -156,18 +155,10 @@ fn default_label_flip_prob() -> R64 {
     r64(0.0)
 }
 
-fn default_critic_steps() -> NonZeroUsize {
-    NonZeroUsize::new(1).unwrap()
-}
-
-fn default_generate_steps() -> NonZeroUsize {
-    NonZeroUsize::new(1).unwrap()
+fn default_critic_noise_prob() -> R64 {
+    r64(0.0)
 }
 
 fn default_warm_up_steps() -> usize {
     0
-}
-
-fn default_critic_noise_prob() -> R64 {
-    r64(0.0)
 }

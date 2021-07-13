@@ -15,13 +15,14 @@
             "weights_file": "cfg/weights/2021-03-28-12-02-57.728+0800_4582000_04.74864.ckpt",
         },
         "generator": {
-            // "kind": "Custom",
             "kind": "Resnet",
+            // "kind": "Custom",
             "norm": "BatchNorm",
             // "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/generator_2021-06-29-21-43-16.324+0800_014500.ckpt",
         },
         "discriminator": {
-            "norm": "InstanceNorm",
+            "norm": "None",
+            // "norm": "InstanceNorm",
             // "weights_file": "log/2021-06-29-17-14-38.507+0800/checkpoints/discriminator_2021-06-29-21-43-16.292+0800_014500.ckpt",
         },
     },
@@ -44,9 +45,9 @@
             "classification_loss_weight": 55.0,
         },
         "image_recon": "WGanGp",
+        // "image_recon": "RaSGan",
     },
     "train": {
-        "train_det_similarity": false,
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
         "batch_size": 16,
@@ -60,13 +61,17 @@
         "lr_schedule": {
             "type": "StepWise",
             "steps": [
-                [0, 0.0001],
+                [0, 0.001],
+                [500, 0.0001],
             ],
         },
         "warm_up_steps": 20,
         "label_flip_prob": 0,
         "critic_noise_prob": 0.5,
-        "critic_steps": 5,
+        "train_detector_steps": 0,
+        "train_discriminator_steps": 5,
+        "train_generator_steps": 1,
+        "train_consistency_steps": 0,
     },
     "logging": {
         "log_dir": "log",

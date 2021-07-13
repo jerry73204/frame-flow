@@ -23,10 +23,15 @@ pub fn training_worker(
     let image_dim = config.dataset.image_dim();
     let batch_size = config.train.batch_size.get();
     let label_flip_prob = config.train.label_flip_prob.raw();
-    let critic_steps = config.train.critic_steps.get();
-    let generate_steps = config.train.generate_steps.get();
+    let train_detector_steps = config.train.train_detector_steps;
+    let train_discriminator_steps = config.train.train_discriminator_steps;
+    let train_generator_steps = config.train.train_generator_steps;
+    let train_consistency_steps = config.train.train_consistency_steps;
     let warm_up_steps = config.train.warm_up_steps;
     let critic_noise_prob = config.train.critic_noise_prob.raw();
+    let train_detector = train_detector_steps > 0;
+    let train_discriminator = train_discriminator_steps > 0;
+    let train_generator = train_generator_steps > 0;
     ensure!((0.0..=1.0).contains(&label_flip_prob));
     ensure!((0.0..=1.0).contains(&critic_noise_prob));
 
@@ -39,7 +44,7 @@ pub fn training_worker(
     let gp = WGanGpInit::default().build()?;
 
     // load detector model
-    let (mut detector_vs, mut detector_model) = {
+    let (mut detector_vs, mut detector_model, mut detector_opt) = {
         let config::DetectionModel {
             ref model_file,
             ref weights_file,
@@ -54,7 +59,14 @@ pub fn training_worker(
             vs.load_partial(weights_file)?;
         }
 
-        (vs, model)
+        let opt = nn::Adam {
+            beta1: 0.937,
+            beta2: 0.999,
+            wd: 5e-4,
+        }
+        .build(&vs, lr)?;
+
+        (vs, model, opt)
     };
 
     // load generator model
@@ -166,6 +178,39 @@ pub fn training_worker(
         (vs, det_loss_fn)
     };
 
+    let get_weights_and_grads = |vs: &nn::VarStore| {
+        tch::no_grad(|| {
+            let mut orig_weights: Vec<_> = vs.variables().into_iter().collect();
+            orig_weights.sort_by_cached_key(|(name, _)| name.to_owned());
+
+            let weights: Vec<_> = orig_weights
+                .iter()
+                .map(|(name, var)| {
+                    let max = f64::from(var.abs().max());
+                    (name.to_owned(), max)
+                })
+                .collect();
+
+            let grads: Vec<_> = orig_weights
+                .iter()
+                .filter(|(_name, var)| var.requires_grad())
+                .map(|(name, var)| {
+                    let grad = f64::from(var.grad().abs().max());
+                    (name.to_owned(), grad)
+                })
+                .collect();
+            (weights, grads)
+        })
+    };
+
+    let clamp_running_var = |vs: &mut nn::VarStore| {
+        vs.variables().iter().for_each(|(name, var)| {
+            if name.ends_with(".running_var") {
+                let _ = var.shallow_clone().clamp_(1e-3, 1e3);
+            }
+        });
+    };
+
     // warm up
     info!("run warm-up for {} steps", warm_up_steps);
     tch::no_grad(|| -> Result<_> {
@@ -184,42 +229,57 @@ pub fn training_worker(
                 ..
             } = msg.to_device(device);
 
-            image_batch_seq.iter().try_for_each(|image| -> Result<_> {
-                debug_assert!(image.kind() == Kind::Float);
-                debug_assert!(f64::from(image.min()) >= 0.0 && f64::from(image.max()) <= 1.0);
+            image_batch_seq
+                .iter()
+                .try_for_each(|orig_image| -> Result<_> {
+                    debug_assert!(orig_image.kind() == Kind::Float);
+                    debug_assert!(
+                        f64::from(orig_image.min()) >= 0.0 && f64::from(orig_image.max()) <= 1.0
+                    );
 
-                let det = detector_model.forward_t(image, false)?;
-                let image = image * 2.0 - 1.0;
-
-                // clamp running_var in norms
-                discriminator_vs.variables().iter().for_each(|(name, var)| {
-                    if name.ends_with(".running_var") {
-                        let _ = var.shallow_clone().clamp_(1e-3, 1e3);
+                    // clamp running_var in norms
+                    if train_detector {
+                        clamp_running_var(&mut detector_vs);
                     }
-                });
+                    if train_generator {
+                        clamp_running_var(&mut generator_vs);
+                    }
+                    if train_discriminator {
+                        clamp_running_var(&mut discriminator_vs);
+                    }
 
-                let image_recon = {
-                    let embedding = embedding_model.forward_t(&det, true)?;
-                    let noise = {
-                        let (b, _c, h, w) = embedding.size4()?;
-                        Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
-                            .expand(&[b, latent_dim as i64, h, w], false)
+                    // run detector
+                    let det = detector_model.forward_t(orig_image, train_detector)?;
+                    let real_image = orig_image * 2.0 - 1.0;
+
+                    // run generator
+                    let fake_image = {
+                        let embedding = embedding_model.forward_t(&det, train_generator)?;
+                        let noise = {
+                            let (b, _c, h, w) = embedding.size4()?;
+                            Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
+                                .expand(&[b, latent_dim as i64, h, w], false)
+                        };
+                        let input = Tensor::cat(&[embedding, noise], 1);
+                        generator_model.forward_t(&input, train_generator)
                     };
-                    let input = Tensor::cat(&[embedding, noise], 1);
-                    generator_model.forward_t(&input, true)
-                };
-                debug_assert_eq!(image.size(), image_recon.size());
-                let _real_score = discriminator_model.forward_t(&image, true);
-                let _fake_score = discriminator_model.forward_t(&image_recon, true);
+                    debug_assert_eq!(real_image.size(), fake_image.size());
 
-                Ok(())
-            })?;
+                    // run discriminator
+                    let _real_score =
+                        discriminator_model.forward_t(&real_image, train_discriminator);
+                    let _fake_score =
+                        discriminator_model.forward_t(&fake_image, train_discriminator);
+
+                    Ok(())
+                })?;
         }
 
         Ok(())
     })?;
 
     info!("start training");
+
     while let Some(msg) = train_rx.blocking_recv() {
         let msg::TrainingMessage {
             batch_index: _,
@@ -229,51 +289,84 @@ pub fn training_worker(
         } = msg.to_device(device);
         let seq_len = image_batch_seq.len();
 
-        detector_vs.freeze();
-
         let log_seq: Vec<_> = izip!(&image_batch_seq, &boxes_batch_seq)
             .enumerate()
-            .map(|(_seq_index, (image, boxes))| -> Result<_> {
-                debug_assert!(image.kind() == Kind::Float);
-                debug_assert!(f64::from(image.min()) >= 0.0 && f64::from(image.max()) <= 1.0);
+            .map(|(_seq_index, (orig_image, boxes))| -> Result<_> {
+                debug_assert!(orig_image.kind() == Kind::Float);
+                debug_assert!(
+                    f64::from(orig_image.min()) >= 0.0 && f64::from(orig_image.max()) <= 1.0
+                );
+                let real_image = orig_image * 2.0 - 1.0;
 
-                let det = detector_model.forward_t(image, false)?;
-                let (det_loss, _) =
-                    detector_loss_fn.forward(&det.shallow_clone().try_into()?, boxes);
-                let image = image * 2.0 - 1.0;
+                // train detector
+                let real_det_loss = {
+                    generator_vs.freeze();
+                    discriminator_vs.freeze();
+                    detector_vs.unfreeze();
+
+                    (0..train_detector_steps).try_fold(None, |_, _| -> Result<_> {
+                        // clamp running_var in norms
+                        clamp_running_var(&mut detector_vs);
+
+                        // run detector
+                        let real_det = detector_model.forward_t(orig_image, true)?;
+                        let (real_det_loss, _) =
+                            detector_loss_fn.forward(&real_det.shallow_clone().try_into()?, boxes);
+
+                        // optimize detector
+                        detector_opt.backward_step(&real_det_loss.total_loss);
+
+                        Ok(Some(f64::from(real_det_loss.total_loss)))
+                    })?
+                };
+
+                // save detector gradients
+                let (detector_weights, detector_grads) = if real_det_loss.is_some() {
+                    let (weights, grads) = get_weights_and_grads(&detector_vs);
+                    (Some(weights), Some(grads))
+                } else {
+                    (None, None)
+                };
 
                 // train discriminator
-                let (discriminator_loss, disc_grads) = {
-                    let mut step = 0;
+                let (discriminator_loss, fake_image_disc) = {
                     generator_vs.freeze();
                     discriminator_vs.unfreeze();
+                    detector_vs.freeze();
 
-                    loop {
+                    (0..train_discriminator_steps).try_fold((None, None), |_, _| -> Result<_> {
                         // clamp running_var in norms
-                        tch::no_grad(|| {
-                            discriminator_vs.variables().iter().for_each(|(name, var)| {
-                                if name.ends_with(".running_var") {
-                                    let _ = var.shallow_clone().clamp_(1e-3, 1e3);
-                                }
-                            });
-                        });
+                        clamp_running_var(&mut discriminator_vs);
+                        if train_generator {
+                            clamp_running_var(&mut generator_vs);
+                        }
+                        if train_detector {
+                            clamp_running_var(&mut detector_vs);
+                        }
 
-                        let image_recon = {
-                            let embedding = embedding_model.forward_t(&det, true)?;
+                        // run detector
+                        let real_det = detector_model.forward_t(orig_image, train_detector)?;
+
+                        // generate fake image
+                        let fake_image = {
+                            let embedding =
+                                embedding_model.forward_t(&real_det, train_generator)?;
                             let noise = {
                                 let (b, _c, h, w) = embedding.size4()?;
                                 Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
                                     .expand(&[b, latent_dim as i64, h, w], false)
                             };
                             let input = Tensor::cat(&[embedding, noise], 1);
-                            generator_model.forward_t(&input, true)
+                            generator_model.forward_t(&input, train_generator)
                         };
-                        debug_assert_eq!(image.size(), image_recon.size());
-                        debug_assert!(!image_recon.has_nan());
+                        debug_assert_eq!(real_image.size(), fake_image.size());
+                        debug_assert!(!fake_image.has_nan());
+                        let orig_fake_image = fake_image.shallow_clone();
 
+                        // augmentation
                         let (real_image, fake_image) = {
-                            let real_image = image.shallow_clone();
-                            let fake_image = image_recon.copy().detach();
+                            let real_image = real_image.shallow_clone();
+                            let fake_image = fake_image.copy().detach();
 
                             let label_flip = rng.gen_bool(label_flip_prob);
                             let (real_image, fake_image) = if label_flip {
@@ -297,9 +390,11 @@ pub fn training_worker(
                             (real_image, fake_image)
                         };
 
+                        // run discriminator
                         let real_score = discriminator_model.forward_t(&real_image, true);
                         let fake_score = discriminator_model.forward_t(&fake_image, true);
 
+                        // compute discriminator loss
                         let discriminator_loss = match gan_loss {
                             config::GanLoss::DcGan => {
                                 let ones =
@@ -348,8 +443,8 @@ pub fn training_worker(
                                     (&fake_score - &real_score).mean(Kind::Float);
 
                                 let gp_loss = gp.forward(
-                                    &image,
-                                    &image_recon,
+                                    &real_image,
+                                    &fake_image,
                                     |xs, train| discriminator_model.forward_t(xs, train),
                                     true,
                                 )?;
@@ -358,52 +453,48 @@ pub fn training_worker(
                         };
                         debug_assert!(!discriminator_loss.has_nan());
 
+                        // clip weights for classical Wasserstain GAN
                         if gan_loss == config::GanLoss::WGan {
                             discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
                         }
 
+                        // optimize discriminator
                         discriminator_opt.backward_step(&discriminator_loss);
 
-                        step += 1;
-                        if step == critic_steps {
-                            let disc_grads: Vec<_> = tch::no_grad(|| {
-                                let vars = discriminator_vs.variables();
-                                let mut vars: Vec<_> = vars
-                                    .iter()
-                                    .filter(|(_name, var)| var.requires_grad())
-                                    .collect();
-                                vars.sort_by_cached_key(|(name, _var)| name.to_owned());
-                                vars.into_iter()
-                                    .map(|(name, var)| {
-                                        let grad = f64::from(var.grad().abs().max());
-                                        (name.to_owned(), grad)
-                                    })
-                                    .collect()
-                            });
+                        Ok((Some(f64::from(discriminator_loss)), Some(orig_fake_image)))
+                    })?
+                };
 
-                            break (discriminator_loss, disc_grads);
-                        }
-                    }
+                // save discriminator gradients
+                let (discriminator_weights, discriminator_grads) = if discriminator_loss.is_some() {
+                    let (weights, grads) = get_weights_and_grads(&discriminator_vs);
+                    (Some(weights), Some(grads))
+                } else {
+                    (None, None)
                 };
 
                 // train generator
-                let (image_recon, det_recon_loss, generator_loss, gen_grads) = {
-                    let mut step = 0;
+                let (generator_loss, fake_image_gen) = {
                     generator_vs.unfreeze();
                     discriminator_vs.freeze();
+                    detector_vs.freeze();
 
-                    loop {
+                    (0..train_generator_steps).try_fold((None, None), |_, _| -> Result<_> {
                         // clamp running_var in norms
-                        tch::no_grad(|| {
-                            generator_vs.variables().iter().for_each(|(name, var)| {
-                                if name.ends_with(".running_var") {
-                                    let _ = var.shallow_clone().clamp_(1e-3, 1e3);
-                                }
-                            });
-                        });
+                        clamp_running_var(&mut generator_vs);
+                        if train_discriminator {
+                            clamp_running_var(&mut discriminator_vs);
+                        }
+                        if train_detector {
+                            clamp_running_var(&mut detector_vs);
+                        }
 
-                        let image_recon = {
-                            let embedding = embedding_model.forward_t(&det, true)?;
+                        // run detector on real image
+                        let real_det = detector_model.forward_t(orig_image, train_detector)?;
+
+                        // generate fake image
+                        let fake_image = {
+                            let embedding = embedding_model.forward_t(&real_det, true)?;
                             let noise = {
                                 let (b, _c, h, w) = embedding.size4()?;
                                 Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
@@ -412,22 +503,28 @@ pub fn training_worker(
                             let input = Tensor::cat(&[embedding, noise], 1);
                             generator_model.forward_t(&input, true)
                         };
-                        debug_assert_eq!(image.size(), image_recon.size());
-                        let det_recon =
-                            detector_model.forward_t(&(&image_recon / 2.0 + 0.5), false)?;
-                        // let det_recon_loss = crate::model::dense_detectino_similarity(&det, &det_recon)?;
-                        let (det_recon_loss, _) =
-                            detector_loss_fn.forward(&det_recon.shallow_clone().try_into()?, boxes);
-                        let real_score = discriminator_model.forward_t(&image, true);
-                        let fake_score = discriminator_model.forward_t(&image_recon, true);
+                        debug_assert_eq!(real_image.size(), fake_image.size());
 
-                        let label_flip = rng.gen_bool(label_flip_prob);
-                        let (real_score, fake_score) = if label_flip {
-                            (fake_score, real_score)
-                        } else {
-                            (real_score, fake_score)
+                        // augmentation
+
+                        let (real_image, fake_image) = {
+                            let real_image = real_image.shallow_clone();
+
+                            let label_flip = rng.gen_bool(label_flip_prob);
+                            if label_flip {
+                                (fake_image, real_image)
+                            } else {
+                                (real_image, fake_image)
+                            }
                         };
 
+                        // run discriminator
+                        let real_score =
+                            discriminator_model.forward_t(&real_image, train_discriminator);
+                        let fake_score =
+                            discriminator_model.forward_t(&fake_image, train_discriminator);
+
+                        // compute generator loss
                         let generator_loss = match gan_loss {
                             config::GanLoss::DcGan => {
                                 let ones =
@@ -467,47 +564,82 @@ pub fn training_worker(
                         };
                         debug_assert!(!generator_loss.has_nan());
 
-                        let loss = if config.train.train_det_similarity {
-                            &det_recon_loss.total_loss + &generator_loss
-                        } else {
-                            generator_loss.shallow_clone()
-                        };
-                        generator_opt.backward_step(&loss);
+                        // optimize generator
+                        generator_opt.backward_step(&generator_loss);
 
-                        step += 1;
-
-                        if step == generate_steps {
-                            let gen_grads: Vec<_> = tch::no_grad(|| {
-                                let vars = generator_vs.variables();
-                                let mut vars: Vec<_> = vars
-                                    .iter()
-                                    .filter(|(_name, var)| var.requires_grad())
-                                    .collect();
-                                vars.sort_by_cached_key(|(name, _var)| name.to_owned());
-                                vars.into_iter()
-                                    .map(|(name, var)| {
-                                        let grad = f64::from(var.grad().abs().max());
-                                        (name.to_owned(), grad)
-                                    })
-                                    .collect()
-                            });
-
-                            break (image_recon, det_recon_loss, generator_loss, gen_grads);
-                        }
-                    }
+                        Ok((Some(f64::from(generator_loss)), Some(fake_image)))
+                    })?
                 };
 
+                // save generator gradients
+                let (generator_weights, generator_grads) = if generator_loss.is_some() {
+                    let (weights, grads) = get_weights_and_grads(&generator_vs);
+                    (Some(weights), Some(grads))
+                } else {
+                    (None, None)
+                };
+
+                // train consistency
+                let (fake_det_loss, fake_image_cons) = {
+                    generator_vs.unfreeze();
+                    discriminator_vs.freeze();
+                    detector_vs.unfreeze();
+
+                    (0..train_consistency_steps).try_fold((None, None), |_, _| -> Result<_> {
+                        // clamp running var in norms
+                        clamp_running_var(&mut generator_vs);
+                        clamp_running_var(&mut detector_vs);
+
+                        // run detector image real image
+                        let real_det = detector_model.forward_t(orig_image, true)?;
+
+                        // generate fake image
+                        let fake_image = {
+                            let embedding = embedding_model.forward_t(&real_det, true)?;
+                            let noise = {
+                                let (b, _c, h, w) = embedding.size4()?;
+                                Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
+                                    .expand(&[b, latent_dim as i64, h, w], false)
+                            };
+                            let input = Tensor::cat(&[embedding, noise], 1);
+                            generator_model.forward_t(&input, true)
+                        };
+
+                        // run detector on fake image and compute loss
+                        let fake_det =
+                            detector_model.forward_t(&(&fake_image / 2.0 + 0.5), true)?;
+                        let (fake_det_loss, _) =
+                            detector_loss_fn.forward(&fake_det.shallow_clone().try_into()?, boxes);
+
+                        // optimize consistency
+                        detector_opt.zero_grad();
+                        generator_opt.zero_grad();
+                        fake_det_loss.total_loss.backward();
+                        detector_opt.step();
+                        generator_opt.step();
+
+                        Ok((Some(f64::from(fake_det_loss.total_loss)), Some(fake_image)))
+                    })?
+                };
+
+                let fake_image = fake_image_cons.or(fake_image_gen).or(fake_image_disc);
+
+                // create logs
                 let loss_log = msg::LossLog {
-                    det_loss: det_loss.total_loss.into(),
-                    det_recon_loss: det_recon_loss.total_loss.into(),
-                    discriminator_loss: discriminator_loss.into(),
-                    generator_loss: generator_loss.into(),
-                    disc_grads,
-                    gen_grads,
+                    real_det_loss,
+                    fake_det_loss,
+                    discriminator_loss,
+                    generator_loss,
+                    detector_grads,
+                    discriminator_grads,
+                    generator_grads,
+                    detector_weights,
+                    discriminator_weights,
+                    generator_weights,
                 };
                 let image_log = msg::ImageLog {
-                    true_image: image.to_device(Device::Cpu),
-                    fake_image: image_recon.to_device(Device::Cpu),
+                    true_image: real_image.to_device(Device::Cpu),
+                    fake_image: fake_image.to_device(Device::Cpu),
                 };
 
                 Ok((loss_log, image_log))

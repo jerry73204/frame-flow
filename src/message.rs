@@ -15,18 +15,22 @@ pub enum LogMessage {
 
 #[derive(Debug)]
 pub struct LossLog {
-    pub det_loss: f64,
-    pub det_recon_loss: f64,
-    pub discriminator_loss: f64,
-    pub generator_loss: f64,
-    pub gen_grads: Vec<(String, f64)>,
-    pub disc_grads: Vec<(String, f64)>,
+    pub real_det_loss: Option<f64>,
+    pub fake_det_loss: Option<f64>,
+    pub discriminator_loss: Option<f64>,
+    pub generator_loss: Option<f64>,
+    pub detector_grads: Option<Vec<(String, f64)>>,
+    pub generator_grads: Option<Vec<(String, f64)>>,
+    pub discriminator_grads: Option<Vec<(String, f64)>>,
+    pub detector_weights: Option<Vec<(String, f64)>>,
+    pub generator_weights: Option<Vec<(String, f64)>>,
+    pub discriminator_weights: Option<Vec<(String, f64)>>,
 }
 
 #[derive(Debug)]
 pub struct ImageLog {
     pub true_image: Tensor,
-    pub fake_image: Tensor,
+    pub fake_image: Option<Tensor>,
 }
 
 #[derive(Debug, TensorLike)]
