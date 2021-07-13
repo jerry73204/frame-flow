@@ -1,14 +1,14 @@
 {
-    "dataset": {
-        "type": "mnist",
-        "dataset_dir": "/home/aeon/dataset/mnist",
-    },
     // "dataset": {
-    //     "type": "iii",
-    //     "dataset_dir": "/home/aeon/dataset/ntu_delivery",
-    //     "classes_file": "cfg/class/iii.class",
-    //     "min_seq_len": 5,
+    //     "type": "mnist",
+    //     "dataset_dir": "/home/aeon/dataset/mnist",
     // },
+    "dataset": {
+        "type": "iii",
+        "dataset_dir": "/home/aeon/dataset/iii_small",
+        "classes_file": "cfg/class/iii.class",
+        "min_seq_len": 5,
+    },
     "model": {
         "detector": {
             "model_file": "cfg/model/yolov4-csp-custom-2021-03-11.json5",
@@ -61,8 +61,7 @@
         "lr_schedule": {
             "type": "StepWise",
             "steps": [
-                [0, 0.001],
-                [500, 0.0001],
+                [0, 0.0001],
             ],
         },
         "warm_up_steps": 20,
