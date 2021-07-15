@@ -11,19 +11,20 @@
     },
     "model": {
         "detector": {
-            "model_file": "cfg/model/yolov4-csp-custom-2021-03-11.json5",
-            "weights_file": "cfg/weights/2021-03-28-12-02-57.728+0800_4582000_04.74864.ckpt",
+            "model_file": "cfg/model/yolov4-csp-custom-128x128-2021-07-14.json5",
+            "weights_file": "cfg/weights/yolov4-csp-custom-128x128-2021-07-14_2021-07-15-08-36-58.242+0800_186000_02.22891.ckpt",
         },
         "generator": {
             "kind": "Resnet",
             // "kind": "Custom",
             "norm": "BatchNorm",
-            "weights_file": "log/2021-07-14-08-06-12.575+0800/checkpoints/generator_2021-07-15-11-14-14.890+0800_056800.ckpt",
+            // "weights_file": "log/2021-07-14-08-06-12.575+0800/checkpoints/generator_2021-07-15-11-14-14.890+0800_056800.ckpt",
         },
         "discriminator": {
+            "num_blocks": 7,
             "norm": "None",
             // "norm": "InstanceNorm",
-            "weights_file": "log/2021-07-14-08-06-12.575+0800/checkpoints/discriminator_2021-07-15-11-14-14.887+0800_056800.ckpt",
+            // "weights_file": "log/2021-07-14-08-06-12.575+0800/checkpoints/discriminator_2021-07-15-11-14-14.887+0800_056800.ckpt",
         },
     },
     "loss": {
@@ -50,10 +51,10 @@
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 16,
+        "batch_size": 60,
         // unet
         // "batch_size": 20,
-        "image_size": 256,
+        "image_size": 128,
         "latent_dim": 256,
         "device": "cuda:0",
         "peek_len": 0,
@@ -67,7 +68,7 @@
         "warm_up_steps": 20,
         "label_flip_prob": 0,
         "critic_noise_prob": 0.5,
-        "train_detector_steps": 0,
+        "train_detector_steps": 5,
         "train_discriminator_steps": 5,
         "train_generator_steps": 1,
         "train_consistency_steps": 0,
