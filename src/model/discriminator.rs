@@ -41,26 +41,32 @@ mod n_layers {
     use super::*;
 
     #[derive(Debug, Clone)]
-    pub struct NLayerDiscriminatorInit<const N_BLOCKS: usize> {
+    pub struct NLayerDiscriminatorInit {
         pub norm_kind: NormKind,
         pub ksize: usize,
+        pub num_blocks: usize,
     }
 
-    impl<const N_BLOCKS: usize> NLayerDiscriminatorInit<N_BLOCKS> {
+    impl NLayerDiscriminatorInit {
         pub fn build<'a>(
             self,
             path: impl Borrow<nn::Path<'a>>,
             in_c: usize,
-            channels: [usize; N_BLOCKS],
-        ) -> NLayerDiscriminator {
+            channels: &[usize],
+        ) -> Result<NLayerDiscriminator> {
             let path = path.borrow();
-            let Self { norm_kind, ksize } = self;
+            let Self {
+                norm_kind,
+                ksize,
+                num_blocks,
+            } = self;
+            ensure!(channels.len() == self.num_blocks);
             let bias = norm_kind == NormKind::None;
             let in_c = in_c as i64;
             let ksize = ksize as i64;
             let padding = ksize / 2;
 
-            let seq = if N_BLOCKS > 0 {
+            let seq = if num_blocks > 0 {
                 let path = path / "block_0";
                 let inner_c = channels[0] as i64;
 
@@ -82,7 +88,7 @@ mod n_layers {
                 nn::seq_t()
             };
 
-            let seq = izip!(1..(N_BLOCKS - 1), &channels[0..], &channels[1..]).fold(
+            let seq = izip!(1..(num_blocks - 1), &channels[0..], &channels[1..]).fold(
                 seq,
                 |seq, (index, &prev_c, &curr_c)| {
                     let path = path / format!("block_{}", index);
@@ -108,10 +114,10 @@ mod n_layers {
 
             // no normalization in the last block to avoid NaN
             let seq = {
-                let path = path / format!("block_{}", N_BLOCKS - 1);
+                let path = path / format!("block_{}", num_blocks - 1);
 
-                let prev_c = channels[N_BLOCKS - 2] as i64;
-                let curr_c = channels[N_BLOCKS - 1] as i64;
+                let prev_c = channels[num_blocks - 2] as i64;
+                let curr_c = channels[num_blocks - 1] as i64;
 
                 seq.add(nn::conv2d(
                     &path / "conv",
@@ -128,10 +134,10 @@ mod n_layers {
                 .add_fn(|xs| xs.lrelu())
             };
 
-            let last_c = channels[N_BLOCKS - 1] as i64;
+            let last_c = channels[num_blocks - 1] as i64;
 
             let seq = {
-                let path = path / format!("block_{}", N_BLOCKS);
+                let path = path / format!("block_{}", num_blocks);
 
                 let branch = nn::seq_t()
                     .add(nn::conv2d(
@@ -152,7 +158,7 @@ mod n_layers {
             };
 
             let seq = {
-                let path = path / format!("block_{}", N_BLOCKS + 1);
+                let path = path / format!("block_{}", num_blocks + 1);
 
                 seq.add(nn::conv2d(
                     &path / "conv",
@@ -171,18 +177,16 @@ mod n_layers {
                 })
             };
 
-            NLayerDiscriminator {
-                seq,
-                num_blocks: N_BLOCKS,
-            }
+            Ok(NLayerDiscriminator { seq, num_blocks })
         }
     }
 
-    impl<const N_BLOCKS: usize> Default for NLayerDiscriminatorInit<N_BLOCKS> {
+    impl Default for NLayerDiscriminatorInit {
         fn default() -> Self {
             Self {
                 norm_kind: NormKind::BatchNorm,
                 ksize: 5,
+                num_blocks: 8,
             }
         }
     }
