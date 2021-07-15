@@ -80,12 +80,11 @@ pub fn training_worker(
         let root = vs.root();
 
         let embedding = DetectionEmbeddingInit {
-            in_c: [255, 255, 255],
-            out_c: embedding_dim,
             inner_c: 128,
             norm_kind: config.model.generator.norm,
+            ..Default::default()
         }
-        .build(&root / "embedding");
+        .build(&root / "embedding", &[425], embedding_dim, &[3])?;
 
         let gen_model: Generator = match config.model.generator.kind {
             config::GeneratorModelKind::Resnet => ResnetGeneratorInit {
@@ -139,20 +138,22 @@ pub fn training_worker(
     // load discriminator model
     let (mut discriminator_vs, discriminator_model, mut discriminator_opt) = {
         let config::DiscriminatorModel {
-            ref weights_file, ..
+            num_blocks,
+            ref weights_file,
+            ..
         } = config.model.discriminator;
         let mut vs = nn::VarStore::new(device);
         let root = vs.root();
 
-        let disc_model: Discriminator = NLayerDiscriminatorInit::<8> {
+        let channels: Vec<_> = chain!(array::IntoIter::new([16, 32]), iter::repeat(64))
+            .take(num_blocks)
+            .collect();
+        let disc_model: Discriminator = NLayerDiscriminatorInit {
             norm_kind: config.model.discriminator.norm,
+            num_blocks,
             ..Default::default()
         }
-        .build(
-            &root / "discriminator",
-            image_dim,
-            [16, 32, 64, 64, 64, 64, 64, 64],
-        )
+        .build(&root / "discriminator", image_dim, &channels)?
         .into();
 
         // let disc_model: Discriminator =

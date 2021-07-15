@@ -133,6 +133,7 @@ pub enum GeneratorModelKind {
 pub struct DiscriminatorModel {
     pub weights_file: Option<PathBuf>,
     pub norm: NormKind,
+    pub num_blocks: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

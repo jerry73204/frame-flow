@@ -1,211 +1,163 @@
-use super::misc::NormKind;
+use super::misc::{NormKind, PaddingKind};
 use crate::common::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DetectionEmbeddingInit {
-    pub in_c: [usize; 3],
-    pub out_c: usize,
     pub inner_c: usize,
+    pub ksize: usize,
     pub norm_kind: NormKind,
+    pub padding_kind: PaddingKind,
+}
+
+impl Default for DetectionEmbeddingInit {
+    fn default() -> Self {
+        Self {
+            inner_c: 64,
+            ksize: 5,
+            norm_kind: NormKind::BatchNorm,
+            padding_kind: PaddingKind::Reflect,
+        }
+    }
 }
 
 impl DetectionEmbeddingInit {
-    pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> DetectionEmbedding {
+    pub fn build<'a>(
+        self,
+        path: impl Borrow<nn::Path<'a>>,
+        in_c: &[usize],
+        out_c: usize,
+        num_blocks: &[usize],
+    ) -> Result<DetectionEmbedding> {
         let Self {
-            in_c,
-            out_c,
             inner_c,
+            ksize,
             norm_kind,
+            padding_kind,
         } = self;
-        let bias = norm_kind == NormKind::InstanceNorm;
+        ensure!(in_c.len() == num_blocks.len());
+        let bias = norm_kind == NormKind::None;
 
         let path = path.borrow();
         let out_c = out_c as i64;
         let inner_c = inner_c as i64;
+        let padding = ksize / 2;
+        let ksize = ksize as i64;
 
-        let branch1 = {
-            let path = path / "branch1";
+        let branches: Vec<_> = izip!(in_c, num_blocks)
+            .enumerate()
+            .map(|(index, (&in_c, &num_blocks))| {
+                let path = path / format!("branch{}", index);
+                let in_c = in_c as i64;
 
-            nn::seq_t()
-                .add(nn::conv2d(
-                    &path / "conv",
-                    in_c[0] as i64,
-                    inner_c,
-                    3,
-                    nn::ConvConfig {
-                        padding: 1,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm", inner_c))
-                .add_fn(|xs| xs.relu())
-        };
+                let seq = nn::seq_t()
+                    .add(padding_kind.build([padding, padding, padding, padding]))
+                    .add(nn::conv2d(
+                        &path / "conv0",
+                        in_c,
+                        inner_c,
+                        ksize,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm", inner_c))
+                    .add_fn(|xs| xs.lrelu());
 
-        let branch2 = {
-            let path = path / "branch2";
-
-            nn::seq_t()
-                .add(nn::conv_transpose2d(
-                    &path / "conv_transpose",
-                    in_c[1] as i64,
-                    inner_c,
-                    3,
-                    nn::ConvTransposeConfig {
-                        stride: 2,
-                        padding: 1,
-                        output_padding: 1,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm1", inner_c))
-                .add_fn(|xs| xs.relu())
-        };
-
-        let branch3 = {
-            let path = path / "branch3";
-
-            nn::seq_t()
-                .add(nn::conv_transpose2d(
-                    &path / "conv_transpose1",
-                    in_c[2] as i64,
-                    inner_c,
-                    3,
-                    nn::ConvTransposeConfig {
-                        stride: 2,
-                        padding: 1,
-                        output_padding: 1,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm1", inner_c))
-                .add_fn(|xs| xs.relu())
-                .add(nn::conv_transpose2d(
-                    &path / "conv_transpose2",
-                    inner_c,
-                    inner_c,
-                    3,
-                    nn::ConvTransposeConfig {
-                        stride: 2,
-                        padding: 1,
-                        output_padding: 1,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm2", inner_c))
-                .add_fn(|xs| xs.relu())
-        };
+                (0..num_blocks).fold(seq, |seq, index| {
+                    seq.add_fn(|xs| {
+                        let (_, _, h, w) = xs.size4().unwrap();
+                        xs.upsample_nearest2d(&[h * 2, w * 2], None, None)
+                    })
+                    .add(padding_kind.build([padding, padding, padding, padding]))
+                    .add(nn::conv2d(
+                        &path / format!("conv{}", index + 1),
+                        inner_c,
+                        inner_c,
+                        ksize,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm", inner_c))
+                    .add_fn(|xs| xs.lrelu())
+                })
+            })
+            .collect();
 
         let merge = {
             let path = path / "merge";
             nn::seq_t()
+                .add(padding_kind.build([padding, padding, padding, padding]))
                 .add(nn::conv2d(
-                    &path / "conv",
-                    inner_c * 3,
+                    &path / "conv1",
+                    inner_c * num_blocks.len() as i64,
                     inner_c,
-                    3,
+                    ksize,
                     nn::ConvConfig {
-                        padding: 1,
+                        padding: 0,
                         bias,
                         ..Default::default()
                     },
                 ))
                 .add(norm_kind.build(&path / "norm", inner_c))
-                .add_fn(|xs| xs.relu())
-        };
-
-        const NUM_UP_SAMPLING: usize = 3;
-        let merge = (0..NUM_UP_SAMPLING).fold(merge, |seq, index| {
-            let path = path / format!("up_sample_{}", index);
-            seq.add(nn::conv_transpose2d(
-                &path / "conv_transpose",
-                inner_c,
-                inner_c,
-                3,
-                nn::ConvTransposeConfig {
-                    stride: 2,
-                    padding: 1,
-                    output_padding: 1,
-                    bias,
-                    ..Default::default()
-                },
-            ))
-            .add(norm_kind.build(&path / "norm", inner_c))
-            .add_fn(|xs| xs.relu())
-        });
-
-        let merge = {
-            let path = path / "last";
-            merge
+                .add_fn(|xs| xs.lrelu())
+                .add(padding_kind.build([padding, padding, padding, padding]))
                 .add(nn::conv2d(
-                    &path / "conv",
+                    &path / "conv2",
                     inner_c,
                     out_c,
-                    3,
+                    ksize,
                     nn::ConvConfig {
-                        padding: 1,
+                        padding: 0,
                         bias,
                         ..Default::default()
                     },
                 ))
                 .add(norm_kind.build(&path / "norm", inner_c))
-                .add_fn(|xs| xs.relu())
+                .add_fn(|xs| xs.lrelu())
         };
 
-        DetectionEmbedding {
-            in_c,
-            branch1,
-            branch2,
-            branch3,
+        Ok(DetectionEmbedding {
+            in_c: in_c.iter().map(|&in_c| in_c as i64).collect(),
+            branches,
             merge,
-        }
+        })
     }
 }
 
 #[derive(Debug)]
 pub struct DetectionEmbedding {
-    in_c: [usize; 3],
-    branch1: nn::SequentialT,
-    branch2: nn::SequentialT,
-    branch3: nn::SequentialT,
+    in_c: Vec<i64>,
+    branches: Vec<nn::SequentialT>,
     merge: nn::SequentialT,
 }
 
 impl DetectionEmbedding {
     pub fn forward_t(&self, input: &DenseDetectionTensorList, train: bool) -> Result<Tensor> {
-        ensure!(input.tensors.len() == 3);
-        ensure!(
-            input.tensors[0].height() == input.tensors[1].height() * 2
-                && input.tensors[0].height() == input.tensors[2].height() * 4
-        );
-        ensure!(
-            input.tensors[0].width() == input.tensors[1].width() * 2
-                && input.tensors[0].width() == input.tensors[2].width() * 4
-        );
+        ensure!(input.tensors.len() == self.branches.len());
 
-        let tensors: Vec<_> = izip!(input.tensors.iter(), self.in_c)
-            .map(|(tensor, in_c)| {
-                let tensor = tensor.to_tensor();
-                let (b, e, a, h, w) = tensor.size5().unwrap();
+        let tensors: Vec<_> = izip!(input.tensors.iter(), &self.branches, &self.in_c)
+            .map(|(input, branch, &in_c)| {
+                let input = input.to_tensor();
+                let (in_b, in_e, in_a, in_h, in_w) = input.size5().unwrap();
                 ensure!(
-                    e * a == in_c as i64,
+                    in_e * in_a == in_c,
                     "expect {} channels, get {} entries and {} anchros",
                     in_c,
-                    e,
-                    a
+                    in_e,
+                    in_a
                 );
-                let tensor = tensor.view([b, e * a, h, w]);
-                Ok(tensor)
+                let input = input.view([in_b, in_c, in_h, in_w]);
+                let output = branch.forward_t(&input, train);
+                Ok(output)
             })
             .try_collect()?;
 
-        let feature1 = self.branch1.forward_t(&tensors[0], train);
-        let feature2 = self.branch2.forward_t(&tensors[1], train);
-        let feature3 = self.branch3.forward_t(&tensors[2], train);
-        let cat = Tensor::cat(&[feature1, feature2, feature3], 1);
+        let cat = Tensor::cat(&tensors, 1);
         let merge = self.merge.forward_t(&cat, train);
         Ok(merge)
     }
