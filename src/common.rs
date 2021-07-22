@@ -3,6 +3,7 @@ pub use approx::assert_abs_diff_eq;
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
 pub use collected::{GroupHashMap, MaxVal};
+pub use cv_convert::IntoCv;
 pub use futures::{
     future::FutureExt,
     stream::{self, Stream, StreamExt, TryStreamExt},

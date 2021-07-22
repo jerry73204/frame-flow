@@ -6,6 +6,7 @@ mod generator;
 mod loss;
 mod misc;
 mod resnet_block;
+mod stylegan;
 mod unet_block;
 
 pub use attention::*;
@@ -16,4 +17,5 @@ pub use generator::*;
 pub use loss::*;
 pub use misc::*;
 pub use resnet_block::*;
+pub use stylegan::*;
 pub use unet_block::*;
