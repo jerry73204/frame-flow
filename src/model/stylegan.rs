@@ -1,97 +1,127 @@
 use crate::common::*;
 
+pub use activation::*;
 pub use conv_2d_resample::*;
 pub use fir_filter::*;
+pub use mapping_network::*;
 pub use misc::*;
 pub use modulated_conv2d::*;
 pub use stylegan_conv_2d::*;
+pub use stylegan_linear::*;
 pub use synthesis_block::*;
 pub use synthesis_layer::*;
 pub use synthesis_network::*;
 pub use to_rgb_layer::*;
 pub use up_fir_down_2d::*;
 
+type TensorIter = Box<dyn Iterator<Item = Tensor> + Send>;
+
 mod fir_filter {
     use super::*;
 
-    pub fn default_fir_values() -> Tensor {
-        Tensor::ones(&[1, 1], (Kind::Float, Device::Cpu))
+    #[derive(Debug)]
+    pub struct FirFilter(Tensor);
+
+    impl FirFilter {
+        pub fn size(&self) -> (i64, i64) {
+            self.0.size2().unwrap()
+        }
     }
 
-    pub trait FirFilterValues {
-        fn to_tensor(self) -> Result<Tensor>;
+    impl Clone for FirFilter {
+        fn clone(&self) -> Self {
+            Self(self.0.detach().copy())
+        }
     }
 
-    impl FirFilterValues for Tensor {
-        fn to_tensor(self) -> Result<Tensor> {
-            ensure!(self.kind() == Kind::Float && self.numel() > 0 && !self.requires_grad());
-            let tensor = match self.dim() {
-                0 => self.view([1, 1]),
-                1 => self.outer(&self),
-                2 => self,
+    impl Default for FirFilter {
+        fn default() -> Self {
+            Self(Tensor::ones(&[1, 1], (Kind::Float, Device::Cpu)))
+        }
+    }
+
+    impl TryFrom<Tensor> for FirFilter {
+        type Error = Error;
+
+        fn try_from(from: Tensor) -> Result<Self, Self::Error> {
+            ensure!(from.kind() == Kind::Float && from.numel() > 0);
+            let from = from.detach().copy().set_requires_grad(false);
+            let tensor = match from.dim() {
+                0 => from.view([1, 1]),
+                1 => from.outer(&from),
+                2 => from,
                 dim => bail!("filter dimension must be one of 0, 1, 2, but get {}", dim),
             };
-            Ok(tensor)
+            Ok(Self(tensor))
         }
     }
 
-    impl FirFilterValues for f64 {
-        fn to_tensor(self) -> Result<Tensor> {
-            Ok(Tensor::from(self).view([1, 1]))
+    impl From<f64> for FirFilter {
+        fn from(from: f64) -> Self {
+            Self(Tensor::from(from).view([1, 1]))
         }
     }
 
-    impl<const N: usize> FirFilterValues for [f64; N] {
-        fn to_tensor(self) -> Result<Tensor> {
-            let tensor = Tensor::of_slice(self.as_ref());
-            Ok(tensor.outer(&tensor))
+    impl<const N: usize> From<[f64; N]> for FirFilter {
+        fn from(from: [f64; N]) -> Self {
+            let tensor = Tensor::of_slice(from.as_ref());
+            Self(tensor)
         }
     }
 
-    impl<const R: usize, const C: usize> FirFilterValues for [[f64; C]; R] {
-        fn to_tensor(self) -> Result<Tensor> {
-            let tensor: Tensor = self.into_cv();
-            Ok(tensor)
+    impl<const R: usize, const C: usize> From<[[f64; C]; R]> for FirFilter {
+        fn from(from: [[f64; C]; R]) -> Self {
+            let tensor: Tensor = from.into_cv();
+            Self(tensor)
         }
     }
 
     #[derive(Debug, Clone)]
-    pub struct FirFilterOptions {
+    pub struct FirFilterInit {
+        pub filter: FirFilter,
         pub normalize: bool,
         pub flip: bool,
         pub gain: f64,
     }
 
-    impl Default for FirFilterOptions {
+    impl FirFilterInit {
+        pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> Result<Tensor> {
+            let path = path.borrow();
+            let Self {
+                filter,
+                normalize,
+                flip,
+                gain,
+            } = self;
+            ensure!(gain > 0.0);
+
+            let filter = {
+                let weights = filter.0;
+                let mut filter = path.zeros_no_train("fir_filter", &weights.size());
+                filter.copy_(&weights);
+                filter
+            };
+            let filter = if normalize {
+                &filter / &filter.sum(Kind::Float)
+            } else {
+                filter
+            };
+            let filter = if flip { filter.flip(&[0, 1]) } else { filter };
+            let filter = filter * gain;
+
+            Ok(filter)
+        }
+    }
+
+    impl Default for FirFilterInit {
         fn default() -> Self {
             Self {
+                filter: Default::default(),
                 normalize: true,
                 flip: false,
                 gain: 1.0,
             }
         }
-    }
-
-    pub fn make_fir_filter(
-        values: impl FirFilterValues,
-        options: FirFilterOptions,
-    ) -> Result<Tensor> {
-        let FirFilterOptions {
-            normalize,
-            flip,
-            gain,
-        } = options;
-
-        let filter = values.to_tensor()?;
-        let filter = if normalize {
-            &filter / &filter.sum(Kind::Float)
-        } else {
-            filter
-        };
-        let filter = if flip { filter.flip(&[0, 1]) } else { filter };
-        let filter = filter * gain;
-
-        Ok(filter)
     }
 }
 
@@ -100,7 +130,7 @@ mod up_fir_down_2d {
 
     #[derive(Debug, Clone)]
     pub struct UpFirDn2DInit {
-        pub filter_options: FirFilterOptions,
+        pub filter: FirFilterInit,
         pub up: usize,
         pub down: usize,
         pub padding: [i64; 4],
@@ -109,7 +139,7 @@ mod up_fir_down_2d {
     impl Default for UpFirDn2DInit {
         fn default() -> Self {
             Self {
-                filter_options: Default::default(),
+                filter: Default::default(),
                 up: 1,
                 down: 1,
                 padding: [0; 4],
@@ -118,15 +148,11 @@ mod up_fir_down_2d {
     }
 
     impl UpFirDn2DInit {
-        pub fn build<'a>(
-            self,
-            path: impl Borrow<nn::Path<'a>>,
-            filter: impl FirFilterValues,
-        ) -> Result<UpFirDn2D> {
+        pub fn build<'a>(self, path: impl Borrow<nn::Path<'a>>) -> Result<UpFirDn2D> {
             let path = path.borrow();
 
             let Self {
-                filter_options,
+                filter,
                 up,
                 down,
                 padding,
@@ -136,13 +162,7 @@ mod up_fir_down_2d {
             ensure!(down > 0);
             let up = up as i64;
             let down = down as i64;
-            let filter = make_fir_filter(filter, filter_options)?;
-
-            let weight = {
-                let mut weight = path.zeros_no_train("weight", &filter.size());
-                weight.copy_(&filter);
-                weight
-            };
+            let weight = filter.build(path)?;
 
             Ok(UpFirDn2D {
                 weight,
@@ -231,7 +251,7 @@ mod conv_2d_resample {
 
     #[derive(Debug, Clone)]
     pub struct Conv2DResampleInit {
-        pub filter_options: FirFilterOptions,
+        pub filter: FirFilterInit,
         pub padding: [i64; 4],
         pub up: usize,
         pub down: usize,
@@ -243,7 +263,7 @@ mod conv_2d_resample {
     impl Default for Conv2DResampleInit {
         fn default() -> Self {
             Self {
-                filter_options: Default::default(),
+                filter: Default::default(),
                 padding: default_padding(),
                 up: default_up(),
                 down: default_down(),
@@ -261,10 +281,9 @@ mod conv_2d_resample {
             in_c: usize,
             out_c: usize,
             ksize: usize,
-            filter: impl FirFilterValues,
         ) -> Result<Conv2DResample> {
             let Self {
-                filter_options,
+                filter,
                 padding,
                 up,
                 down,
@@ -274,8 +293,7 @@ mod conv_2d_resample {
             } = self;
             ensure!(groups >= 1);
             let path = path.borrow();
-            let filter = filter.to_tensor()?;
-            let (fh, fw) = filter.size2().unwrap();
+            let (fh, fw) = filter.filter.size();
             let out_c = out_c as i64;
             let in_c = in_c as i64;
             let ksize = ksize as i64;
@@ -323,20 +341,20 @@ mod conv_2d_resample {
             };
 
             let up_conv = UpFirDn2DInit {
-                filter_options: filter_options.clone(),
+                filter: filter.clone(),
                 up,
                 down: 1,
                 padding: conv_padding,
             }
-            .build(path / "up_conv", filter.copy())?;
+            .build(path / "up_conv")?;
 
             let down_conv = UpFirDn2DInit {
-                filter_options,
+                filter,
                 up: 1,
                 down,
                 padding: [0, 0, 0, 0],
             }
-            .build(path / "down_conv", filter)?;
+            .build(path / "down_conv")?;
 
             Ok(Conv2DResample {
                 up_conv,
@@ -404,7 +422,7 @@ mod modulated_conv2d {
         pub padding: [i64; 4],
         pub flip_weight: bool,
         pub demodulate: bool,
-        pub filter_options: FirFilterOptions,
+        pub filter: FirFilterInit,
         pub ws_init: nn::Init,
     }
 
@@ -416,7 +434,7 @@ mod modulated_conv2d {
                 padding: default_padding(),
                 flip_weight: default_flip_weight(),
                 demodulate: true,
-                filter_options: Default::default(),
+                filter: Default::default(),
                 ws_init: nn::Init::KaimingUniform,
             }
         }
@@ -434,13 +452,12 @@ mod modulated_conv2d {
             in_c: usize,
             out_c: usize,
             ksize: usize,
-            filter: impl FirFilterValues,
         ) -> Result<ModulatedConv2D> {
             let path = path.borrow();
             let Self {
                 up,
                 down,
-                filter_options,
+                filter,
                 padding,
                 demodulate,
                 flip_weight,
@@ -453,11 +470,11 @@ mod modulated_conv2d {
                 down,
                 padding,
                 ws_init,
-                filter_options,
+                filter,
                 flip_weight,
                 groups: 1,
             }
-            .build(path, in_c, out_c, ksize, filter)?;
+            .build(path, in_c, out_c, ksize)?;
             let output = ModulatedConv2D { conv, demodulate };
 
             Ok(output)
@@ -509,7 +526,6 @@ mod modulated_conv2d {
 }
 
 mod synthesis_layer {
-
     use super::*;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -525,7 +541,19 @@ mod synthesis_layer {
         pub up: usize,
         pub activation: FixedActivationInit,
         pub noise_mode: NoiseMode,
-        pub filter_options: FirFilterOptions,
+        pub filter: FirFilterInit,
+    }
+
+    impl Default for SynthesisLayerInit {
+        fn default() -> Self {
+            Self {
+                ksize: 3,
+                up: 1,
+                activation: Default::default(),
+                noise_mode: NoiseMode::Random,
+                filter: Default::default(),
+            }
+        }
     }
 
     impl SynthesisLayerInit {
@@ -535,112 +563,80 @@ mod synthesis_layer {
             in_c: usize,
             out_c: usize,
             w_dim: usize,
-            resolution: usize,
-            filter: impl FirFilterValues,
+            resol: usize,
         ) -> Result<SynthesisLayer> {
             let path = path.borrow();
+            let device = path.device();
             let Self {
                 ksize,
                 up,
                 activation,
                 noise_mode,
-                filter_options,
+                filter,
             } = self;
+            let resol = resol as i64;
 
             let conv = ModulatedConv2DInit {
                 up,
                 padding: [ksize as i64 / 2; 4],
                 flip_weight: up == 1,
-                filter_options,
+                filter,
                 ..Default::default()
             }
-            .build(path, in_c, out_c, ksize, filter)?;
-
+            .build(path, in_c, out_c, ksize)?;
             let bias = path.zeros("bias", &[out_c as i64]);
-
-            let noise_const = if noise_mode == NoiseMode::Const {
-                let resol = resolution as i64;
-                Some(path.randn("noise_const", &[resol, resol], 0.0, 1.0))
-            } else {
-                None
-            };
-
             let noise_strength = path.zeros("noise_strength", &[]);
-
             let linear = nn::linear(
                 path / "linear",
                 in_c as i64,
                 w_dim as i64,
                 Default::default(),
             );
-
             let activation = activation.build()?;
 
-            Ok(SynthesisLayer {
-                up: up as i64,
-                resolution: resolution as i64,
-                noise_mode,
-                activation,
-                conv,
-                linear,
-                bias,
-                noise_const,
-                noise_strength,
-            })
+            let noise_fn: Box<dyn Fn(i64) -> Option<Tensor> + Send> = match noise_mode {
+                NoiseMode::Random => Box::new(move |bsize: i64| {
+                    Some(Tensor::randn(
+                        &[bsize, 1, resol, resol],
+                        (Kind::Float, device),
+                    ))
+                }),
+                NoiseMode::Const => {
+                    let noise_const = path.randn("noise_const", &[resol, resol], 0.0, 1.0);
+                    Box::new(move |_| Some(noise_const.shallow_clone()))
+                }
+                NoiseMode::None => Box::new(|_| None),
+            };
+
+            let forward_fn = Box::new(move |xs: &Tensor, styles: &Tensor| -> Result<Tensor> {
+                let in_resol = resol / up as i64;
+                let bsize = {
+                    let (bsize, _, in_h, in_w) = xs.size4()?;
+                    ensure!((in_h, in_w) == (in_resol, in_resol));
+                    bsize
+                };
+
+                let styles: Tensor = linear.forward(styles);
+                let noise = noise_fn(bsize).map(|noise| noise * &noise_strength);
+
+                let xs = conv.f_forward(xs, &styles, noise.as_ref())?;
+                let xs = xs + bias.view([1, -1, 1, 1]);
+                let xs = activation.forward(&xs);
+
+                Ok(xs)
+            });
+
+            Ok(SynthesisLayer { forward_fn })
         }
     }
 
     pub struct SynthesisLayer {
-        up: i64,
-        resolution: i64,
-        noise_mode: NoiseMode,
-        conv: ModulatedConv2D,
-        linear: nn::Linear,
-        activation: FixedActivation,
-        bias: Tensor,
-        noise_const: Option<Tensor>,
-        noise_strength: Tensor,
+        forward_fn: Box<dyn Fn(&Tensor, &Tensor) -> Result<Tensor> + Send>,
     }
 
     impl SynthesisLayer {
         pub fn f_forward(&self, xs: &Tensor, styles: &Tensor) -> Result<Tensor> {
-            let Self {
-                up,
-                noise_mode,
-                resolution,
-                ref conv,
-                ref linear,
-                ref bias,
-                ref activation,
-                ref noise_const,
-                ref noise_strength,
-            } = *self;
-            let in_resol = resolution / up;
-            let bsize = {
-                let (bsize, _, in_h, in_w) = xs.size4()?;
-                ensure!((in_h, in_w) == (in_resol, in_resol));
-                bsize
-            };
-
-            let styles: Tensor = linear.forward(styles);
-            let noise = match noise_mode {
-                NoiseMode::Random => {
-                    let noise = Tensor::randn(
-                        &[bsize, 1, resolution, resolution],
-                        (Kind::Float, xs.device()),
-                    );
-                    Some(noise)
-                }
-                NoiseMode::Const => noise_const.shallow_clone(),
-                NoiseMode::None => None,
-            }
-            .map(|noise| noise * noise_strength);
-
-            let xs = conv.f_forward(xs, &styles, noise.as_ref())?;
-            let xs = xs + bias.view([1, -1, 1, 1]);
-            let xs = activation.forward(&xs);
-
-            Ok(xs)
+            (self.forward_fn)(xs, styles)
         }
     }
 }
@@ -648,13 +644,17 @@ mod synthesis_layer {
 mod synthesis_block {
     use super::*;
 
-    type TensorIter = Box<dyn Iterator<Item = Tensor> + Send>;
-    type InputFn = Box<dyn Fn(&Tensor) -> Result<Tensor> + Send>;
+    type InputFn = Box<dyn Fn(Option<&Tensor>, i64) -> Result<Tensor> + Send>;
     type MainFn = Box<dyn Fn(&Tensor, &mut TensorIter) -> Result<Tensor> + Send>;
     type ImageFn =
         Box<dyn Fn(&Tensor, Option<&Tensor>, &mut TensorIter) -> Result<Option<Tensor>> + Send>;
     type ForwardFn = Box<
-        dyn Fn(&Tensor, Option<&Tensor>, &mut TensorIter) -> Result<(Tensor, Option<Tensor>)>
+        dyn Fn(
+                Option<&Tensor>,
+                Option<&Tensor>,
+                &mut TensorIter,
+                i64,
+            ) -> Result<(Tensor, Option<Tensor>)>
             + Send,
     >;
 
@@ -668,8 +668,18 @@ mod synthesis_block {
     #[derive(Debug, Clone)]
     pub struct SynthesisBlockInit {
         pub kind: SynthesisBlockKind,
-        pub synthesis_init: SynthesisLayerInit,
+        pub filter: FirFilter,
         pub clamp: Option<f64>,
+    }
+
+    impl Default for SynthesisBlockInit {
+        fn default() -> Self {
+            Self {
+                kind: SynthesisBlockKind::Skip,
+                filter: Default::default(),
+                clamp: None,
+            }
+        }
     }
 
     impl SynthesisBlockInit {
@@ -679,18 +689,16 @@ mod synthesis_block {
             in_c: usize,
             out_c: usize,
             w_dim: usize,
-            resolution: usize,
+            resol: usize,
             image_c: usize,
             is_last: bool,
-            filter: impl FirFilterValues,
         ) -> Result<SynthesisBlock> {
             let path = path.borrow();
             let Self {
                 kind,
-                synthesis_init,
+                filter,
                 clamp,
             } = self;
-            let filter = filter.to_tensor()?;
 
             fn styles_err() -> Error {
                 format_err!("invalid styles input length")
@@ -698,11 +706,10 @@ mod synthesis_block {
 
             let input_fn: InputFn = if in_c == 0 {
                 let out_c = out_c as i64;
-                let resolution = resolution as i64;
-                let r#const = path.randn("const", &[out_c, resolution, resolution], 0.0, 1.0);
+                let resol = resol as i64;
+                let r#const = path.randn("const", &[out_c, resol, resol], 0.0, 1.0);
 
-                Box::new(move |xs: &Tensor| -> Result<_> {
-                    let (bsize, _, _, _) = xs.size4()?;
+                Box::new(move |_xs: Option<&Tensor>, bsize: i64| -> Result<_> {
                     let xs = r#const
                         .shallow_clone()
                         .unsqueeze(0)
@@ -711,11 +718,12 @@ mod synthesis_block {
                 })
             } else {
                 let in_c = in_c as i64;
-                let resolution = resolution as i64;
+                let resol = resol as i64;
 
-                Box::new(move |xs: &Tensor| -> Result<_> {
+                Box::new(move |xs: Option<&Tensor>, _bsize| -> Result<_> {
+                    let xs = xs.ok_or_else(|| format_err!("expect xs to be Some, but get None"))?;
                     let (_, in_c_, in_h, in_w) = xs.size4()?;
-                    ensure!((in_c_, in_h, in_w) == (in_c, resolution / 2, resolution / 2));
+                    ensure!((in_c_, in_h, in_w) == (in_c, resol / 2, resol / 2));
                     Ok(xs.shallow_clone())
                 })
             };
@@ -726,16 +734,9 @@ mod synthesis_block {
                         clamp,
                         ..Default::default()
                     },
-                    ..synthesis_init.clone()
+                    ..Default::default()
                 }
-                .build(
-                    path / "conv1",
-                    out_c,
-                    out_c,
-                    w_dim,
-                    resolution,
-                    filter.shallow_clone(),
-                )?;
+                .build(path / "conv1", out_c, out_c, w_dim, resol)?;
 
                 if in_c == 0 {
                     Box::new(move |xs: &Tensor, styles: &mut TensorIter| -> Result<_> {
@@ -749,16 +750,13 @@ mod synthesis_block {
                             clamp,
                             ..Default::default()
                         },
-                        ..synthesis_init
+                        filter: FirFilterInit {
+                            filter: filter.clone(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
                     }
-                    .build(
-                        path / "conv0",
-                        in_c,
-                        out_c,
-                        w_dim,
-                        resolution,
-                        filter.shallow_clone(),
-                    )?;
+                    .build(path / "conv0", in_c, out_c, w_dim, resol)?;
 
                     match kind {
                         SynthesisBlockKind::Resnet => {
@@ -769,15 +767,13 @@ mod synthesis_block {
                                     gain: 0.5.sqrt(),
                                     ..Default::default()
                                 },
+                                filter: FirFilterInit {
+                                    filter,
+                                    ..Default::default()
+                                },
                                 ..Default::default()
                             }
-                            .build(
-                                path / "skip",
-                                in_c,
-                                out_c,
-                                1,
-                                filter.shallow_clone(),
-                            )?;
+                            .build(path / "skip", in_c, out_c, 1)?;
 
                             Box::new(move |xs: &Tensor, styles: &mut TensorIter| -> Result<_> {
                                 let ys = skip.forward(xs);
@@ -805,17 +801,14 @@ mod synthesis_block {
             let image_fn: ImageFn = {
                 let upfirdn2d_fn = {
                     let image_c = image_c as i64;
-                    let resolution = resolution as i64;
-                    let upfirdn2d = UpFirDn2DInit::default().build(path / "upfirdn2d", filter)?;
+                    let resol = resol as i64;
+                    let upfirdn2d = UpFirDn2DInit::default().build(path / "upfirdn2d")?;
 
                     move |image: Option<&Tensor>| -> Result<_> {
                         image
                             .map(|image| -> Result<_> {
                                 let (_bsize, img_c_, img_h, img_w) = image.size4()?;
-                                ensure!(
-                                    (img_c_, img_h, img_w)
-                                        == (image_c, resolution / 2, resolution / 2)
-                                );
+                                ensure!((img_c_, img_h, img_w) == (image_c, resol / 2, resol / 2));
                                 let image = upfirdn2d.forward(image);
                                 Ok(image)
                             })
@@ -853,8 +846,12 @@ mod synthesis_block {
             };
 
             let forward_fn: ForwardFn = Box::new(
-                move |xs: &Tensor, image: Option<&Tensor>, styles: &mut TensorIter| -> Result<_> {
-                    let xs = input_fn(xs)?;
+                move |xs: Option<&Tensor>,
+                      image: Option<&Tensor>,
+                      styles: &mut TensorIter,
+                      bsize: i64|
+                      -> Result<_> {
+                    let xs = input_fn(xs, bsize)?;
                     let xs = main_fn(&xs, styles)?;
                     let image = image_fn(&xs, image, styles)?;
                     Ok((xs, image))
@@ -865,34 +862,114 @@ mod synthesis_block {
         }
     }
 
+    #[derive(Derivative)]
+    #[derivative(Debug)]
     pub struct SynthesisBlock {
+        #[derivative(Debug = "ignore")]
         forward_fn: ForwardFn,
     }
 
     impl SynthesisBlock {
         pub fn f_forward(
             &self,
-            xs: &Tensor,
+            xs: Option<&Tensor>,
             image: Option<&Tensor>,
-            styles: impl IntoIterator<IntoIter = impl 'static + Iterator<Item = impl Borrow<Tensor>> + Send>
-                + Send,
+            styles: &mut TensorIter,
+            bsize: usize,
         ) -> Result<(Tensor, Option<Tensor>)> {
-            let mut styles: TensorIter = Box::new(
-                styles
-                    .into_iter()
-                    .map(|tensor| tensor.borrow().shallow_clone()),
-            );
-            (self.forward_fn)(xs, image, &mut styles)
+            (self.forward_fn)(xs, image, styles, bsize as i64)
         }
     }
 }
 
-// mod synthesis_network {
-//     use super::*;
+mod synthesis_network {
+    use super::*;
 
-//     #[derive(Debug, Clone)]
-//     pub struct SynthesisNetworkInit {}
-// }
+    #[derive(Debug, Clone)]
+    pub struct SynthesisNetworkInit {
+        pub block_channels_base_pow: usize,
+        pub block_channels_max_pow: usize,
+        pub block_init: SynthesisBlockInit,
+    }
+
+    impl Default for SynthesisNetworkInit {
+        fn default() -> Self {
+            Self {
+                block_channels_base_pow: 15,
+                block_channels_max_pow: 9,
+                block_init: Default::default(),
+            }
+        }
+    }
+
+    impl SynthesisNetworkInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            w_dim: usize,
+            image_resol_pow: usize,
+            image_c: usize,
+        ) -> Result<SynthesisNetwork> {
+            let Self {
+                block_channels_base_pow: block_c_base_pow,
+                block_channels_max_pow: block_c_max_pow,
+                block_init,
+            } = self;
+            let path = path.borrow();
+            ensure!((2..block_c_base_pow).contains(&image_resol_pow));
+            let image_resol = 2usize.pow(image_resol_pow as u32);
+
+            let block_params: Vec<_> = (2..=image_resol_pow)
+                .map(|block_resol_pow| {
+                    let block_resol = 2usize.pow(block_resol_pow as u32);
+                    let block_c_pow = cmp::min(block_c_base_pow - block_resol_pow, block_c_max_pow);
+                    let block_c = 2usize.pow(block_c_pow as u32);
+                    (block_resol, block_c)
+                })
+                .collect();
+
+            let in_c_iter = chain!(
+                iter::once(0),
+                block_params.iter().map(|&(_, block_c)| block_c)
+            );
+            let out_c_iter = block_params.iter().map(|&(_, block_c)| block_c);
+            let resol_iter = block_params.iter().map(|&(block_resol, _)| block_resol);
+
+            let blocks: Vec<_> = izip!(in_c_iter, out_c_iter, resol_iter)
+                .map(|(in_c, out_c, resol)| -> Result<_> {
+                    let is_last = resol == image_resol;
+                    let block = block_init
+                        .clone()
+                        .build(path, in_c, out_c, w_dim, resol, image_c, is_last)?;
+                    Ok(block)
+                })
+                .try_collect()?;
+
+            Ok(SynthesisNetwork { blocks })
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct SynthesisNetwork {
+        blocks: Vec<SynthesisBlock>,
+    }
+
+    impl SynthesisNetwork {
+        pub fn f_forward(&self, styles: &mut TensorIter, bsize: usize) -> Result<Tensor> {
+            let (_xs, image) = self.blocks.iter().try_fold(
+                (None, None),
+                |(xs, image): (Option<Tensor>, Option<Tensor>), block| -> Result<_> {
+                    let (xs, image) =
+                        block.f_forward(xs.as_ref(), image.as_ref(), styles, bsize)?;
+                    Ok((Some(xs), image))
+                },
+            )?;
+            ensure!(styles.next().is_none());
+            let image = image.ok_or_else(|| format_err!("please report bug"))?;
+            Ok(image)
+        }
+    }
+}
 
 mod stylegan_conv_2d {
     use super::*;
@@ -904,7 +981,7 @@ mod stylegan_conv_2d {
         pub activation: FixedActivationInit,
         pub ws_init: nn::Init,
         pub bs_init: Option<nn::Init>,
-        pub filter_options: FirFilterOptions,
+        pub filter: FirFilterInit,
     }
 
     impl Default for StyleGanConv2DInit {
@@ -915,7 +992,7 @@ mod stylegan_conv_2d {
                 activation: Default::default(),
                 ws_init: nn::Init::KaimingUniform,
                 bs_init: None,
-                filter_options: Default::default(),
+                filter: Default::default(),
             }
         }
     }
@@ -927,7 +1004,6 @@ mod stylegan_conv_2d {
             in_c: usize,
             out_c: usize,
             ksize: usize,
-            filter: impl FirFilterValues,
         ) -> Result<StyleGanConv2D> {
             let path = path.borrow();
             let Self {
@@ -936,13 +1012,13 @@ mod stylegan_conv_2d {
                 activation,
                 ws_init,
                 bs_init,
-                filter_options,
+                filter,
             } = self;
             let padding = ksize as i64 / 2;
             let flip_weight = up == 1;
 
             let conv = Conv2DResampleInit {
-                filter_options,
+                filter,
                 padding: [padding; 4],
                 up,
                 down,
@@ -950,7 +1026,7 @@ mod stylegan_conv_2d {
                 ws_init,
                 ..Default::default()
             }
-            .build(path, in_c, out_c, ksize, filter)?;
+            .build(path, in_c, out_c, ksize)?;
             let bias = bs_init.map(|bs_init| path.var("bias", &[out_c as i64], bs_init));
             let activation = activation.build()?;
 
@@ -1035,7 +1111,7 @@ mod to_rgb_layer {
                 demodulate: false,
                 ..Default::default()
             }
-            .build(path / "conv", in_c, out_c, ksize, default_fir_values())?;
+            .build(path / "conv", in_c, out_c, ksize)?;
             let bias = path.zeros("bias", &[out_c as i64]);
             let activation = FixedActivationInit {
                 clamp,
@@ -1077,7 +1153,7 @@ mod to_rgb_layer {
     }
 }
 
-mod misc {
+mod activation {
     use super::*;
 
     #[derive(Debug, Clone)]
@@ -1161,6 +1237,314 @@ mod misc {
             Ok(act_gain)
         }
     }
+}
+
+mod mapping_network {
+
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct MappingNetworkInit {
+        pub num_layers: usize,
+        pub embed_feature_dim: Option<usize>,
+        pub layer_feature_dim: Option<usize>,
+        pub activation: Activation,
+        pub lr_multiplier: f64,
+        pub w_avg_beta: Option<f64>,
+        pub truncation_psi: f64,
+        pub truncation_cutoff: Option<usize>,
+    }
+
+    impl Default for MappingNetworkInit {
+        fn default() -> Self {
+            Self {
+                num_layers: 8,
+                embed_feature_dim: None,
+                layer_feature_dim: None,
+                activation: Activation::LRelu,
+                lr_multiplier: 0.01,
+                w_avg_beta: Some(0.995),
+                truncation_psi: 1.0,
+                truncation_cutoff: None,
+            }
+        }
+    }
+
+    impl MappingNetworkInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            z_dim: Option<usize>,
+            c_dim: Option<usize>,
+            w_dim: usize,
+            num_ws: Option<usize>,
+        ) -> Result<MappingNetwork> {
+            let path = path.borrow();
+            let Self {
+                num_layers,
+                embed_feature_dim,
+                layer_feature_dim,
+                activation,
+                lr_multiplier,
+                w_avg_beta,
+                truncation_psi,
+                truncation_cutoff,
+            } = self;
+            ensure!(num_layers >= 1);
+            ensure!(w_dim > 0);
+            ensure!(z_dim.into_iter().all(|dim| dim > 0));
+            ensure!(c_dim.into_iter().all(|dim| dim > 0));
+            ensure!(embed_feature_dim.into_iter().all(|dim| dim > 0));
+            ensure!(layer_feature_dim.into_iter().all(|dim| dim > 0));
+
+            let z_dim = z_dim.map(|z_dim| z_dim as i64);
+            let layer_feature_dim = layer_feature_dim.unwrap_or(w_dim) as i64;
+            let c_embed_dim = match (c_dim, embed_feature_dim) {
+                (Some(c_dim), Some(embed_feature_dim)) => Some((c_dim, embed_feature_dim)),
+                (Some(c_dim), None) => Some((c_dim, w_dim)),
+                (None, Some(_)) => bail!("embed_feature_dim must be None if c_dim is None"),
+                (None, None) => None,
+            };
+            let w_dim = w_dim as i64;
+
+            let input_fn: Box<dyn Fn(_, _) -> _ + Send> = {
+                let z_input_fn = match z_dim {
+                    Some(z_dim) => Some(move |zs: Tensor| -> Result<Tensor> {
+                        ensure!(matches!(zs.size2()?, (_, z_dim_) if z_dim_ == z_dim));
+                        Ok(normalize_2nd_moment(&zs))
+                    }),
+                    None => None,
+                };
+                let c_input_fn = match c_embed_dim {
+                    Some((c_dim, embed_feature_dim)) => {
+                        let embed = StyleGanLinearInit::default().build(
+                            path / "embed",
+                            c_dim,
+                            embed_feature_dim,
+                        );
+
+                        Some(move |cs: Tensor| -> Result<Tensor> {
+                            ensure!(matches!(cs.size2()?, (_, c_dim_) if c_dim_ == c_dim as i64));
+                            let ys = embed.forward(&cs);
+                            let ys = normalize_2nd_moment(&ys);
+                            Ok(ys)
+                        })
+                    }
+                    None => None,
+                };
+                match (z_input_fn, c_input_fn) {
+                    (None, None) => unreachable!(),
+                    (None, Some(c_input_fn)) => Box::new(
+                        move |_zs: Option<Tensor>, cs: Option<Tensor>| -> Result<_> {
+                            let cs = cs.ok_or_else(|| format_err!("expect cs, but get None"))?;
+                            let xs = c_input_fn(cs)?;
+                            Ok(xs)
+                        },
+                    ),
+                    (Some(z_input_fn), None) => Box::new(
+                        move |zs: Option<Tensor>, _cs: Option<Tensor>| -> Result<_> {
+                            let zs = zs.ok_or_else(|| format_err!("expect zs, but get None"))?;
+                            let xs = z_input_fn(zs)?;
+                            Ok(xs)
+                        },
+                    ),
+                    (Some(z_input_fn), Some(c_input_fn)) => {
+                        Box::new(move |zs: Option<Tensor>, cs: Option<Tensor>| -> Result<_> {
+                            let cs = cs.ok_or_else(|| format_err!("expect cs, but get None"))?;
+                            let zs = zs.ok_or_else(|| format_err!("expect zs, but get None"))?;
+                            let xs = z_input_fn(zs)?;
+                            let ys = c_input_fn(cs)?;
+                            Ok(Tensor::cat(&[xs, ys], 1))
+                        })
+                    }
+                }
+            };
+
+            let main_fn = {
+                let channels_iter = {
+                    let embed_dim = c_embed_dim.map(|(_, embed_dim)| embed_dim as i64);
+                    let input_c = z_dim.unwrap_or(0) + embed_dim.unwrap_or(0);
+
+                    chain!(
+                        iter::once(input_c),
+                        iter::repeat(layer_feature_dim).take(num_layers - 1),
+                        iter::once(w_dim)
+                    )
+                };
+                let layers: Vec<_> = izip!(channels_iter.clone(), channels_iter.skip(1))
+                    .enumerate()
+                    .map(|(index, (in_c, out_c))| {
+                        StyleGanLinearInit {
+                            activation,
+                            lr_multiplier,
+                            ..Default::default()
+                        }
+                        .build(
+                            path / format!("layer{}", index),
+                            in_c as usize,
+                            out_c as usize,
+                        )
+                    })
+                    .collect();
+                move |xs: &Tensor| {
+                    layers
+                        .iter()
+                        .fold(xs.shallow_clone(), |xs, layer| layer.forward(&xs))
+                }
+            };
+
+            let update_fn = if let (Some(num_ws), Some(w_avg_beta)) = (num_ws, w_avg_beta) {
+                let mut w_avg = path.zeros_no_train("w_avg", &[w_dim]);
+
+                Some(move |xs: &Tensor, train: bool, skip_w_avg_update: bool| {
+                    if (true, false) == (train, skip_w_avg_update) {
+                        let new_w_avg = xs
+                            .detach()
+                            .mean_dim(&[0], false, Kind::Float)
+                            .lerp(&w_avg, w_avg_beta);
+                        w_avg.copy_(&new_w_avg);
+                    }
+
+                    let xs = xs.unsqueeze(1).repeat(&[1, num_ws as i64, 1]);
+
+                    match truncation_cutoff {
+                        Some(truncation_cutoff) => todo!(),
+                        None => w_avg.lerp(&xs, truncation_psi),
+                    }
+                })
+            } else {
+                None
+            };
+
+            let forward_fn = move |zs: Option<&Tensor>,
+                                   cs: Option<&Tensor>,
+                                   train: bool,
+                                   skip_w_avg_update: bool|
+                  -> Result<Tensor> {
+                let zs = zs.map(|zs| zs.shallow_clone());
+                let cs = cs.map(|cs| cs.shallow_clone());
+                let xs = input_fn(zs, cs)?;
+                let xs = main_fn(&xs);
+                let xs = match update_fn {
+                    Some(mut update_fn) => update_fn(&xs, train, skip_w_avg_update),
+                    None => xs,
+                };
+
+                Ok(xs)
+            };
+
+            todo!();
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct MappingNetwork {
+        z_dim: Option<i64>,
+        c_dim: Option<i64>,
+    }
+
+    impl MappingNetwork {
+        pub fn f_forward(&self, zs: Option<&Tensor>, cs: Option<&Tensor>) -> Result<Tensor> {
+            todo!();
+        }
+    }
+
+    fn normalize_2nd_moment(xs: &Tensor) -> Tensor {
+        const DIM: i64 = 1;
+        const EPS: f64 = 1e-8;
+        xs * (xs.square().mean_dim(&[DIM], true, xs.kind()) + EPS).rsqrt()
+    }
+}
+
+mod stylegan_linear {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct StyleGanLinearInit {
+        pub activation: Activation,
+        pub lr_multiplier: f64,
+        pub ws_init: nn::Init,
+        pub bs_init: Option<nn::Init>,
+    }
+
+    impl Default for StyleGanLinearInit {
+        fn default() -> Self {
+            Self {
+                activation: Activation::Linear,
+                lr_multiplier: 1.0,
+                ws_init: nn::Init::KaimingUniform,
+                bs_init: Some(nn::Init::Const(0.0)),
+            }
+        }
+    }
+
+    impl StyleGanLinearInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            in_c: usize,
+            out_c: usize,
+        ) -> StyleGanLinear {
+            let path = path.borrow();
+            let Self {
+                activation,
+                lr_multiplier,
+                ws_init,
+                bs_init,
+            } = self;
+            let in_c = in_c as i64;
+            let out_c = out_c as i64;
+
+            let weight = path.var("weight", &[out_c, in_c], ws_init);
+            let bias = bs_init.map(|bs_init| path.var("bias", &[out_c], bs_init) / lr_multiplier);
+
+            StyleGanLinear {
+                weight,
+                bias,
+                activation,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct StyleGanLinear {
+        weight: Tensor,
+        bias: Option<Tensor>,
+        activation: Activation,
+    }
+
+    impl nn::Module for StyleGanLinear {
+        fn forward(&self, xs: &Tensor) -> Tensor {
+            let Self {
+                ref weight,
+                ref bias,
+                activation,
+            } = *self;
+
+            let xs = xs.matmul(&weight.tr());
+            let xs = match bias.as_ref() {
+                Some(bias) => xs + bias,
+                None => xs,
+            };
+            let xs = activation.forward(&xs);
+            xs
+        }
+    }
+}
+
+mod misc {
+    // pub(super) trait IntoSendBox
+    // where
+    //     Self: Send,
+    // {
+    //     fn into_send_box(self) -> Box<Self>;
+    // }
+
+    // impl<T: Send> IntoSendBox for T {
+    //     fn into_send_box(self) -> Box<Self> {
+    //         Box::new(self)
+    //     }
+    // }
 }
 
 fn default_flip_weight() -> bool {

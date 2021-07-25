@@ -4,6 +4,7 @@ pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
 pub use collected::{GroupHashMap, MaxVal};
 pub use cv_convert::IntoCv;
+pub use derivative::Derivative;
 pub use futures::{
     future::FutureExt,
     stream::{self, Stream, StreamExt, TryStreamExt},
@@ -21,8 +22,9 @@ pub use serde::{Deserialize, Serialize};
 pub use std::{
     array,
     borrow::{Borrow, Cow},
+    cmp,
     collections::{self, HashMap, HashSet},
-    convert::TryInto,
+    convert::{TryFrom, TryInto},
     fs,
     iter::{self, FromIterator, Sum},
     num::NonZeroUsize,
