@@ -2,8 +2,13 @@ use crate::common::*;
 
 pub use activation::*;
 pub use conv_2d_resample::*;
+pub use discriminator::*;
+pub use discriminator_block::*;
+pub use discriminator_epilogue::*;
 pub use fir_filter::*;
+pub use generator::*;
 pub use mapping_network::*;
+pub use minibatch_std_layer::*;
 pub use misc::*;
 pub use modulated_conv2d::*;
 pub use stylegan_conv_2d::*;
@@ -15,6 +20,13 @@ pub use to_rgb_layer::*;
 pub use up_fir_down_2d::*;
 
 type TensorIter = Box<dyn Iterator<Item = Tensor> + Send>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModelKind {
+    Orig,
+    Skip,
+    Resnet,
+}
 
 mod fir_filter {
     use super::*;
@@ -659,7 +671,7 @@ mod synthesis_block {
     >;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub enum SynthesisBlockKind {
+    pub enum Kind {
         Orig,
         Skip,
         Resnet,
@@ -667,7 +679,7 @@ mod synthesis_block {
 
     #[derive(Debug, Clone)]
     pub struct SynthesisBlockInit {
-        pub kind: SynthesisBlockKind,
+        pub kind: ModelKind,
         pub filter: FirFilter,
         pub clamp: Option<f64>,
     }
@@ -675,7 +687,7 @@ mod synthesis_block {
     impl Default for SynthesisBlockInit {
         fn default() -> Self {
             Self {
-                kind: SynthesisBlockKind::Skip,
+                kind: ModelKind::Skip,
                 filter: Default::default(),
                 clamp: None,
             }
@@ -759,7 +771,7 @@ mod synthesis_block {
                     .build(path / "conv0", in_c, out_c, w_dim, resol)?;
 
                     match kind {
-                        SynthesisBlockKind::Resnet => {
+                        ModelKind::Resnet => {
                             let skip = StyleGanConv2DInit {
                                 up: 2,
                                 bs_init: None,
@@ -785,7 +797,7 @@ mod synthesis_block {
                                 Ok(xs)
                             })
                         }
-                        SynthesisBlockKind::Orig | SynthesisBlockKind::Skip => {
+                        ModelKind::Orig | ModelKind::Skip => {
                             Box::new(move |xs: &Tensor, styles: &mut TensorIter| -> Result<_> {
                                 let xs =
                                     conv0.f_forward(xs, &styles.next().ok_or_else(styles_err)?)?;
@@ -816,7 +828,7 @@ mod synthesis_block {
                     }
                 };
 
-                if is_last || kind == SynthesisBlockKind::Skip {
+                if is_last || kind == ModelKind::Skip {
                     let to_rgb = ToRgbLayerInit {
                         clamp,
                         ..Default::default()
@@ -1153,6 +1165,83 @@ mod to_rgb_layer {
     }
 }
 
+mod generator {
+    use super::*;
+
+    #[derive(Debug, Clone, Default)]
+    pub struct StyleGanGeneratorInit {
+        pub mapping_network_init: MappingNetworkInit,
+        pub synthesis_network_init: SynthesisNetworkInit,
+    }
+
+    impl StyleGanGeneratorInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            z_dim: Option<usize>,
+            c_dim: Option<usize>,
+            w_dim: usize,
+            image_resol_pow: usize,
+            image_c: usize,
+        ) -> Result<StyleGanGenerator> {
+            let path = path.borrow();
+            let Self {
+                mapping_network_init,
+                synthesis_network_init,
+            } = self;
+
+            let synthesis = synthesis_network_init.build(
+                path / "synthesis",
+                w_dim,
+                image_resol_pow,
+                image_c,
+            )?;
+            let mapping = mapping_network_init.build(
+                path / "mapping",
+                z_dim,
+                c_dim,
+                w_dim,
+                todo!(), // TODO
+            )?;
+
+            Ok(StyleGanGenerator { mapping, synthesis })
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct StyleGanGenerator {
+        mapping: MappingNetwork,
+        synthesis: SynthesisNetwork,
+    }
+
+    impl StyleGanGenerator {
+        pub fn f_forward_t(
+            &self,
+            zs: Option<&Tensor>,
+            cs: Option<&Tensor>,
+            train: bool,
+            skip_w_avg_update: bool,
+        ) -> Result<Tensor> {
+            let Self { mapping, synthesis } = self;
+            let bsize = match (zs, cs) {
+                (None, None) => bail!("empty input is not allowed"),
+                (None, Some(cs)) => cs.size()[0],
+                (Some(zs), None) => zs.size()[0],
+                (Some(zs), Some(cs)) => {
+                    ensure!(zs.size()[0] == cs.size()[0]);
+                    zs.size()[0]
+                }
+            } as usize;
+            let styles = mapping.f_forward(zs, cs, train, skip_w_avg_update)?;
+            let image = synthesis.f_forward(
+                todo!(), // styles
+                bsize,
+            )?;
+            Ok(image)
+        }
+    }
+}
+
 mod activation {
     use super::*;
 
@@ -1394,7 +1483,7 @@ mod mapping_network {
             };
 
             let update_fn = if let (Some(num_ws), Some(w_avg_beta)) = (num_ws, w_avg_beta) {
-                let mut w_avg = path.zeros_no_train("w_avg", &[w_dim]);
+                let w_avg = path.zeros_no_train("w_avg", &[w_dim]);
 
                 Some(move |xs: &Tensor, train: bool, skip_w_avg_update: bool| {
                     if (true, false) == (train, skip_w_avg_update) {
@@ -1402,13 +1491,19 @@ mod mapping_network {
                             .detach()
                             .mean_dim(&[0], false, Kind::Float)
                             .lerp(&w_avg, w_avg_beta);
-                        w_avg.copy_(&new_w_avg);
+                        w_avg.shallow_clone().copy_(&new_w_avg);
                     }
 
                     let xs = xs.unsqueeze(1).repeat(&[1, num_ws as i64, 1]);
 
                     match truncation_cutoff {
-                        Some(truncation_cutoff) => todo!(),
+                        Some(truncation_cutoff) => {
+                            let truncation_cutoff = truncation_cutoff as i64;
+                            let xs_former = xs.i((.., ..truncation_cutoff));
+                            let xs_latter = xs.i((.., truncation_cutoff..));
+                            let xs_former = w_avg.lerp(&xs_former, truncation_psi);
+                            Tensor::cat(&[xs_former, xs_latter], 1)
+                        }
                         None => w_avg.lerp(&xs, truncation_psi),
                     }
                 })
@@ -1416,36 +1511,46 @@ mod mapping_network {
                 None
             };
 
-            let forward_fn = move |zs: Option<&Tensor>,
-                                   cs: Option<&Tensor>,
-                                   train: bool,
-                                   skip_w_avg_update: bool|
-                  -> Result<Tensor> {
-                let zs = zs.map(|zs| zs.shallow_clone());
-                let cs = cs.map(|cs| cs.shallow_clone());
-                let xs = input_fn(zs, cs)?;
-                let xs = main_fn(&xs);
-                let xs = match update_fn {
-                    Some(mut update_fn) => update_fn(&xs, train, skip_w_avg_update),
-                    None => xs,
-                };
+            let forward_fn = Box::new(
+                move |zs: Option<&Tensor>,
+                      cs: Option<&Tensor>,
+                      train: bool,
+                      skip_w_avg_update: bool|
+                      -> Result<Tensor> {
+                    let zs = zs.map(|zs| zs.shallow_clone());
+                    let cs = cs.map(|cs| cs.shallow_clone());
+                    let xs = input_fn(zs, cs)?;
+                    let xs = main_fn(&xs);
+                    let xs = match &update_fn {
+                        Some(update_fn) => update_fn(&xs, train, skip_w_avg_update),
+                        None => xs,
+                    };
 
-                Ok(xs)
-            };
+                    Ok(xs)
+                },
+            );
 
-            todo!();
+            Ok(MappingNetwork { forward_fn })
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Derivative)]
+    #[derivative(Debug)]
     pub struct MappingNetwork {
-        z_dim: Option<i64>,
-        c_dim: Option<i64>,
+        #[derivative(Debug = "ignore")]
+        forward_fn:
+            Box<dyn Fn(Option<&Tensor>, Option<&Tensor>, bool, bool) -> Result<Tensor> + Send>,
     }
 
     impl MappingNetwork {
-        pub fn f_forward(&self, zs: Option<&Tensor>, cs: Option<&Tensor>) -> Result<Tensor> {
-            todo!();
+        pub fn f_forward(
+            &self,
+            zs: Option<&Tensor>,
+            cs: Option<&Tensor>,
+            train: bool,
+            skip_w_avg_update: bool,
+        ) -> Result<Tensor> {
+            (self.forward_fn)(zs, cs, train, skip_w_avg_update)
         }
     }
 
@@ -1530,6 +1635,507 @@ mod stylegan_linear {
             xs
         }
     }
+}
+
+mod discriminator_block {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct DiscriminatorBlockInit {
+        pub activation: FixedActivationInit,
+        pub filter: FirFilter,
+        pub kind: ModelKind,
+    }
+
+    impl Default for DiscriminatorBlockInit {
+        fn default() -> Self {
+            Self {
+                kind: ModelKind::Resnet,
+                filter: Default::default(),
+                activation: Default::default(),
+            }
+        }
+    }
+
+    impl DiscriminatorBlockInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            in_c: Option<usize>,
+            out_c: usize,
+            tmp_c: usize,
+            resol: usize,
+            image_c: usize,
+        ) -> Result<DiscriminatorBlock> {
+            let path = path.borrow();
+            let Self {
+                activation,
+                filter,
+                kind,
+            } = self;
+            ensure!(in_c.into_iter().all(|in_c| in_c > 0));
+            let in_c = in_c.map(|in_c| in_c as i64);
+            let resol = resol as i64;
+
+            let input_fn: Box<dyn Fn(Option<&Tensor>) -> Result<Option<Tensor>> + Send> = match in_c
+            {
+                Some(in_c) => Box::new(move |xs: Option<&Tensor>| {
+                    let xs = xs.ok_or_else(|| format_err!("expect xs, but get None"))?;
+                    ensure!(
+                        matches!(xs.size4()?, (_, in_c_, in_h, in_w) if in_c_ == in_c && in_h == resol && in_w == resol)
+                    );
+                    Ok(Some(xs.shallow_clone()))
+                }),
+                None => Box::new(move |xs: Option<&Tensor>| {
+                    ensure!(xs.is_none());
+                    Ok(None)
+                }),
+            };
+
+            let image_fn: Box<dyn Fn(Option<Tensor>, &Tensor) -> Result<(Tensor, Tensor)> + Send> =
+                if in_c.is_none() || kind == ModelKind::Skip {
+                    let from_rgb = StyleGanConv2DInit {
+                        activation: FixedActivationInit {
+                            gain: 1.0,
+                            ..activation
+                        },
+                        ..Default::default()
+                    }
+                    .build(path / "from_rgb", image_c, tmp_c, 1)?;
+
+                    Box::new(move |xs: Option<Tensor>, image: &Tensor| {
+                        let ys = from_rgb.forward(image);
+                        let xs = match xs {
+                            Some(xs) => xs + ys,
+                            None => ys,
+                        };
+                        let image: Tensor = todo!();
+                        Ok((xs, image))
+                    })
+                } else {
+                    Box::new(move |xs: Option<Tensor>, image: &Tensor| {
+                        let xs = xs.ok_or_else(|| format_err!("expect xs, but get None"))?;
+                        let image = image.shallow_clone();
+                        Ok((xs, image))
+                    })
+                };
+
+            let main_fn: Box<dyn Fn(&Tensor) -> Tensor + Send> = {
+                let gain = if kind == ModelKind::Resnet {
+                    0.5.sqrt()
+                } else {
+                    1.0
+                };
+
+                let conv0 = StyleGanConv2DInit {
+                    activation: FixedActivationInit {
+                        gain: 1.0,
+                        ..activation
+                    },
+                    ..Default::default()
+                }
+                .build(path / "conv0", tmp_c, tmp_c, 3)?;
+
+                let conv1 = StyleGanConv2DInit {
+                    down: 2,
+                    activation: FixedActivationInit { gain, ..activation },
+                    filter: FirFilterInit {
+                        filter: filter.clone(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+                .build(path / "conv1", tmp_c, out_c, 3)?;
+
+                if kind == ModelKind::Resnet {
+                    let skip = StyleGanConv2DInit {
+                        down: 2,
+                        activation: FixedActivationInit { gain, ..activation },
+                        filter: FirFilterInit {
+                            filter,
+                            ..Default::default()
+                        },
+                        bs_init: None,
+                        ..Default::default()
+                    }
+                    .build(path / "skip", tmp_c, out_c, 1)?;
+
+                    Box::new(move |xs: &Tensor| {
+                        let ys = skip.forward(xs);
+                        let xs = conv0.forward(xs);
+                        let xs = conv1.forward(&xs);
+                        let xs = xs + ys;
+                        xs
+                    })
+                } else {
+                    Box::new(move |xs: &Tensor| {
+                        let xs = conv0.forward(xs);
+                        let xs = conv1.forward(&xs);
+                        xs
+                    })
+                }
+            };
+
+            let forward_fn = Box::new(move |xs: Option<&Tensor>, image: &Tensor| {
+                let xs = input_fn(xs)?;
+                let (xs, image) = image_fn(xs, image)?;
+                let xs = main_fn(&xs);
+                Ok((xs, image))
+            });
+
+            Ok(DiscriminatorBlock { forward_fn })
+        }
+    }
+
+    #[derive(Derivative)]
+    #[derivative(Debug)]
+    pub struct DiscriminatorBlock {
+        #[derivative(Debug = "ignore")]
+        forward_fn: Box<dyn Fn(Option<&Tensor>, &Tensor) -> Result<(Tensor, Tensor)> + Send>,
+    }
+
+    impl DiscriminatorBlock {
+        pub fn forward(&self, xs: Option<&Tensor>, image: &Tensor) -> Result<(Tensor, Tensor)> {
+            (self.forward_fn)(xs, image)
+        }
+    }
+}
+
+mod discriminator_epilogue {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct DiscriminatorEpilogueInit {
+        pub kind: ModelKind,
+        pub mbstd_init: Option<MinibatchStdLayerInit>,
+        pub activation: Activation,
+        pub clamp: Option<f64>,
+    }
+
+    impl Default for DiscriminatorEpilogueInit {
+        fn default() -> Self {
+            Self {
+                kind: ModelKind::Resnet,
+                mbstd_init: Some(MinibatchStdLayerInit {
+                    minibatch_size: Some(4),
+                    num_groups: Some(1),
+                }),
+                activation: Activation::LRelu,
+                clamp: None,
+            }
+        }
+    }
+
+    impl DiscriminatorEpilogueInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            in_c: usize,
+            cmap_dim: Option<usize>,
+            resol: usize,
+            image_c: usize,
+        ) -> Result<DiscriminatorEpilogue> {
+            let path = path.borrow();
+            let Self {
+                kind,
+                activation,
+                clamp,
+                mbstd_init,
+            } = self;
+            ensure!(cmap_dim.into_iter().all(|dim| dim > 0));
+
+            let input_fn = move |xs: &Tensor| {
+                let in_c = in_c as i64;
+                let resol = resol as i64;
+                ensure!(
+                    matches!(xs.size4()?, (_, in_c_, in_h, in_w) if in_c_ == in_c && in_h == resol && in_w == resol)
+                );
+
+                Ok(xs.shallow_clone())
+            };
+
+            let image_fn: Box<dyn Fn(&Tensor, &Tensor) -> Result<Tensor> + Send> = match kind {
+                ModelKind::Skip => {
+                    let from_rgb = StyleGanConv2DInit {
+                        activation: FixedActivationInit {
+                            activation,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                    .build(path / "from_rgb", image_c, in_c, 1)?;
+
+                    Box::new(move |xs, image| {
+                        let image_c = image_c as i64;
+                        let resol = resol as i64;
+                        ensure!(
+                            matches!(image.size4()?, (_, image_c_, image_h, image_w) if image_c_ == image_c  && image_h == resol  && image_w == resol)
+                        );
+
+                        let xs = xs + from_rgb.forward(xs);
+                        Ok(xs)
+                    })
+                }
+                _ => Box::new(move |xs, _image| Ok(xs.shallow_clone())),
+            };
+
+            let conv_fn: Box<dyn Fn(&Tensor) -> Result<Tensor> + Send> = match mbstd_init {
+                Some(mbstd_init) => {
+                    let mbstd = mbstd_init.build()?;
+                    let conv = StyleGanConv2DInit {
+                        activation: FixedActivationInit {
+                            activation,
+                            clamp,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                    .build(
+                        path / "conv",
+                        in_c + mbstd.num_groups(),
+                        in_c,
+                        3,
+                    )?;
+
+                    Box::new(move |xs| {
+                        let xs = mbstd.f_forward(xs)?;
+                        let xs = conv.forward(&xs);
+                        Ok(xs)
+                    })
+                }
+                None => {
+                    let conv = StyleGanConv2DInit {
+                        activation: FixedActivationInit {
+                            activation,
+                            clamp,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                    .build(path / "conv", in_c, in_c, 3)?;
+
+                    Box::new(move |xs| {
+                        let xs = conv.forward(xs);
+                        Ok(xs)
+                    })
+                }
+            };
+
+            let linear_fn = {
+                let linear1 = StyleGanLinearInit {
+                    activation,
+                    ..Default::default()
+                }
+                .build(path / "linear1", in_c * resol * resol, in_c);
+                let linear2 = StyleGanLinearInit {
+                    activation,
+                    ..Default::default()
+                }
+                .build(path / "linear2", in_c, cmap_dim.unwrap_or(1));
+
+                move |xs: &Tensor| {
+                    let xs = xs.flatten(1, -1);
+                    let xs = linear1.forward(&xs);
+                    let xs = linear2.forward(&xs);
+                    xs
+                }
+            };
+
+            let cond_fn: Box<dyn Fn(&Tensor, Option<&Tensor>) -> Result<Tensor> + Send> =
+                match cmap_dim {
+                    Some(cmap_dim) => Box::new(move |xs: &Tensor, cmap: Option<&Tensor>| {
+                        let cmap = cmap.ok_or_else(|| format_err!("expect cmap, but get None"))?;
+                        ensure!(
+                            matches!(cmap.size2()?, (_, cmap_dim_) if cmap_dim_ == cmap_dim as i64)
+                        );
+                        let xs = (xs * cmap).sum_dim_intlist(&[1], true, Kind::Float)
+                            * (cmap_dim as f64).sqrt().recip();
+                        Ok(xs)
+                    }),
+                    None => {
+                        Box::new(move |xs: &Tensor, _cmap: Option<&Tensor>| Ok(xs.shallow_clone()))
+                    }
+                };
+
+            let forward_fn = Box::new(move |xs: &Tensor, image: &Tensor, cmap: Option<&Tensor>| {
+                let xs = input_fn(xs)?;
+                let xs = image_fn(&xs, image)?;
+                let xs = conv_fn(&xs)?;
+                let xs = linear_fn(&xs);
+                let xs = cond_fn(&xs, cmap)?;
+                Ok(xs)
+            });
+
+            Ok(DiscriminatorEpilogue { forward_fn })
+        }
+    }
+
+    #[derive(Derivative)]
+    #[derivative(Debug)]
+    pub struct DiscriminatorEpilogue {
+        #[derivative(Debug = "ignore")]
+        forward_fn: Box<dyn Fn(&Tensor, &Tensor, Option<&Tensor>) -> Result<Tensor> + Send>,
+    }
+
+    impl DiscriminatorEpilogue {
+        pub fn f_forward(
+            &self,
+            xs: &Tensor,
+            image: &Tensor,
+            cmap: Option<&Tensor>,
+        ) -> Result<Tensor> {
+            (self.forward_fn)(xs, image, cmap)
+        }
+    }
+}
+
+mod minibatch_std_layer {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct MinibatchStdLayerInit {
+        pub minibatch_size: Option<usize>,
+        pub num_groups: Option<usize>,
+    }
+
+    impl MinibatchStdLayerInit {
+        pub fn build(self) -> Result<MinibatchStdLayer> {
+            let Self {
+                minibatch_size,
+                num_groups,
+            } = self;
+
+            ensure!(minibatch_size.into_iter().all(|size| size > 0));
+            ensure!(num_groups.into_iter().all(|num| num > 0));
+
+            Ok(MinibatchStdLayer {
+                minibatch_size: minibatch_size.map(|size| size as i64),
+                num_groups: num_groups.unwrap_or(1) as i64,
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct MinibatchStdLayer {
+        minibatch_size: Option<i64>,
+        num_groups: i64,
+    }
+
+    impl MinibatchStdLayer {
+        pub fn f_forward(&self, xs: &Tensor) -> Result<Tensor> {
+            let Self {
+                minibatch_size: size_mb,
+                num_groups: num_g,
+            } = *self;
+
+            let (in_b, in_c, in_h, in_w) = xs.size4()?;
+            let size_mb = size_mb.unwrap_or(in_b);
+
+            ensure!(in_c % num_g == 0);
+            ensure!(in_b % size_mb == 0);
+
+            let num_mb = in_b / size_mb;
+            let size_g = in_c / num_g;
+
+            let avg_stdev = {
+                let ys = xs.reshape(&[size_mb, num_mb, num_g, size_g, in_h, in_w]); // [m, M, G, g, h, w]
+
+                // mean, var, stdev per minibatch
+                let mean = ys.mean_dim(&[0], true, Kind::Float); // [1, M, G, g, h, w]
+                let var = (ys - mean).square().mean_dim(&[0], false, Kind::Float); // [M, G, g, h, w]
+                let stdev = (var + 1e-8).sqrt(); // [M, G, g, h, w]
+
+                // average stdev per minibatch per group
+                let avg_stdev = stdev.mean_dim(&[2, 3, 4], false, Kind::Float); // [M, G]
+
+                avg_stdev
+            };
+
+            let avg_stdev = avg_stdev // [M, G]
+                .reshape(&[num_mb, num_g, 1, 1]) // [M, G, 1, 1]
+                .repeat(&[size_mb, 1, in_h, in_w]); // [b, G, h, w]
+
+            let output = Tensor::cat(&[xs, &avg_stdev], 1); // [b, c + G, h, w]
+
+            Ok(output)
+        }
+
+        pub fn num_groups(&self) -> usize {
+            self.num_groups as usize
+        }
+    }
+}
+
+mod discriminator {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct StyleGanDiscriminatorInit {
+        pub kind: ModelKind,
+        pub channel_base_pow: usize,
+        pub channel_max_pow: usize,
+        pub clamp: Option<f64>,
+        pub cmap_dim: Option<usize>,
+        pub block_init: DiscriminatorBlockInit,
+        pub mapping_network_init: MappingNetworkInit,
+        pub epilogue_init: DiscriminatorEpilogueInit,
+    }
+
+    impl Default for StyleGanDiscriminatorInit {
+        fn default() -> Self {
+            Self {
+                kind: ModelKind::Resnet,
+                channel_base_pow: 15,
+                channel_max_pow: 9,
+                clamp: None,
+                cmap_dim: None,
+                block_init: Default::default(),
+                mapping_network_init: Default::default(),
+                epilogue_init: Default::default(),
+            }
+        }
+    }
+
+    impl StyleGanDiscriminatorInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            c_dim: Option<usize>,
+            image_resol_pow: usize,
+            image_c: usize,
+        ) -> Result<StyleGanDiscriminator> {
+            let path = path.borrow();
+            let Self {
+                kind,
+                channel_base_pow,
+                channel_max_pow,
+                clamp,
+                cmap_dim,
+                block_init,
+                mapping_network_init,
+                epilogue_init,
+            } = self;
+            ensure!(c_dim.into_iter().all(|dim| dim > 0));
+
+            let image_resol = 2usize.pow(image_resol_pow as u32);
+
+            let cmap_dim = cmap_dim.unwrap_or_else(|| {
+                let pow = (channel_base_pow - 2).min(channel_max_pow);
+                2usize.pow(pow as u32)
+            });
+
+            (3..=image_resol_pow).rev().map(|block_resol_pow| {
+                let block_resol = 2usize.pow(block_resol_pow as u32);
+                let block_c_pow = (channel_base_pow - block_resol_pow).min(channel_max_pow);
+                let block_c = 2usize.pow(block_c_pow as u32);
+            });
+
+            todo!();
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct StyleGanDiscriminator {}
 }
 
 mod misc {
