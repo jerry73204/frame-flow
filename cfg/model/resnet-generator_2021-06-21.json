@@ -1,0 +1,20 @@
+{
+    "main_group": "ResnetGenerator",
+    "groups": {
+        "ResnetGenerator": [
+            {
+                "name": "input",
+                "kind": "Input",
+                "shape": ["_", 3, "_", "_"],
+            },
+            {
+                "kind": "DynamicPad2D",
+                "type": "reflectin",
+                "padding": [3, 3, 3, 3],
+            },
+            {
+                "c": 8,
+            }
+        ],
+    },
+}
