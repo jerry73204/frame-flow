@@ -84,7 +84,12 @@ pub fn training_worker(
             norm_kind: config.model.generator.norm,
             ..Default::default()
         }
-        .build(&root / "embedding", &[425], embedding_dim, &[3])?;
+        .build(
+            &root / "embedding",
+            &config.model.detection_embedding.channels,
+            embedding_dim,
+            &config.model.detection_embedding.num_blocks,
+        )?;
 
         let gen_model: Generator = match config.model.generator.kind {
             config::GeneratorModelKind::Resnet => ResnetGeneratorInit {

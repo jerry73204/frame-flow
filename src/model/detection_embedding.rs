@@ -52,7 +52,7 @@ impl DetectionEmbeddingInit {
                 let seq = nn::seq_t()
                     .add(padding_kind.build([padding, padding, padding, padding]))
                     .add(nn::conv2d(
-                        &path / "conv0",
+                        &path / "conv_0",
                         in_c,
                         inner_c,
                         ksize,
@@ -72,7 +72,7 @@ impl DetectionEmbeddingInit {
                     })
                     .add(padding_kind.build([padding, padding, padding, padding]))
                     .add(nn::conv2d(
-                        &path / format!("conv{}", index + 1),
+                        &path / format!("conv_{}", index + 1),
                         inner_c,
                         inner_c,
                         ksize,
@@ -146,7 +146,7 @@ impl DetectionEmbedding {
                 let (in_b, in_e, in_a, in_h, in_w) = input.size5().unwrap();
                 ensure!(
                     in_e * in_a == in_c,
-                    "expect {} channels, get {} entries and {} anchros",
+                    "expect {} channels, get {} entries and {} anchors",
                     in_c,
                     in_e,
                     in_a

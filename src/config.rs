@@ -104,9 +104,16 @@ pub struct Logging {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model {
+    pub detection_embedding: DetectionEmbedding,
     pub detector: DetectionModel,
     pub generator: GeneratorModel,
     pub discriminator: DiscriminatorModel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionEmbedding {
+    pub channels: Vec<usize>,
+    pub num_blocks: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
