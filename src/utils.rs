@@ -1,4 +1,53 @@
+use crate::common::*;
 use num_traits::{NumCast, ToPrimitive};
+
+pub trait SequentialExt {
+    fn inspect<F>(self, f: F) -> Self
+    where
+        F: 'static + Fn(&Tensor) + Send;
+}
+
+impl SequentialExt for nn::Sequential {
+    fn inspect<F>(self, f: F) -> Self
+    where
+        F: 'static + Fn(&Tensor) + Send,
+    {
+        self.add_fn(move |xs| {
+            f(xs);
+            xs.shallow_clone()
+        })
+    }
+}
+
+impl SequentialExt for nn::SequentialT {
+    fn inspect<F>(self, f: F) -> Self
+    where
+        F: 'static + Fn(&Tensor) + Send,
+    {
+        self.add_fn(move |xs| {
+            f(xs);
+            xs.shallow_clone()
+        })
+    }
+}
+
+pub trait SequentialTExt {
+    fn inspect_t<F>(self, f: F) -> Self
+    where
+        F: 'static + Fn(&Tensor, bool) + Send;
+}
+
+impl SequentialTExt for nn::SequentialT {
+    fn inspect_t<F>(self, f: F) -> Self
+    where
+        F: 'static + Fn(&Tensor, bool) + Send,
+    {
+        self.add_fn_t(move |xs, train| {
+            f(xs, train);
+            xs.shallow_clone()
+        })
+    }
+}
 
 pub trait NumFrom<T> {
     fn num_from(from: T) -> Self;
