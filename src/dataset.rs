@@ -129,7 +129,15 @@ mod dataset {
             match self {
                 Self::Simple(dataset) => dataset.sample(length),
                 Self::Iii(dataset) => dataset.sample(length),
-                Dataset::Mnist(dataset) => Ok(dataset.sample(length)),
+                Self::Mnist(dataset) => Ok(dataset.sample(length)),
+            }
+        }
+
+        pub fn classes(&self) -> &IndexSet<String> {
+            match self {
+                Self::Simple(dataset) => dataset.classes(),
+                Self::Iii(dataset) => dataset.classes(),
+                Self::Mnist(dataset) => dataset.classes(),
             }
         }
     }
@@ -346,6 +354,10 @@ mod iii_dataset {
 
             Ok(samples)
         }
+
+        pub fn classes(&self) -> &IndexSet<String> {
+            &self.classes
+        }
     }
 
     fn list_iii_xml_files(
@@ -440,6 +452,7 @@ mod mnist_dataset {
     #[derive(Debug)]
     pub struct MnistDataset {
         samples: Vec<TensorSample>,
+        classes: IndexSet<String>,
     }
 
     impl MnistDataset {
@@ -466,7 +479,10 @@ mod mnist_dataset {
                 })
                 .collect();
 
-            Ok(Self { samples })
+            Ok(Self {
+                samples,
+                classes: IndexSet::new(),
+            })
         }
 
         pub fn sample(&self, length: usize) -> Vec<SampleRef<'_>> {
@@ -483,6 +499,10 @@ mod mnist_dataset {
 
             samples
         }
+
+        pub fn classes(&self) -> &IndexSet<String> {
+            &self.classes
+        }
     }
 }
 
@@ -497,6 +517,7 @@ mod simple_dataset {
         min_length: usize,
         series: IndexMap<String, TimeSeries>,
         weights: Vec<usize>,
+        classes: IndexSet<String>,
     }
 
     #[derive(Debug)]
@@ -652,6 +673,7 @@ mod simple_dataset {
                 min_length,
                 series,
                 weights,
+                classes,
             })
         }
 
@@ -660,6 +682,7 @@ mod simple_dataset {
                 min_length,
                 ref series,
                 ref weights,
+                ..
             } = *self;
 
             ensure!(
@@ -685,6 +708,10 @@ mod simple_dataset {
                 .collect();
 
             Ok(samples)
+        }
+
+        pub fn classes(&self) -> &IndexSet<String> {
+            &self.classes
         }
     }
 

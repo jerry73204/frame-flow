@@ -1,12 +1,7 @@
-use crate::{
-    common::*,
-    config,
-    dataset::{Dataset, IiiDataset, MnistDataset, SimpleDataset},
-    message as msg,
-};
+use crate::{common::*, config, dataset::Dataset, message as msg};
 
 pub async fn training_stream(
-    dataset_cfg: &config::Dataset,
+    dataset: Dataset,
     train_cfg: &config::Training,
 ) -> Result<impl Stream<Item = Result<msg::TrainingMessage>>> {
     let config::Training {
@@ -24,34 +19,6 @@ pub async fn training_stream(
     let batch_size = batch_size.get();
     let latent_dim = latent_dim.get() as i64;
 
-    let dataset: Dataset = match *dataset_cfg {
-        config::Dataset::Iii(config::IiiDataset {
-            ref dataset_dir,
-            ref classes_file,
-            ref class_whitelist,
-            ref blacklist_files,
-            min_seq_len,
-            ..
-        }) => IiiDataset::load(
-            dataset_dir,
-            classes_file,
-            class_whitelist.clone(),
-            min_seq_len,
-            blacklist_files.clone().unwrap_or_else(HashSet::new),
-        )
-        .await?
-        .into(),
-        config::Dataset::Simple(config::SimpleDataset {
-            ref dataset_dir,
-            file_name_digits,
-            ..
-        }) => SimpleDataset::load(dataset_dir, file_name_digits.get())
-            .await?
-            .into(),
-        config::Dataset::Mnist(config::MnistDataset { ref dataset_dir }) => {
-            MnistDataset::new(dataset_dir)?.into()
-        }
-    };
     let dataset = Arc::new(dataset);
 
     // load sequence samples

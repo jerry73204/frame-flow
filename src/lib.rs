@@ -41,8 +41,35 @@ pub async fn start(config: config::Config) -> Result<()> {
 
         tokio::task::spawn(async move {
             // load dataset
-            let mut stream =
-                training_stream::training_stream(&config.dataset, &config.train).await?;
+            let dataset: dataset::Dataset = match config.dataset {
+                config::Dataset::Iii(config::IiiDataset {
+                    ref dataset_dir,
+                    ref classes_file,
+                    ref class_whitelist,
+                    ref blacklist_files,
+                    min_seq_len,
+                    ..
+                }) => dataset::IiiDataset::load(
+                    dataset_dir,
+                    classes_file,
+                    class_whitelist.clone(),
+                    min_seq_len,
+                    blacklist_files.clone().unwrap_or_else(HashSet::new),
+                )
+                .await?
+                .into(),
+                config::Dataset::Simple(config::SimpleDataset {
+                    ref dataset_dir,
+                    file_name_digits,
+                    ..
+                }) => dataset::SimpleDataset::load(dataset_dir, file_name_digits.get())
+                    .await?
+                    .into(),
+                config::Dataset::Mnist(config::MnistDataset { ref dataset_dir }) => {
+                    dataset::MnistDataset::new(dataset_dir)?.into()
+                }
+            };
+            let mut stream = training_stream::training_stream(dataset, &config.train).await?;
 
             while let Some(msg) = stream.next().await.transpose()? {
                 let result = train_tx.send(msg).await;
