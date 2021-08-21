@@ -35,6 +35,10 @@
             // "norm": "InstanceNorm",
             // "weights_file": "log/2021-07-15-12-02-04.760+0800/checkpoints/discriminator_2021-07-17-07-12-32.153+0800_053500.ckpt",
         },
+        "detection_embedding": {
+            "channels": [425],
+            "num_blocks": [3],
+        },
     },
     "loss": {
         "detector": {
