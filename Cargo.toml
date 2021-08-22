@@ -33,10 +33,10 @@ tracing-subscriber = "0.2.20"
 noisy_float = { version = "0.2.0", features = ["serde"] }
 tfrecord = { version = "0.9.0", features = ["full"] }
 chrono = "0.4.19"
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "1feff884b4bd4d2dd488b7d909c6843d6987a483" }
-tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "1feff884b4bd4d2dd488b7d909c6843d6987a483" }
-yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "1feff884b4bd4d2dd488b7d909c6843d6987a483" }
-train = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "1feff884b4bd4d2dd488b7d909c6843d6987a483" }
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "37244f044c4ff1f294f1ac071339621e39c49b6d" }
+tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "37244f044c4ff1f294f1ac071339621e39c49b6d" }
+yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "37244f044c4ff1f294f1ac071339621e39c49b6d" }
+train = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "37244f044c4ff1f294f1ac071339621e39c49b6d" }
 iii-formosa-dataset = "0.2.0"
 glob = "0.3.0"
 serde-xml-rs = "0.5.0"
