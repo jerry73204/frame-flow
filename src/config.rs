@@ -147,12 +147,6 @@ pub struct DiscriminatorModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DetectionEmbedding {
-    pub channels: Vec<usize>,
-    pub num_blocks: Vec<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Loss {
     pub detector: train::config::Loss,
     pub image_recon: GanLoss,
