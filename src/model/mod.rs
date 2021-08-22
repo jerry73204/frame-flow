@@ -5,8 +5,8 @@ mod generator;
 mod loss;
 mod misc;
 mod resnet_block;
-mod unet_block;
 mod transformer;
+mod unet_block;
 
 pub use attention::*;
 pub use detection_embedding::*;
@@ -15,5 +15,5 @@ pub use generator::*;
 pub use loss::*;
 pub use misc::*;
 pub use resnet_block::*;
-pub use unet_block::*;
 pub use transformer::*;
+pub use unet_block::*;
