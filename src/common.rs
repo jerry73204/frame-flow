@@ -1,3 +1,4 @@
+pub use derivative::Derivative;
 pub use anyhow::{bail, ensure, format_err, Context, Error, Result};
 pub use approx::assert_abs_diff_eq;
 pub use by_address::ByAddress;
@@ -18,6 +19,7 @@ pub use par_stream::{ParStreamExt, TryParStreamExt};
 pub use rand::{distributions as dists, prelude::*};
 pub use serde::{Deserialize, Serialize};
 pub use std::{
+    ops::Div,
     array,
     borrow::{Borrow, Cow},
     collections::{self, HashMap, HashSet},
