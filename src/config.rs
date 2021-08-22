@@ -100,6 +100,9 @@ pub struct Logging {
     pub log_dir: PathBuf,
     pub save_image_steps: Option<NonZeroUsize>,
     pub save_checkpoint_steps: Option<NonZeroUsize>,
+    pub save_detector_checkpoint: bool,
+    pub save_generator_checkpoint: bool,
+    pub save_discriminator_checkpoint: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -685,9 +685,18 @@ pub fn training_worker(
         if let Some(save_checkpoint_steps) = config.logging.save_checkpoint_steps {
             if train_step % save_checkpoint_steps.get() == 0 {
                 save_checkpoint_files(
-                    &detector_vs,
-                    &discriminator_vs,
-                    &generator_vs,
+                    config
+                        .logging
+                        .save_detector_checkpoint
+                        .then(|| &detector_vs),
+                    config
+                        .logging
+                        .save_discriminator_checkpoint
+                        .then(|| &discriminator_vs),
+                    config
+                        .logging
+                        .save_generator_checkpoint
+                        .then(|| &generator_vs),
                     &checkpoint_dir,
                     train_step,
                 )?;
@@ -735,16 +744,16 @@ fn mse_loss(pred: impl Borrow<Tensor>, target: impl Borrow<Tensor>) -> Tensor {
 
 /// Save parameters to a checkpoint file.
 fn save_checkpoint_files(
-    det_vs: &nn::VarStore,
-    dis_vs: &nn::VarStore,
-    gen_vs: &nn::VarStore,
+    det_vs: Option<&nn::VarStore>,
+    dis_vs: Option<&nn::VarStore>,
+    gen_vs: Option<&nn::VarStore>,
     checkpoint_dir: impl AsRef<Path>,
     training_step: usize,
 ) -> Result<()> {
     let checkpoint_dir = checkpoint_dir.as_ref();
 
     // save detector
-    {
+    if let Some(det_vs) = det_vs {
         let filename = format!(
             "detector_{}_{:06}.ckpt",
             Local::now().format(FILE_STRFTIME),
@@ -755,7 +764,7 @@ fn save_checkpoint_files(
     }
 
     // save discriminator
-    {
+    if let Some(dis_vs) = dis_vs {
         let filename = format!(
             "discriminator_{}_{:06}.ckpt",
             Local::now().format(FILE_STRFTIME),
@@ -766,7 +775,7 @@ fn save_checkpoint_files(
     }
 
     // save generator
-    {
+    if let Some(gen_vs) = gen_vs {
         let filename = format!(
             "generator_{}_{:06}.ckpt",
             Local::now().format(FILE_STRFTIME),
