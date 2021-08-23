@@ -21,19 +21,19 @@
         },
         "detector": {
             "model_file": "cfg/model/yolov4-csp-custom-64x64-2021-08-21.json5",
-            "weights_file": "cfg/weights/yolov4-csp-custom-64x64-2021-08-22-12-41-00.823+0800_194000_02.21592.ckpt",
+            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-22-22-06-18.101+0800/checkpoints/detector_2021-08-23-12-08-03.657+0800_028800.ckpt",
         },
         "generator": {
             "kind": "Resnet",
             // "kind": "Custom",
             "norm": "BatchNorm",
-            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-22-17-18-28.157+0800/checkpoints/generator_2021-08-22-21-55-08.095+0800_008100.ckpt",
+            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-22-22-06-18.101+0800/checkpoints/generator_2021-08-23-12-08-03.772+0800_028800.ckpt",
         },
         "discriminator": {
             "num_blocks": 6,
             "norm": "None",
             // "norm": "InstanceNorm",
-            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-22-17-18-28.157+0800/checkpoints/discriminator_2021-08-22-21-55-08.092+0800_008100.ckpt",
+            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-22-22-06-18.101+0800/checkpoints/discriminator_2021-08-23-12-08-03.769+0800_028800.ckpt",
         },
         "transformer": {
             "norm": "BatchNorm",
