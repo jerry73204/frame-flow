@@ -150,7 +150,6 @@ pub struct DiscriminatorModel {
     pub num_blocks: usize,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformerModel {
     pub weights_file: Option<PathBuf>,
@@ -161,7 +160,6 @@ pub struct TransformerModel {
     pub num_down_sample: usize,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformerDiscriminatorModel {
     pub weights_file: Option<PathBuf>,
@@ -169,7 +167,6 @@ pub struct TransformerDiscriminatorModel {
     pub num_blocks: usize,
     pub num_detections: usize,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Loss {

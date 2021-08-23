@@ -167,9 +167,9 @@ impl TransformerInit {
         let forward_fn = Box::new(
             move |input: &[&DenseDetectionTensorList],
                   train: bool|
-                           -> Result<DenseDetectionTensorList> {
-                      ensure!(input.len() == num_detections);
-                      ensure!(input.iter().all(|list| list.tensors.len() == 1));
+                  -> Result<DenseDetectionTensorList> {
+                ensure!(input.len() == num_detections);
+                ensure!(input.iter().all(|list| list.tensors.len() == 1));
                 ensure!(
                     input
                         .iter()
@@ -180,7 +180,7 @@ impl TransformerInit {
                 );
                 let bsize = input[0].batch_size() as i64;
 
-                      let tensors = input.iter().map(|list| &list.tensors).flatten();
+                let tensors = input.iter().map(|list| &list.tensors).flatten();
                 let detections: Vec<_> = izip!(tensors, &branches)
                     .map(
                         |(in_detection, (attention_block, patch_block))| -> Result<_> {
