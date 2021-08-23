@@ -91,6 +91,8 @@ pub struct Training {
     pub train_discriminator_steps: usize,
     pub train_generator_steps: usize,
     pub train_consistency_steps: usize,
+    pub train_transformer_steps: usize,
+    pub train_transformer_discriminator_steps: usize,
     #[serde(default = "default_critic_noise_prob")]
     pub critic_noise_prob: R64,
 }
@@ -111,6 +113,8 @@ pub struct Model {
     pub detector: DetectionModel,
     pub generator: GeneratorModel,
     pub discriminator: DiscriminatorModel,
+    pub transformer: TransformerModel,
+    pub transformer_discriminator: TransformerDiscriminatorModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +149,27 @@ pub struct DiscriminatorModel {
     pub norm: NormKind,
     pub num_blocks: usize,
 }
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformerModel {
+    pub weights_file: Option<PathBuf>,
+    pub norm: NormKind,
+    pub num_input_detections: usize,
+    pub num_resnet_blocks: usize,
+    pub num_scaling_blocks: usize,
+    pub num_down_sample: usize,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformerDiscriminatorModel {
+    pub weights_file: Option<PathBuf>,
+    pub norm: NormKind,
+    pub num_blocks: usize,
+    pub num_detections: usize,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Loss {

@@ -15,6 +15,19 @@ pub struct TransformerInit {
     pub num_down_sample: usize,
 }
 
+impl Default for TransformerInit {
+    fn default() -> Self {
+        Self {
+            padding_kind: PaddingKind::Reflect,
+            norm_kind: NormKind::InstanceNorm,
+            ksize: 3,
+            num_resnet_blocks: 2,
+            num_scaling_blocks: 2,
+            num_down_sample: 3,
+        }
+    }
+}
+
 impl TransformerInit {
     pub fn build<'a>(
         self,
@@ -37,6 +50,7 @@ impl TransformerInit {
         let device = path.device();
         let in_c = 5 + num_classes;
         let bias = norm_kind == NormKind::InstanceNorm;
+        ensure!(num_detections > 0);
 
         let encoder = {
             let path = path / "encoder";
@@ -151,20 +165,23 @@ impl TransformerInit {
             .try_collect()?;
 
         let forward_fn = Box::new(
-            move |input: &DenseDetectionTensorList,
+            move |input: &[&DenseDetectionTensorList],
                   train: bool|
-                  -> Result<DenseDetectionTensorList> {
-                ensure!(input.tensors.len() == num_detections);
+                           -> Result<DenseDetectionTensorList> {
+                      ensure!(input.len() == num_detections);
+                      ensure!(input.iter().all(|list| list.tensors.len() == 1));
                 ensure!(
                     input
-                        .tensors
                         .iter()
+                        .map(|list| &list.tensors)
+                        .flatten()
                         .all(|tensor| tensor.num_anchors() == 1
                             && tensor.num_classes() == num_classes)
                 );
-                let bsize = input.batch_size() as i64;
+                let bsize = input[0].batch_size() as i64;
 
-                let detections: Vec<_> = izip!(&input.tensors, &branches)
+                      let tensors = input.iter().map(|list| &list.tensors).flatten();
+                let detections: Vec<_> = izip!(tensors, &branches)
                     .map(
                         |(in_detection, (attention_block, patch_block))| -> Result<_> {
                             let in_h = in_detection.height() as i64;
@@ -277,16 +294,17 @@ impl TransformerInit {
 pub struct Transformer {
     #[derivative(Debug = "ignore")]
     forward_fn:
-        Box<dyn Fn(&DenseDetectionTensorList, bool) -> Result<DenseDetectionTensorList> + Send>,
+        Box<dyn Fn(&[&DenseDetectionTensorList], bool) -> Result<DenseDetectionTensorList> + Send>,
 }
 
 impl Transformer {
-    pub fn forward<'a>(
+    pub fn forward_t(
         &self,
-        input: &DenseDetectionTensorList,
+        input: &[impl Borrow<DenseDetectionTensorList>],
         train: bool,
     ) -> Result<DenseDetectionTensorList> {
-        (self.forward_fn)(input, train)
+        let input: Vec<_> = input.iter().map(|list| list.borrow()).collect();
+        (self.forward_fn)(&input, train)
     }
 }
 
