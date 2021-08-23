@@ -75,7 +75,7 @@
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 40,
+        "batch_size": 120,
         // unet
         // "batch_size": 20,
         "image_size": 64,
