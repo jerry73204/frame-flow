@@ -738,129 +738,154 @@ pub fn training_worker(
             .unzip_n_vec();
 
         // train transformer
-        detector_vs.freeze();
-        generator_vs.freeze();
-        discriminator_vs.freeze();
 
-        transformer_vs.unfreeze();
-        transformer_discriminator_vs.freeze();
+        let transformer_loss = {
+            detector_vs.freeze();
+            generator_vs.freeze();
+            discriminator_vs.freeze();
+            transformer_vs.unfreeze();
+            transformer_discriminator_vs.freeze();
 
-        for _ in 0..train_transformer_steps {
-            ensure!(config.train.peek_len >= 1);
-            ensure!(config.train.pred_len.get() == 1);
+            (0..train_transformer_steps).try_fold(None, |_, _| -> Result<_> {
+                ensure!(config.train.peek_len >= 1);
+                ensure!(config.train.pred_len.get() == 1);
 
-            let input_det_seq: Vec<_> = image_batch_seq[0..config.train.peek_len]
-                .iter()
-                .map(|image| detector_model.forward_t(image, false))
-                .try_collect()?;
+                let input_det_seq: Vec<_> = image_batch_seq[0..config.train.peek_len]
+                    .iter()
+                    .map(|image| detector_model.forward_t(image, false))
+                    .try_collect()?;
 
-            let real_bboxes = &boxes_batch_seq[config.train.peek_len];
-            let fake_det = transformer_model.forward_t(&input_det_seq, true)?;
+                let real_bboxes = &boxes_batch_seq[config.train.peek_len];
+                let fake_det = transformer_model.forward_t(&input_det_seq, true)?;
 
-            let (fake_det_loss, _) =
-                detector_loss_fn.forward(&fake_det.shallow_clone().try_into()?, real_bboxes);
+                let (fake_det_loss, _) =
+                    detector_loss_fn.forward(&fake_det.shallow_clone().try_into()?, real_bboxes);
 
-            // optimize
-            transformer_opt.backward_step(&fake_det_loss.total_loss);
-        }
+                // optimize
+                transformer_opt.backward_step(&fake_det_loss.total_loss);
 
-        // train discriminator
-        transformer_vs.freeze();
-        transformer_discriminator_vs.unfreeze();
+                Ok(Some(fake_det_loss))
+            })?
+        };
 
-        for _ in 0..train_transformer_discriminator_steps {
-            ensure!(config.train.peek_len >= 1);
-            ensure!(config.train.pred_len.get() == 1);
+        let (transformer_weights, transformer_grads) = if transformer_loss.is_some() {
+            let (weights, grads) = get_weights_and_grads(&transformer_vs);
+            (Some(weights), Some(grads))
+        } else {
+            (None, None)
+        };
 
-            let input_det_seq: Vec<_> = image_batch_seq[0..config.train.peek_len]
-                .iter()
-                .map(|image| detector_model.forward_t(image, false))
-                .try_collect()?;
+        // train transformer discriminator
+        let transformer_discriminator_loss = {
+            transformer_vs.freeze();
+            transformer_discriminator_vs.unfreeze();
 
-            let real_image_seq = &image_batch_seq;
+            (0..train_transformer_discriminator_steps).try_fold(None, |_, _| -> Result<_> {
+                ensure!(config.train.peek_len >= 1);
+                ensure!(config.train.pred_len.get() == 1);
 
-            let fake_det = transformer_model.forward_t(&input_det_seq, true)?;
-            let fake_image = {
-                let embedding = embedding_model.forward_t(&fake_det, false)?;
-                let noise = {
-                    let (b, _c, h, w) = embedding.size4()?;
-                    Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
-                        .expand(&[b, latent_dim as i64, h, w], false)
+                let input_det_seq: Vec<_> = image_batch_seq[0..config.train.peek_len]
+                    .iter()
+                    .map(|image| detector_model.forward_t(image, false))
+                    .try_collect()?;
+
+                let real_image_seq = &image_batch_seq;
+
+                let fake_det = transformer_model.forward_t(&input_det_seq, true)?;
+                let fake_image = {
+                    let embedding = embedding_model.forward_t(&fake_det, false)?;
+                    let noise = {
+                        let (b, _c, h, w) = embedding.size4()?;
+                        Tensor::randn(&[b, latent_dim as i64, 1, 1], (Kind::Float, device))
+                            .expand(&[b, latent_dim as i64, h, w], false)
+                    };
+                    let input = Tensor::cat(&[embedding, noise], 1);
+                    generator_model.forward_t(&input, false)
                 };
-                let input = Tensor::cat(&[embedding, noise], 1);
-                generator_model.forward_t(&input, false)
+                let fake_image_seq: Vec<_> = chain!(
+                    &image_batch_seq[0..config.train.peek_len],
+                    iter::once(&fake_image)
+                )
+                .collect();
+                debug_assert!(real_image_seq.len() == fake_image_seq.len());
+
+                let real_input = Tensor::cat(real_image_seq, 1);
+                let fake_input = Tensor::cat(&fake_image_seq, 1);
+
+                let real_score = transformer_discriminator_model.forward_t(&real_input, true);
+                let fake_score = transformer_discriminator_model.forward_t(&fake_input, true);
+
+                // compute discriminator loss
+                let loss = match gan_loss {
+                    config::GanLoss::DcGan => {
+                        let ones =
+                            (Tensor::rand(&[batch_size as i64], (Kind::Float, device)) * 0.1 + 0.9)
+                                .set_requires_grad(false);
+                        let zeros = (Tensor::rand(&[batch_size as i64], (Kind::Float, device))
+                            * 0.1)
+                            .set_requires_grad(false);
+
+                        real_score.binary_cross_entropy_with_logits::<Tensor>(
+                            &ones,
+                            None,
+                            None,
+                            Reduction::Mean,
+                        ) + fake_score.binary_cross_entropy_with_logits::<Tensor>(
+                            &zeros,
+                            None,
+                            None,
+                            Reduction::Mean,
+                        )
+                    }
+                    config::GanLoss::RaSGan => {
+                        let ones =
+                            (Tensor::rand(&[batch_size as i64], (Kind::Float, device)) * 0.1 + 0.9)
+                                .set_requires_grad(false);
+                        let zeros = (Tensor::rand(&[batch_size as i64], (Kind::Float, device))
+                            * 0.1)
+                            .set_requires_grad(false);
+
+                        bce_loss(&real_score - &fake_score.mean(Kind::Float), ones)
+                            + bce_loss(&fake_score - &real_score.mean(Kind::Float), zeros)
+                    }
+                    config::GanLoss::RaLsGan => {
+                        mse_loss(&real_score, fake_score.mean(Kind::Float) + 1.0)
+                            + mse_loss(fake_score, real_score.mean(Kind::Float) - 1.0)
+                    }
+                    config::GanLoss::WGan => (&fake_score - &real_score).mean(Kind::Float),
+                    config::GanLoss::WGanGp => {
+                        let discriminator_loss = (&fake_score - &real_score).mean(Kind::Float);
+
+                        let gp_loss = gp.forward(
+                            &real_input,
+                            &fake_input,
+                            |xs, train| transformer_discriminator_model.forward_t(xs, train),
+                            true,
+                        )?;
+                        discriminator_loss + gp_loss
+                    }
+                };
+                debug_assert!(!loss.has_nan());
+
+                // clip weights for classical Wasserstain GAN
+                if gan_loss == config::GanLoss::WGan {
+                    transformer_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+                }
+
+                // optimize
+                transformer_discriminator_opt.backward_step(&loss);
+
+                Ok(Some(loss))
+            })?
+        };
+
+        let (transformer_discriminator_weights, transformer_discriminator_grads) =
+            if transformer_discriminator_loss.is_some() {
+                let (weights, grads) = get_weights_and_grads(&transformer_discriminator_vs);
+                (Some(weights), Some(grads))
+            } else {
+                (None, None)
             };
-            let fake_image_seq: Vec<_> = chain!(
-                &image_batch_seq[0..config.train.peek_len],
-                iter::once(&fake_image)
-            )
-            .collect();
-            debug_assert!(real_image_seq.len() == fake_image_seq.len());
-
-            let real_input = Tensor::cat(real_image_seq, 1);
-            let fake_input = Tensor::cat(&fake_image_seq, 1);
-
-            let real_score = transformer_discriminator_model.forward_t(&real_input, true);
-            let fake_score = transformer_discriminator_model.forward_t(&fake_input, true);
-
-            // compute discriminator loss
-            let loss = match gan_loss {
-                config::GanLoss::DcGan => {
-                    let ones = (Tensor::rand(&[batch_size as i64], (Kind::Float, device)) * 0.1
-                        + 0.9)
-                        .set_requires_grad(false);
-                    let zeros = (Tensor::rand(&[batch_size as i64], (Kind::Float, device)) * 0.1)
-                        .set_requires_grad(false);
-
-                    real_score.binary_cross_entropy_with_logits::<Tensor>(
-                        &ones,
-                        None,
-                        None,
-                        Reduction::Mean,
-                    ) + fake_score.binary_cross_entropy_with_logits::<Tensor>(
-                        &zeros,
-                        None,
-                        None,
-                        Reduction::Mean,
-                    )
-                }
-                config::GanLoss::RaSGan => {
-                    let ones = (Tensor::rand(&[batch_size as i64], (Kind::Float, device)) * 0.1
-                        + 0.9)
-                        .set_requires_grad(false);
-                    let zeros = (Tensor::rand(&[batch_size as i64], (Kind::Float, device)) * 0.1)
-                        .set_requires_grad(false);
-
-                    bce_loss(&real_score - &fake_score.mean(Kind::Float), ones)
-                        + bce_loss(&fake_score - &real_score.mean(Kind::Float), zeros)
-                }
-                config::GanLoss::RaLsGan => {
-                    mse_loss(&real_score, fake_score.mean(Kind::Float) + 1.0)
-                        + mse_loss(fake_score, real_score.mean(Kind::Float) - 1.0)
-                }
-                config::GanLoss::WGan => (&fake_score - &real_score).mean(Kind::Float),
-                config::GanLoss::WGanGp => {
-                    let discriminator_loss = (&fake_score - &real_score).mean(Kind::Float);
-
-                    let gp_loss = gp.forward(
-                        &real_input,
-                        &fake_input,
-                        |xs, train| transformer_discriminator_model.forward_t(xs, train),
-                        true,
-                    )?;
-                    discriminator_loss + gp_loss
-                }
-            };
-            debug_assert!(!loss.has_nan());
-
-            // clip weights for classical Wasserstain GAN
-            if gan_loss == config::GanLoss::WGan {
-                transformer_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
-            }
-
-            // optimize
-            transformer_discriminator_opt.backward_step(&loss);
-        }
 
         // send to logger
         {
@@ -868,6 +893,15 @@ pub fn training_worker(
                 step: train_step,
                 learning_rate: lr,
                 sequence: loss_log_seq,
+                transformer: msg::TransformerLossLog {
+                    transformer_loss: transformer_loss.map(|loss| loss.total_loss.into()),
+                    transformer_discriminator_loss: transformer_discriminator_loss
+                        .map(|loss| loss.into()),
+                    transformer_weights,
+                    transformer_grads,
+                    transformer_discriminator_weights,
+                    transformer_discriminator_grads,
+                },
             };
 
             let result = log_tx.blocking_send(msg);

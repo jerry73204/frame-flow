@@ -30,6 +30,7 @@ pub async fn logging_worker(
                 step,
                 learning_rate,
                 sequence,
+                transformer,
             } => {
                 let step = step as i64;
 
@@ -154,6 +155,82 @@ pub async fn logging_worker(
                             event_writer
                                 .write_scalar_async(
                                     format!("generator_gradients/{}", name),
+                                    step,
+                                    grad as f32,
+                                )
+                                .await?;
+                        }
+                    }
+                }
+
+                {
+                    let msg::TransformerLossLog {
+                        transformer_loss,
+                        transformer_discriminator_loss,
+                        transformer_weights,
+                        transformer_grads,
+                        transformer_discriminator_weights,
+                        transformer_discriminator_grads,
+                    } = transformer;
+
+                    if let Some(transformer_loss) = transformer_loss {
+                        event_writer
+                            .write_scalar_async("transformer_loss", step, transformer_loss as f32)
+                            .await?;
+                    }
+                    if let Some(transformer_discriminator_loss) = transformer_discriminator_loss {
+                        event_writer
+                            .write_scalar_async(
+                                "transformer_discriminator_loss",
+                                step,
+                                transformer_discriminator_loss as f32,
+                            )
+                            .await?;
+                    }
+
+                    // save weights
+                    if let Some(transformer_weights) = transformer_weights {
+                        for (name, weight) in transformer_weights {
+                            event_writer
+                                .write_scalar_async(
+                                    format!("transformer_weights/{}", name),
+                                    step,
+                                    weight as f32,
+                                )
+                                .await?;
+                        }
+                    }
+                    if let Some(transformer_discriminator_weights) =
+                        transformer_discriminator_weights
+                    {
+                        for (name, weight) in transformer_discriminator_weights {
+                            event_writer
+                                .write_scalar_async(
+                                    format!("transformer_discriminator_weights/{}", name),
+                                    step,
+                                    weight as f32,
+                                )
+                                .await?;
+                        }
+                    }
+
+                    // save gradients
+                    if let Some(transformer_grads) = transformer_grads {
+                        for (name, grad) in transformer_grads {
+                            event_writer
+                                .write_scalar_async(
+                                    format!("transformer_gradients/{}", name),
+                                    step,
+                                    grad as f32,
+                                )
+                                .await?;
+                        }
+                    }
+                    if let Some(transformer_discriminator_grads) = transformer_discriminator_grads {
+                        for (name, grad) in transformer_discriminator_grads {
+                            event_writer
+                                .write_scalar_async(
+                                    format!("transformer_discriminator_gradients/{}", name),
                                     step,
                                     grad as f32,
                                 )

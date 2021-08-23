@@ -6,6 +6,7 @@ pub enum LogMessage {
         step: usize,
         learning_rate: f64,
         sequence: Vec<LossLog>,
+        transformer: TransformerLossLog,
     },
     Image {
         step: usize,
@@ -25,6 +26,16 @@ pub struct LossLog {
     pub detector_weights: Option<Vec<(String, f64)>>,
     pub generator_weights: Option<Vec<(String, f64)>>,
     pub discriminator_weights: Option<Vec<(String, f64)>>,
+}
+
+#[derive(Debug)]
+pub struct TransformerLossLog {
+    pub transformer_loss: Option<f64>,
+    pub transformer_discriminator_loss: Option<f64>,
+    pub transformer_weights: Option<Vec<(String, f64)>>,
+    pub transformer_grads: Option<Vec<(String, f64)>>,
+    pub transformer_discriminator_weights: Option<Vec<(String, f64)>>,
+    pub transformer_discriminator_grads: Option<Vec<(String, f64)>>,
 }
 
 #[derive(Debug)]
