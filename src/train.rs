@@ -742,6 +742,9 @@ pub fn training_worker(
         generator_vs.freeze();
         discriminator_vs.freeze();
 
+        transformer_vs.unfreeze();
+        transformer_discriminator_vs.freeze();
+
         for _ in 0..train_transformer_steps {
             ensure!(config.train.peek_len >= 1);
             ensure!(config.train.pred_len.get() == 1);
@@ -758,9 +761,7 @@ pub fn training_worker(
                 detector_loss_fn.forward(&fake_det.shallow_clone().try_into()?, real_bboxes);
 
             // optimize
-            transformer_opt.zero_grad();
-            fake_det_loss.total_loss.backward();
-            transformer_opt.step();
+            transformer_opt.backward_step(&fake_det_loss.total_loss);
         }
 
         // train discriminator
@@ -891,19 +892,22 @@ pub fn training_worker(
 
         if let Some(save_checkpoint_steps) = config.logging.save_checkpoint_steps {
             if train_step % save_checkpoint_steps.get() == 0 {
+                let config::Logging {
+                    save_detector_checkpoint,
+                    save_discriminator_checkpoint,
+                    save_generator_checkpoint,
+                    save_transformer_checkpoint,
+                    save_transformer_discriminator_checkpoint,
+                    ..
+                } = config.logging;
+
                 save_checkpoint_files(
-                    config
-                        .logging
-                        .save_detector_checkpoint
-                        .then(|| &detector_vs),
-                    config
-                        .logging
-                        .save_discriminator_checkpoint
-                        .then(|| &discriminator_vs),
-                    config
-                        .logging
-                        .save_generator_checkpoint
-                        .then(|| &generator_vs),
+                    save_detector_checkpoint.then(|| &detector_vs),
+                    save_discriminator_checkpoint.then(|| &discriminator_vs),
+                    save_generator_checkpoint.then(|| &generator_vs),
+                    save_transformer_checkpoint.then(|| &transformer_vs),
+                    save_transformer_discriminator_checkpoint
+                        .then(|| &transformer_discriminator_vs),
                     &checkpoint_dir,
                     train_step,
                 )?;
@@ -954,42 +958,51 @@ fn save_checkpoint_files(
     det_vs: Option<&nn::VarStore>,
     dis_vs: Option<&nn::VarStore>,
     gen_vs: Option<&nn::VarStore>,
+    trans_vs: Option<&nn::VarStore>,
+    trans_dis_vs: Option<&nn::VarStore>,
     checkpoint_dir: impl AsRef<Path>,
     training_step: usize,
 ) -> Result<()> {
+    let timestamp = Local::now().format(FILE_STRFTIME);
     let checkpoint_dir = checkpoint_dir.as_ref();
 
     // save detector
     if let Some(det_vs) = det_vs {
-        let filename = format!(
-            "detector_{}_{:06}.ckpt",
-            Local::now().format(FILE_STRFTIME),
-            training_step,
-        );
+        let filename = format!("detector_{}_{:06}.ckpt", timestamp, training_step,);
         let path = checkpoint_dir.join(filename);
         det_vs.save(&path)?;
     }
 
     // save discriminator
     if let Some(dis_vs) = dis_vs {
-        let filename = format!(
-            "discriminator_{}_{:06}.ckpt",
-            Local::now().format(FILE_STRFTIME),
-            training_step,
-        );
+        let filename = format!("discriminator_{}_{:06}.ckpt", timestamp, training_step,);
         let path = checkpoint_dir.join(filename);
         dis_vs.save(&path)?;
     }
 
     // save generator
     if let Some(gen_vs) = gen_vs {
-        let filename = format!(
-            "generator_{}_{:06}.ckpt",
-            Local::now().format(FILE_STRFTIME),
-            training_step,
-        );
+        let filename = format!("generator_{}_{:06}.ckpt", timestamp, training_step,);
         let path = checkpoint_dir.join(filename);
         gen_vs.save(&path)?;
     }
+
+    // save transformer
+    if let Some(trans_vs) = trans_vs {
+        let filename = format!("transformer_{}_{:06}.ckpt", timestamp, training_step,);
+        let path = checkpoint_dir.join(filename);
+        trans_vs.save(&path)?;
+    }
+
+    // save transformer discriminator
+    if let Some(trans_dis_vs) = trans_dis_vs {
+        let filename = format!(
+            "transformer_discriminator_{}_{:06}.ckpt",
+            timestamp, training_step,
+        );
+        let path = checkpoint_dir.join(filename);
+        trans_dis_vs.save(&path)?;
+    }
+
     Ok(())
 }

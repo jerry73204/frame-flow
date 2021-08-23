@@ -105,6 +105,8 @@ pub struct Logging {
     pub save_detector_checkpoint: bool,
     pub save_generator_checkpoint: bool,
     pub save_discriminator_checkpoint: bool,
+    pub save_transformer_checkpoint: bool,
+    pub save_transformer_discriminator_checkpoint: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

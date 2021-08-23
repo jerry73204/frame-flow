@@ -129,72 +129,79 @@ impl TransformerInit {
                         ..Default::default()
                     },
                 ))
-                .add(norm_kind.build(&path / "norm", inner_c as i64))
+                .add(norm_kind.build(&path / "norm", in_c as i64))
                 .add_fn(|xs| xs.lrelu())
             };
 
             seq
         };
 
-        let branches: Vec<_> = (0..num_detections)
-            .map(|index| -> Result<_> {
-                let path = path / format!("branch_{}", index);
+        let attention_block = TransformerBlockInit {
+            ksize,
+            norm_kind,
+            padding_kind,
+            num_resnet_blocks,
+            num_scaling_blocks,
+            num_down_sample,
+        }
+        .build(path / "attention_block", inner_c * num_detections, inner_c)?;
 
-                let attention_block = TransformerBlockInit {
-                    ksize,
-                    norm_kind,
-                    padding_kind,
-                    num_resnet_blocks,
-                    num_scaling_blocks,
-                    num_down_sample,
-                }
-                .build(&path / "attention", inner_c, inner_c)?;
+        let patch_block = ResnetGeneratorInit {
+            ksize,
+            norm_kind,
+            padding_kind,
+            num_scale_blocks: num_scaling_blocks,
+            num_blocks: num_resnet_blocks,
+            ..Default::default()
+        }
+        .build(
+            path / "patch_block",
+            inner_c * num_detections,
+            inner_c,
+            inner_c,
+        );
 
-                let patch_block = ResnetGeneratorInit {
-                    ksize,
-                    norm_kind,
-                    padding_kind,
-                    num_scale_blocks: num_scaling_blocks,
-                    num_blocks: num_resnet_blocks,
-                    ..Default::default()
-                }
-                .build(&path / "patch", inner_c, inner_c, inner_c);
-
-                Ok((attention_block, patch_block))
-            })
-            .try_collect()?;
-
-        let forward_fn = Box::new(
-            move |input: &[&DenseDetectionTensorList],
-                  train: bool|
-                  -> Result<DenseDetectionTensorList> {
-                ensure!(input.len() == num_detections);
-                ensure!(input.iter().all(|list| list.tensors.len() == 1));
-                ensure!(
-                    input
+        let forward_fn =
+            Box::new(
+                move |input: &[&DenseDetectionTensorList],
+                      train: bool|
+                      -> Result<DenseDetectionTensorList> {
+                    ensure!(input.len() == num_detections);
+                    ensure!(input.iter().all(|list| list.tensors.len() == 1));
+                    ensure!(input
                         .iter()
                         .map(|list| &list.tensors)
                         .flatten()
                         .all(|tensor| tensor.num_anchors() == 1
-                            && tensor.num_classes() == num_classes)
-                );
-                let bsize = input[0].batch_size() as i64;
+                            && tensor.num_classes() == num_classes));
 
-                let tensors = input.iter().map(|list| &list.tensors).flatten();
-                let detections: Vec<_> = izip!(tensors, &branches)
-                    .map(
-                        |(in_detection, (attention_block, patch_block))| -> Result<_> {
+                    let bsize = input[0].batch_size() as i64;
+                    let in_h = input[0].tensors[0].height() as i64;
+                    let in_w = input[0].tensors[0].width() as i64;
+                    let anchors = input[0].tensors[0].anchors.clone();
+                    ensure!(input
+                        .iter()
+                        .flat_map(|list| &list.tensors)
+                        .all(|det| det.height() == in_h as usize
+                            && det.width() == in_w as usize
+                            && det.anchors == anchors));
+
+                    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
+                        .div(in_h as f64)
+                        .set_requires_grad(false)
+                        .view([1, 1, 1, in_h, 1]);
+                    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
+                        .div(in_w as f64)
+                        .set_requires_grad(false)
+                        .view([1, 1, 1, 1, in_w]);
+
+                    let in_context_vec: Vec<_> = input
+                        .iter()
+                        .map(|list| &list.tensors)
+                        .flatten()
+                        .map(|in_detection| {
                             let in_h = in_detection.height() as i64;
                             let in_w = in_detection.width() as i64;
-
-                            let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
-                                .div(in_h as f64)
-                                .set_requires_grad(false)
-                                .view([1, 1, 1, in_h, 1]);
-                            let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
-                                .div(in_w as f64)
-                                .set_requires_grad(false)
-                                .view([1, 1, 1, 1, in_w]);
 
                             let in_tensor = {
                                 let unbiased_cy =
@@ -223,67 +230,68 @@ impl TransformerInit {
                                     1,
                                 )
                             };
-                            let in_context = encoder.forward_t(&in_tensor, train);
-                            let shifted = attention_block.forward_t(&in_context, train)?;
-                            let patch = patch_block.forward_t(&in_context, train);
-                            let patch_mask = {
-                                let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
-                                let border_w = (in_w as f64 * BORDER_SIZE_RATIO).floor() as usize;
-                                Tensor::from_cv(nd::Array2::from_shape_fn(
-                                    [in_h as usize, in_w as usize],
-                                    |(row, col)| {
-                                        let ok = row < border_h
-                                            || row >= (in_h as usize - border_h)
-                                            || col < border_w
-                                            || col >= (in_w as usize - border_w);
-                                        if ok {
-                                            1.0
-                                        } else {
-                                            0.0
-                                        }
-                                    },
-                                ))
-                                .set_requires_grad(false)
-                                .to_device(device)
-                            };
-                            let out_context = shifted + patch * patch_mask;
-                            let out_tensor = decoder.forward_t(&out_context, train);
-                            let out_detection: DenseDetectionTensor = {
-                                let xs = out_tensor.view([bsize, -1, 1, in_h, in_w]);
-                                let cy = xs.i((.., 0..1, .., .., ..)) + y_offsets;
-                                let cx = xs.i((.., 1..2, .., .., ..)) + x_offsets;
-                                let h = xs.i((.., 2..3, .., .., ..));
-                                let w = xs.i((.., 3..4, .., .., ..));
-                                let obj_logit = xs.i((.., 4..5, .., .., ..));
-                                let class_logit = xs.i((.., 5.., .., .., ..));
+                            encoder.forward_t(&in_tensor, train)
+                        })
+                        .collect();
 
-                                DenseDetectionTensorUnchecked {
-                                    cy,
-                                    cx,
-                                    h,
-                                    w,
-                                    obj_logit,
-                                    class_logit,
-                                    anchors: in_detection.anchors.clone(),
+                    let merge_context = Tensor::cat(&in_context_vec, 1);
+                    let last_context = in_context_vec.last().unwrap();
+
+                    let shifted = attention_block.forward_t(last_context, &merge_context, train)?;
+                    let patch = patch_block.forward_t(&merge_context, train);
+                    let patch_mask = {
+                        let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
+                        let border_w = (in_w as f64 * BORDER_SIZE_RATIO).floor() as usize;
+                        Tensor::from_cv(nd::Array2::from_shape_fn(
+                            [in_h as usize, in_w as usize],
+                            |(row, col)| {
+                                let ok = row < border_h
+                                    || row >= (in_h as usize - border_h)
+                                    || col < border_w
+                                    || col >= (in_w as usize - border_w);
+                                if ok {
+                                    1f32
+                                } else {
+                                    0f32
                                 }
-                                .try_into()
-                                .unwrap()
-                            };
+                            },
+                        ))
+                        .set_requires_grad(false)
+                        .to_device(device)
+                    };
+                    let out_context = shifted + patch * patch_mask;
+                    let out_tensor = decoder.forward_t(&out_context, train);
+                    let out_detection: DenseDetectionTensor = {
+                        let xs = out_tensor.view([bsize, -1, 1, in_h, in_w]);
+                        let cy = xs.i((.., 0..1, .., .., ..)) + y_offsets;
+                        let cx = xs.i((.., 1..2, .., .., ..)) + x_offsets;
+                        let h = xs.i((.., 2..3, .., .., ..));
+                        let w = xs.i((.., 3..4, .., .., ..));
+                        let obj_logit = xs.i((.., 4..5, .., .., ..));
+                        let class_logit = xs.i((.., 5.., .., .., ..));
 
-                            Ok(out_detection)
-                        },
-                    )
-                    .try_collect()?;
+                        DenseDetectionTensorUnchecked {
+                            cy,
+                            cx,
+                            h,
+                            w,
+                            obj_logit,
+                            class_logit,
+                            anchors,
+                        }
+                        .try_into()
+                        .unwrap()
+                    };
 
-                let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
-                    tensors: detections,
-                }
-                .try_into()
-                .unwrap();
+                    let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
+                        tensors: vec![out_detection],
+                    }
+                    .try_into()
+                    .unwrap();
 
-                Ok(output)
-            },
-        );
+                    Ok(output)
+                },
+            );
 
         Ok(Transformer { forward_fn })
     }
@@ -322,7 +330,7 @@ impl TransformerBlockInit {
     pub fn build<'a>(
         self,
         path: impl Borrow<nn::Path<'a>>,
-        in_c: usize,
+        ctx_c: usize,
         inner_c: usize,
     ) -> Result<TransformerBlock> {
         let path = path.borrow();
@@ -345,15 +353,13 @@ impl TransformerBlockInit {
             ..Default::default()
         };
 
-        let input_norm =
-            GroupNormInit::default().build(path / "input_norm", inner_c as i64, inner_c as i64);
-
+        let context_norm =
+            GroupNormInit::default().build(path / "context_norm", ctx_c as i64, ctx_c as i64);
         let query_transform =
             resnet_init
                 .clone()
-                .build(path / "query_transform", in_c, inner_c, inner_c);
-        let key_transform = resnet_init.build(path / "key_transform", in_c, inner_c, inner_c);
-
+                .build(path / "query_transform", ctx_c, inner_c, inner_c);
+        let key_transform = resnet_init.build(path / "key_transform", ctx_c, inner_c, inner_c);
         let query_down_sample = {
             let path = path / "query_down_sample";
             let padding = ksize / 2;
@@ -378,47 +384,72 @@ impl TransformerBlockInit {
             })
         };
 
-        let forward_fn = Box::new(move |input: &Tensor, train: bool| -> Result<Tensor> {
-            let (bsize, _, in_h, in_w) = input.size4()?;
-            let patch_h = in_h / 2i64.pow(num_down_sample as u32);
-            let patch_w = in_w / 2i64.pow(num_down_sample as u32);
-
-            let value = input;
-            let value_norm = input_norm.forward_t(input, train);
-            let key = key_transform.forward_t(&value_norm, train);
-            let query = {
-                let xs = query_transform.forward_t(&value_norm, train);
-                query_down_sample.forward_t(&xs, train)
-            };
-
-            let attention = Tensor::einsum(
-                "bcq,bck->bqk",
-                &[
-                    query.view([bsize, inner_c as i64, -1]),
-                    key.view([bsize, inner_c as i64, -1]),
-                ],
-            )
-            .div((inner_c as f64).sqrt())
-            .softmax(1, Kind::Float)
-            .view([bsize, patch_h * patch_w, in_h * in_w]);
-
-            let patches = Tensor::einsum(
-                "bqk,bck->bcqk",
-                &[attention, value.view([bsize, inner_c as i64, -1])],
-            );
-
-            let output = patches
-                .view([bsize, inner_c as i64 * patch_h * patch_w, in_h * in_w])
-                .col2im(
-                    &[in_h, in_w],
-                    &[patch_h, patch_w],
-                    &[1, 1], // dilation
-                    &[patch_h / 2, patch_w / 2],
-                    &[1, 1], // stride
+        let forward_fn = Box::new(
+            move |input: &Tensor, context: &Tensor, train: bool| -> Result<Tensor> {
+                let (bsize, _, in_h, in_w) = input.size4()?;
+                ensure!(
+                    matches!(context.size4()?, (bsize_, ctx_c_, ctx_h, ctx_w) if bsize == bsize_ && ctx_c == ctx_c_ as usize && in_h == ctx_h && in_w == ctx_w)
                 );
 
-            Ok(output)
-        });
+                let patch_h = in_h / 2i64.pow(num_down_sample as u32);
+                let patch_w = in_w / 2i64.pow(num_down_sample as u32);
+
+                let context = context_norm.forward_t(context, train);
+                let key = key_transform.forward_t(&context, train);
+                let query = {
+                    let xs = query_transform.forward_t(&context, train);
+                    query_down_sample.forward_t(&xs, train)
+                };
+
+                let attention = Tensor::einsum(
+                    "bcq,bck->bqk",
+                    &[
+                        query.view([bsize, inner_c as i64, -1]),
+                        key.view([bsize, inner_c as i64, -1]),
+                    ],
+                )
+                .div((inner_c as f64).sqrt())
+                .softmax(1, Kind::Float)
+                .view([bsize, patch_h * patch_w, in_h * in_w]);
+
+                let patches = Tensor::einsum(
+                    "bqk,bck->bcqk",
+                    &[attention, input.view([bsize, inner_c as i64, -1])],
+                )
+                .view([bsize, inner_c as i64, patch_h, patch_w, in_h, in_w]);
+
+                // pad patch sizes to odd numbers
+                let (patches, patch_h) = if patch_h & 1 == 1 {
+                    (patches, patch_h)
+                } else {
+                    (
+                        patches.constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1]),
+                        patch_h + 1,
+                    )
+                };
+                let (patches, patch_w) = if patch_w & 1 == 1 {
+                    (patches, patch_w)
+                } else {
+                    (
+                        patches.constant_pad_nd(&[0, 0, 0, 0, 0, 1, 0, 0]),
+                        patch_w + 1,
+                    )
+                };
+
+                // merge patches
+                let output = patches
+                    .view([bsize, inner_c as i64 * patch_h * patch_w, in_h * in_w])
+                    .col2im(
+                        &[in_h, in_w],
+                        &[patch_h, patch_w],
+                        &[1, 1], // dilation
+                        &[patch_h / 2, patch_w / 2],
+                        &[1, 1], // stride
+                    );
+
+                Ok(output)
+            },
+        );
 
         Ok(TransformerBlock { forward_fn })
     }
@@ -428,11 +459,11 @@ impl TransformerBlockInit {
 #[derivative(Debug)]
 pub struct TransformerBlock {
     #[derivative(Debug = "ignore")]
-    forward_fn: Box<dyn Fn(&Tensor, bool) -> Result<Tensor> + Send>,
+    forward_fn: Box<dyn Fn(&Tensor, &Tensor, bool) -> Result<Tensor> + Send>,
 }
 
 impl TransformerBlock {
-    pub fn forward_t(&self, input: &Tensor, train: bool) -> Result<Tensor> {
-        (self.forward_fn)(input, train)
+    pub fn forward_t(&self, input: &Tensor, context: &Tensor, train: bool) -> Result<Tensor> {
+        (self.forward_fn)(input, context, train)
     }
 }
