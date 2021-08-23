@@ -101,7 +101,7 @@
     },
     "logging": {
         // "log_dir": "log-test",
-        "log_dir": "log-wayside-64x64-2021-08-22",
+        "log_dir": "log-wayside-64x64-2021-08-23",
         "save_image_steps": 10,
         "save_checkpoint_steps": 100,
         "save_detector_checkpoint": false,
