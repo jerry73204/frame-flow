@@ -700,6 +700,8 @@ pub fn training_worker(
                         let (fake_det_loss, _) =
                             detector_loss_fn.forward(&fake_det.shallow_clone().try_into()?, boxes);
 
+                        debug_assert!(!fake_det_loss.total_loss.has_nan());
+
                         // optimize consistency
                         detector_opt.zero_grad();
                         generator_opt.zero_grad();
@@ -760,6 +762,8 @@ pub fn training_worker(
 
                 let (fake_det_loss, _) =
                     detector_loss_fn.forward(&fake_det.shallow_clone().try_into()?, real_bboxes);
+
+                debug_assert!(!fake_det_loss.total_loss.has_nan());
 
                 // optimize
                 transformer_opt.backward_step(&fake_det_loss.total_loss);
@@ -871,6 +875,8 @@ pub fn training_worker(
                 if gan_loss == config::GanLoss::WGan {
                     transformer_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
                 }
+
+                debug_assert!(!loss.has_nan());
 
                 // optimize
                 transformer_discriminator_opt.backward_step(&loss);
