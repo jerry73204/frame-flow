@@ -467,3 +467,365 @@ impl TransformerBlock {
         (self.forward_fn)(input, context, train)
     }
 }
+
+#[derive(Debug)]
+pub struct TransformerArtifacts {}
+
+#[derive(Debug, Clone)]
+pub struct ChannelWiseAutoencoderInit {
+    pub norm_kind: NormKind,
+    pub padding_kind: PaddingKind,
+}
+
+impl ChannelWiseAutoencoderInit {
+    pub fn build<'a>(
+        self,
+        path: impl Borrow<nn::Path<'a>>,
+        in_c: usize,
+        inner_c: usize,
+    ) -> (ChannelWiseEncoder, ChannelWiseDecoder) {
+        let path = path.borrow();
+        let Self {
+            norm_kind,
+            padding_kind,
+        } = self;
+        let bias = norm_kind == NormKind::InstanceNorm;
+
+        let encoder = {
+            let path = path / "encoder";
+
+            let seq = {
+                let path = &path / "block_0";
+                nn::seq_t()
+                    .add(padding_kind.build([0, 0, 0, 0]))
+                    .add(nn::conv2d(
+                        &path / "conv",
+                        in_c as i64,
+                        inner_c as i64,
+                        1,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm", inner_c as i64))
+                    .add_fn(|xs| xs.lrelu())
+            };
+
+            (1..3).fold(seq, |seq, index| {
+                let path = &path / format!("block_{}", index);
+
+                seq.add(padding_kind.build([0, 0, 0, 0]))
+                    .add(nn::conv2d(
+                        &path / "conv",
+                        inner_c as i64,
+                        inner_c as i64,
+                        1,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm", inner_c as i64))
+                    .add_fn(|xs| xs.lrelu())
+            })
+        };
+
+        let decoder = {
+            let path = path / "decoder";
+            let num_blocks = 3;
+
+            let seq = (0..(num_blocks - 1)).fold(nn::seq_t(), |seq, index| {
+                let path = &path / format!("block_{}", index);
+
+                seq.add(padding_kind.build([0, 0, 0, 0]))
+                    .add(nn::conv2d(
+                        &path / "conv",
+                        inner_c as i64,
+                        inner_c as i64,
+                        1,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm", inner_c as i64))
+                    .add_fn(|xs| xs.lrelu())
+            });
+
+            let seq = {
+                let path = &path / format!("block_{}", num_blocks - 1);
+                seq.add(nn::conv2d(
+                    &path / "conv",
+                    inner_c as i64,
+                    in_c as i64,
+                    1,
+                    nn::ConvConfig {
+                        padding: 0,
+                        bias,
+                        ..Default::default()
+                    },
+                ))
+                .add(norm_kind.build(&path / "norm", in_c as i64))
+                .add_fn(|xs| xs.lrelu())
+            };
+
+            seq
+        };
+
+        (
+            ChannelWiseEncoder {
+                forward_fn: encoder,
+            },
+            ChannelWiseDecoder {
+                forward_fn: decoder,
+            },
+        )
+    }
+}
+
+#[derive(Debug)]
+pub struct ChannelWiseEncoder {
+    forward_fn: nn::SequentialT,
+}
+
+#[derive(Debug)]
+pub struct ChannelWiseDecoder {
+    forward_fn: nn::SequentialT,
+}
+
+impl nn::ModuleT for ChannelWiseEncoder {
+    fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
+        self.forward_fn.forward_t(input, train)
+    }
+}
+
+impl nn::ModuleT for ChannelWiseDecoder {
+    fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
+        self.forward_fn.forward_t(input, train)
+    }
+}
+
+pub fn encode_detection(input: &DenseDetectionTensor) -> Result<Tensor> {
+    let device = input.device();
+    let bsize = input.batch_size() as i64;
+    let num_classes = input.num_classes() as i64;
+    let in_h = input.height() as i64;
+    let in_w = input.width() as i64;
+    let num_anchors = input.anchors.len() as i64;
+
+    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
+        .set_requires_grad(false)
+        .view([1, 1, 1, in_h, 1]);
+    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
+        .set_requires_grad(false)
+        .view([1, 1, 1, 1, in_w]);
+    let (anchor_heights, anchor_widths) = {
+        let (anchor_h_vec, anchor_w_vec) = input
+            .anchors
+            .iter()
+            .cloned()
+            .map(|anchor_size| {
+                let anchor_size = anchor_size.cast::<f32>().unwrap();
+                (anchor_size.h, anchor_size.w)
+            })
+            .unzip_n_vec();
+
+        let anchor_heights = Tensor::of_slice(&anchor_h_vec)
+            .set_requires_grad(false)
+            .to_device(device)
+            .view([1, 1, num_anchors, 1, 1]);
+        let anchor_widths = Tensor::of_slice(&anchor_w_vec)
+            .set_requires_grad(false)
+            .to_device(device)
+            .view([1, 1, num_anchors, 1, 1]);
+
+        (anchor_heights, anchor_widths)
+    };
+
+    let merge = {
+        let cy_logit = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0)
+            .logit(None)
+            .view([bsize, 1, num_anchors, in_h, in_w]);
+        let cx_logit = ((&input.cx * in_w as f64 - &x_offsets + 0.5) / 2.0)
+            .logit(None)
+            .view([bsize, 1, num_anchors, in_h, in_w]);
+        let h_logit = ((&input.h / anchor_heights).sqrt() / 2.0)
+            .logit(None)
+            .view([bsize, 1, num_anchors, in_h, in_w]);
+        let w_logit = ((&input.w / anchor_widths).sqrt() / 2.0).logit(None).view([
+            bsize,
+            1,
+            num_anchors,
+            in_h,
+            in_w,
+        ]);
+        let obj_logit = input.obj_logit.view([bsize, 1, num_anchors, in_h, in_w]);
+        let class_logit =
+            input
+                .class_logit
+                .view([bsize, num_classes as i64, num_anchors, in_h, in_w]);
+
+        ensure!(!cy_logit.has_nan());
+        ensure!(!cx_logit.has_nan());
+        ensure!(!h_logit.has_nan());
+        ensure!(!w_logit.has_nan());
+
+        Tensor::cat(
+            &[cy_logit, cx_logit, h_logit, w_logit, obj_logit, class_logit],
+            1,
+        )
+        .view([bsize, -1, in_h, in_w])
+    };
+
+    Ok(merge)
+}
+
+pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
+    let device = input.device();
+    let num_anchors = anchors.len() as i64;
+    let (bsize, _, in_h, in_w) = input.size4().unwrap();
+
+    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
+        .set_requires_grad(false)
+        .view([1, 1, 1, in_h, 1]);
+    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
+        .set_requires_grad(false)
+        .view([1, 1, 1, 1, in_w]);
+    let (anchor_heights, anchor_widths) = {
+        let (anchor_h_vec, anchor_w_vec) = anchors
+            .iter()
+            .cloned()
+            .map(|anchor_size| {
+                let anchor_size = anchor_size.cast::<f32>().unwrap();
+                (anchor_size.h, anchor_size.w)
+            })
+            .unzip_n_vec();
+
+        let anchor_heights = Tensor::of_slice(&anchor_h_vec)
+            .set_requires_grad(false)
+            .to_device(device)
+            .view([1, 1, num_anchors, 1, 1]);
+        let anchor_widths = Tensor::of_slice(&anchor_w_vec)
+            .set_requires_grad(false)
+            .to_device(device)
+            .view([1, 1, num_anchors, 1, 1]);
+
+        (anchor_heights, anchor_widths)
+    };
+
+    let xs = input.view([bsize, -1, num_anchors, in_h, in_w]);
+    let cy = ((xs.i((.., 0..1, .., .., ..)).sigmoid() * 2.0 - 0.5) + y_offsets) / in_h as f64;
+    let cx = ((xs.i((.., 1..2, .., .., ..)).sigmoid() * 2.0 - 0.5) + x_offsets) / in_w as f64;
+    let h = xs.i((.., 2..3, .., .., ..)).sigmoid().mul(2.0).pow(2.0) * anchor_heights;
+    let w = xs.i((.., 3..4, .., .., ..)).sigmoid().mul(2.0).pow(2.0) * anchor_widths;
+    let obj_logit = xs.i((.., 4..5, .., .., ..));
+    let class_logit = xs.i((.., 5.., .., .., ..));
+
+    DenseDetectionTensorUnchecked {
+        cy,
+        cx,
+        h,
+        w,
+        obj_logit,
+        class_logit,
+        anchors,
+    }
+    .try_into()
+    .unwrap()
+}
+
+// fn autoencoder_loss(src: &Tensor, dst: &Tensor) -> Tensor {
+
+// }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detection_encode_decode() {
+        tch::no_grad(|| {
+            let bsize = 4;
+            let num_classes = 10;
+            let in_h = 16;
+            let in_w = 9;
+            let anchors: Vec<_> = [(0.5, 0.1), (0.1, 0.6)]
+                .iter()
+                .map(|&(h, w)| RatioSize::from_hw(r64(h), r64(w)).unwrap())
+                .collect();
+            let num_anchors = anchors.len() as i64;
+            let y_offsets = Tensor::arange(in_h, FLOAT_CPU)
+                .set_requires_grad(false)
+                .view([1, 1, 1, in_h, 1]);
+            let x_offsets = Tensor::arange(in_w, FLOAT_CPU)
+                .set_requires_grad(false)
+                .view([1, 1, 1, 1, in_w]);
+            let (anchor_h_vec, anchor_w_vec) = anchors
+                .iter()
+                .cloned()
+                .map(|anchor_size| {
+                    let anchor_size = anchor_size.cast::<f32>().unwrap();
+                    (anchor_size.h, anchor_size.w)
+                })
+                .unzip_n_vec();
+            let anchor_heights = Tensor::of_slice(&anchor_h_vec)
+                .set_requires_grad(false)
+                .to_device(Device::Cpu)
+                .view([1, 1, num_anchors, 1, 1]);
+            let anchor_widths = Tensor::of_slice(&anchor_w_vec)
+                .set_requires_grad(false)
+                .to_device(Device::Cpu)
+                .view([1, 1, num_anchors, 1, 1]);
+
+            let cy = (Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 2.0 - 0.5
+                + y_offsets)
+                / in_h as f64;
+            let cx = (Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 2.0 - 0.5
+                + x_offsets)
+                / in_w as f64;
+            let h = Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU)
+                * 4.0
+                * anchor_heights;
+            let w =
+                Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 4.0 * anchor_widths;
+            let obj_logit =
+                Tensor::randn(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU).abs() * 10.0;
+            let class_logit =
+                Tensor::randn(&[bsize, num_classes, num_anchors, in_h, in_w], FLOAT_CPU).abs()
+                    * 10.0;
+
+            let orig: DenseDetectionTensor = DenseDetectionTensorUnchecked {
+                cy,
+                cx,
+                h,
+                w,
+                obj_logit,
+                class_logit,
+                anchors: anchors.clone(),
+            }
+            .try_into()
+            .unwrap();
+
+            let tensor = encode_detection(&orig).unwrap();
+            let recon = decode_detection(&tensor, anchors);
+
+            let cy_diff: f64 = (&orig.cy - &recon.cy).abs().max().into();
+            let cx_diff: f64 = (&orig.cx - &recon.cx).abs().max().into();
+            let h_diff: f64 = (&orig.h - &recon.h).abs().max().into();
+            let w_diff: f64 = (&orig.w - &recon.w).abs().max().into();
+            let obj_diff: f64 = (&orig.obj_logit - &recon.obj_logit).abs().max().into();
+            let class_diff: f64 = (&orig.class_logit - &recon.class_logit).abs().max().into();
+
+            assert_abs_diff_eq!(cy_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(cx_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(h_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(w_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(obj_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(class_diff, 0.0, epsilon = 1e-6);
+        });
+    }
+}

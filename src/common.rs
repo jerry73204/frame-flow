@@ -1,5 +1,5 @@
 pub use anyhow::{bail, ensure, format_err, Context, Error, Result};
-pub use approx::assert_abs_diff_eq;
+pub use approx::{abs_diff_eq, assert_abs_diff_eq};
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
 pub use collected::{GroupHashMap, MaxVal};
@@ -28,7 +28,7 @@ pub use std::{
     fs,
     iter::{self, FromIterator, Sum},
     num::NonZeroUsize,
-    ops::Div,
+    ops::{Div, Mul},
     path::{Path, PathBuf},
     sync::{Arc, Once},
 };
