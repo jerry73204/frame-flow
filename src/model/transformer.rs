@@ -49,91 +49,19 @@ impl TransformerInit {
         } = self;
         let device = path.device();
         let in_c = 5 + num_classes;
-        let bias = norm_kind == NormKind::InstanceNorm;
         ensure!(num_detections > 0);
 
-        let encoder = {
-            let path = path / "encoder";
+        let (ctx_encoder, ctx_decoder) =
+            ChannelWiseAutoencoderInit { norm_kind }.build(path / "autoencoder", in_c, inner_c);
 
-            let seq = {
-                let path = &path / "block_0";
-                nn::seq_t()
-                    .add(padding_kind.build([0, 0, 0, 0]))
-                    .add(nn::conv2d(
-                        &path / "conv",
-                        in_c as i64,
-                        inner_c as i64,
-                        1,
-                        nn::ConvConfig {
-                            padding: 0,
-                            bias,
-                            ..Default::default()
-                        },
-                    ))
-                    .add(norm_kind.build(&path / "norm", inner_c as i64))
-                    .add_fn(|xs| xs.lrelu())
-            };
-
-            (1..3).fold(seq, |seq, index| {
-                let path = &path / format!("block_{}", index);
-
-                seq.add(padding_kind.build([0, 0, 0, 0]))
-                    .add(nn::conv2d(
-                        &path / "conv",
-                        inner_c as i64,
-                        inner_c as i64,
-                        1,
-                        nn::ConvConfig {
-                            padding: 0,
-                            bias,
-                            ..Default::default()
-                        },
-                    ))
-                    .add(norm_kind.build(&path / "norm", inner_c as i64))
-                    .add_fn(|xs| xs.lrelu())
-            })
+        let det_encoder = move |det: &DenseDetectionTensor, train: bool| -> Result<_> {
+            let (xs, anchors) = encode_detection(det)?;
+            let xs = ctx_encoder.forward_t(&xs, train);
+            Ok((xs, anchors))
         };
-        let decoder = {
-            let path = path / "decoder";
-            let num_blocks = 3;
-
-            let seq = (0..(num_blocks - 1)).fold(nn::seq_t(), |seq, index| {
-                let path = &path / format!("block_{}", index);
-
-                seq.add(padding_kind.build([0, 0, 0, 0]))
-                    .add(nn::conv2d(
-                        &path / "conv",
-                        inner_c as i64,
-                        inner_c as i64,
-                        1,
-                        nn::ConvConfig {
-                            padding: 0,
-                            bias,
-                            ..Default::default()
-                        },
-                    ))
-                    .add(norm_kind.build(&path / "norm", inner_c as i64))
-                    .add_fn(|xs| xs.lrelu())
-            });
-
-            let seq = {
-                let path = &path / format!("block_{}", num_blocks - 1);
-                seq.add(nn::conv2d(
-                    &path / "conv",
-                    inner_c as i64,
-                    in_c as i64,
-                    1,
-                    nn::ConvConfig {
-                        padding: 0,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm", in_c as i64))
-                .add_fn(|xs| xs.lrelu())
-            };
-
-            seq
+        let det_decoder = move |xs: &Tensor, anchors, train: bool| {
+            let xs = ctx_decoder.forward_t(xs, train);
+            decode_detection(&xs, anchors)
         };
 
         let attention_block = TransformerBlockInit {
@@ -164,8 +92,9 @@ impl TransformerInit {
         let forward_fn =
             Box::new(
                 move |input: &[&DenseDetectionTensorList],
-                      train: bool|
-                      -> Result<DenseDetectionTensorList> {
+                      train: bool,
+                      with_artifacts: bool|
+                      -> Result<_> {
                     ensure!(input.len() == num_detections);
                     ensure!(input.iter().all(|list| list.tensors.len() == 1));
                     ensure!(input
@@ -175,7 +104,6 @@ impl TransformerInit {
                         .all(|tensor| tensor.num_anchors() == 1
                             && tensor.num_classes() == num_classes));
 
-                    let bsize = input[0].batch_size() as i64;
                     let in_h = input[0].tensors[0].height() as i64;
                     let in_w = input[0].tensors[0].width() as i64;
                     let anchors = input[0].tensors[0].anchors.clone();
@@ -186,53 +114,19 @@ impl TransformerInit {
                             && det.width() == in_w as usize
                             && det.anchors == anchors));
 
-                    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
-                        .div(in_h as f64)
-                        .set_requires_grad(false)
-                        .view([1, 1, 1, in_h, 1]);
-                    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
-                        .div(in_w as f64)
-                        .set_requires_grad(false)
-                        .view([1, 1, 1, 1, in_w]);
-
-                    let in_context_vec: Vec<_> = input
+                    let (in_context_vec, anchors_set): (Vec<_>, HashSet<_>) = input
                         .iter()
-                        .map(|list| &list.tensors)
-                        .flatten()
-                        .map(|in_detection| {
-                            let in_h = in_detection.height() as i64;
-                            let in_w = in_detection.width() as i64;
-
-                            let in_tensor = {
-                                let unbiased_cy =
-                                    (&in_detection.cy - &y_offsets).view([bsize, 1, in_h, in_w]);
-                                let unbiased_cx =
-                                    (&in_detection.cx - &x_offsets).view([bsize, 1, in_h, in_w]);
-                                let box_h = in_detection.h.view([bsize, 1, in_h, in_w]);
-                                let box_w = in_detection.w.view([bsize, 1, in_h, in_w]);
-                                let obj_logit = in_detection.obj_logit.view([bsize, 1, in_h, in_w]);
-                                let class_logit = in_detection.class_logit.view([
-                                    bsize,
-                                    num_classes as i64,
-                                    in_h,
-                                    in_w,
-                                ]);
-
-                                Tensor::cat(
-                                    &[
-                                        unbiased_cy,
-                                        unbiased_cx,
-                                        box_h,
-                                        box_w,
-                                        obj_logit,
-                                        class_logit,
-                                    ],
-                                    1,
-                                )
-                            };
-                            encoder.forward_t(&in_tensor, train)
-                        })
-                        .collect();
+                        .flat_map(|list| &list.tensors)
+                        .map(|det| det_encoder(det, train))
+                        .try_collect::<_, Vec<_>, _>()?
+                        .into_iter()
+                        .unzip();
+                    let anchors = {
+                        let mut iter = anchors_set.into_iter();
+                        let anchors = iter.next().unwrap();
+                        ensure!(iter.next().is_none());
+                        anchors
+                    };
 
                     let merge_context = Tensor::cat(&in_context_vec, 1);
                     let last_context = in_context_vec.last().unwrap();
@@ -260,28 +154,7 @@ impl TransformerInit {
                         .to_device(device)
                     };
                     let out_context = shifted + patch * patch_mask;
-                    let out_tensor = decoder.forward_t(&out_context, train);
-                    let out_detection: DenseDetectionTensor = {
-                        let xs = out_tensor.view([bsize, -1, 1, in_h, in_w]);
-                        let cy = xs.i((.., 0..1, .., .., ..)) + y_offsets;
-                        let cx = xs.i((.., 1..2, .., .., ..)) + x_offsets;
-                        let h = xs.i((.., 2..3, .., .., ..));
-                        let w = xs.i((.., 3..4, .., .., ..));
-                        let obj_logit = xs.i((.., 4..5, .., .., ..));
-                        let class_logit = xs.i((.., 5.., .., .., ..));
-
-                        DenseDetectionTensorUnchecked {
-                            cy,
-                            cx,
-                            h,
-                            w,
-                            obj_logit,
-                            class_logit,
-                            anchors,
-                        }
-                        .try_into()
-                        .unwrap()
-                    };
+                    let out_detection = det_decoder(&out_context, anchors.clone(), train);
 
                     let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
                         tensors: vec![out_detection],
@@ -289,7 +162,31 @@ impl TransformerInit {
                     .try_into()
                     .unwrap();
 
-                    Ok(output)
+                    let artifacts = with_artifacts.then(|| {
+                        // compute reconstruction for detection autoencoder
+                        let autoencoder_recon_loss = {
+                            let recon_loss_vec: Vec<_> =
+                                izip!(input.iter().flat_map(|list| &list.tensors), &in_context_vec)
+                                    .map(|(orig, latent)| -> Tensor {
+                                        let recon = det_decoder(latent, anchors.clone(), train);
+                                        super::loss::dense_detection_similarity(
+                                            orig,
+                                            &recon,
+                                            Reduction::Mean,
+                                        )
+                                        .unwrap()
+                                        .total_loss()
+                                    })
+                                    .collect();
+                            recon_loss_vec.iter().sum::<Tensor>() / recon_loss_vec.len() as f64
+                        };
+
+                        TransformerArtifacts {
+                            autoencoder_recon_loss,
+                        }
+                    });
+
+                    Ok((output, artifacts))
                 },
             );
 
@@ -301,8 +198,14 @@ impl TransformerInit {
 #[derivative(Debug)]
 pub struct Transformer {
     #[derivative(Debug = "ignore")]
-    forward_fn:
-        Box<dyn Fn(&[&DenseDetectionTensorList], bool) -> Result<DenseDetectionTensorList> + Send>,
+    forward_fn: Box<
+        dyn Fn(
+                &[&DenseDetectionTensorList],
+                bool,
+                bool,
+            ) -> Result<(DenseDetectionTensorList, Option<TransformerArtifacts>)>
+            + Send,
+    >,
 }
 
 impl Transformer {
@@ -310,9 +213,10 @@ impl Transformer {
         &self,
         input: &[impl Borrow<DenseDetectionTensorList>],
         train: bool,
-    ) -> Result<DenseDetectionTensorList> {
+        with_artifacts: bool,
+    ) -> Result<(DenseDetectionTensorList, Option<TransformerArtifacts>)> {
         let input: Vec<_> = input.iter().map(|list| list.borrow()).collect();
-        (self.forward_fn)(&input, train)
+        (self.forward_fn)(&input, train, with_artifacts)
     }
 }
 
@@ -469,12 +373,13 @@ impl TransformerBlock {
 }
 
 #[derive(Debug)]
-pub struct TransformerArtifacts {}
+pub struct TransformerArtifacts {
+    pub autoencoder_recon_loss: Tensor,
+}
 
 #[derive(Debug, Clone)]
 pub struct ChannelWiseAutoencoderInit {
     pub norm_kind: NormKind,
-    pub padding_kind: PaddingKind,
 }
 
 impl ChannelWiseAutoencoderInit {
@@ -485,10 +390,7 @@ impl ChannelWiseAutoencoderInit {
         inner_c: usize,
     ) -> (ChannelWiseEncoder, ChannelWiseDecoder) {
         let path = path.borrow();
-        let Self {
-            norm_kind,
-            padding_kind,
-        } = self;
+        let Self { norm_kind } = self;
         let bias = norm_kind == NormKind::InstanceNorm;
 
         let encoder = {
@@ -497,7 +399,6 @@ impl ChannelWiseAutoencoderInit {
             let seq = {
                 let path = &path / "block_0";
                 nn::seq_t()
-                    .add(padding_kind.build([0, 0, 0, 0]))
                     .add(nn::conv2d(
                         &path / "conv",
                         in_c as i64,
@@ -516,20 +417,19 @@ impl ChannelWiseAutoencoderInit {
             (1..3).fold(seq, |seq, index| {
                 let path = &path / format!("block_{}", index);
 
-                seq.add(padding_kind.build([0, 0, 0, 0]))
-                    .add(nn::conv2d(
-                        &path / "conv",
-                        inner_c as i64,
-                        inner_c as i64,
-                        1,
-                        nn::ConvConfig {
-                            padding: 0,
-                            bias,
-                            ..Default::default()
-                        },
-                    ))
-                    .add(norm_kind.build(&path / "norm", inner_c as i64))
-                    .add_fn(|xs| xs.lrelu())
+                seq.add(nn::conv2d(
+                    &path / "conv",
+                    inner_c as i64,
+                    inner_c as i64,
+                    1,
+                    nn::ConvConfig {
+                        padding: 0,
+                        bias,
+                        ..Default::default()
+                    },
+                ))
+                .add(norm_kind.build(&path / "norm", inner_c as i64))
+                .add_fn(|xs| xs.lrelu())
             })
         };
 
@@ -540,20 +440,19 @@ impl ChannelWiseAutoencoderInit {
             let seq = (0..(num_blocks - 1)).fold(nn::seq_t(), |seq, index| {
                 let path = &path / format!("block_{}", index);
 
-                seq.add(padding_kind.build([0, 0, 0, 0]))
-                    .add(nn::conv2d(
-                        &path / "conv",
-                        inner_c as i64,
-                        inner_c as i64,
-                        1,
-                        nn::ConvConfig {
-                            padding: 0,
-                            bias,
-                            ..Default::default()
-                        },
-                    ))
-                    .add(norm_kind.build(&path / "norm", inner_c as i64))
-                    .add_fn(|xs| xs.lrelu())
+                seq.add(nn::conv2d(
+                    &path / "conv",
+                    inner_c as i64,
+                    inner_c as i64,
+                    1,
+                    nn::ConvConfig {
+                        padding: 0,
+                        bias,
+                        ..Default::default()
+                    },
+                ))
+                .add(norm_kind.build(&path / "norm", inner_c as i64))
+                .add_fn(|xs| xs.lrelu())
             });
 
             let seq = {
@@ -609,7 +508,7 @@ impl nn::ModuleT for ChannelWiseDecoder {
     }
 }
 
-pub fn encode_detection(input: &DenseDetectionTensor) -> Result<Tensor> {
+pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<RatioSize<R64>>)> {
     let device = input.device();
     let bsize = input.batch_size() as i64;
     let num_classes = input.num_classes() as i64;
@@ -681,7 +580,7 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<Tensor> {
         .view([bsize, -1, in_h, in_w])
     };
 
-    Ok(merge)
+    Ok((merge, input.anchors.clone()))
 }
 
 pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
@@ -810,7 +709,7 @@ mod tests {
             .try_into()
             .unwrap();
 
-            let tensor = encode_detection(&orig).unwrap();
+            let (tensor, _anchors) = encode_detection(&orig).unwrap();
             let recon = decode_detection(&tensor, anchors);
 
             let cy_diff: f64 = (&orig.cy - &recon.cy).abs().max().into();

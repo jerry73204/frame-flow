@@ -738,7 +738,6 @@ pub fn training_worker(
             .unzip_n_vec();
 
         // train transformer
-
         let transformer_loss = {
             detector_vs.freeze();
             generator_vs.freeze();
@@ -756,7 +755,7 @@ pub fn training_worker(
                     .try_collect()?;
 
                 let real_bboxes = &boxes_batch_seq[config.train.peek_len];
-                let fake_det = transformer_model.forward_t(&input_det_seq, true)?;
+                let (fake_det, _) = transformer_model.forward_t(&input_det_seq, true, true)?;
 
                 let (fake_det_loss, _) =
                     detector_loss_fn.forward(&fake_det.shallow_clone().try_into()?, real_bboxes);
@@ -791,7 +790,7 @@ pub fn training_worker(
 
                 let real_image_seq = &image_batch_seq;
 
-                let fake_det = transformer_model.forward_t(&input_det_seq, true)?;
+                let (fake_det, _) = transformer_model.forward_t(&input_det_seq, true, true)?;
                 let fake_image = {
                     let embedding = embedding_model.forward_t(&fake_det, false)?;
                     let noise = {
