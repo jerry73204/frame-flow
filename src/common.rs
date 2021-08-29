@@ -2,7 +2,7 @@ pub use anyhow::{bail, ensure, format_err, Context, Error, Result};
 pub use approx::{abs_diff_eq, assert_abs_diff_eq};
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
-pub use collected::{GroupHashMap, MaxVal};
+pub use collected::{GroupHashMap, Last, MaxVal, SumVal};
 pub use cv_convert::FromCv;
 pub use derivative::Derivative;
 pub use futures::{
@@ -29,7 +29,7 @@ pub use std::{
     fs,
     iter::{self, FromIterator, Sum},
     num::NonZeroUsize,
-    ops::{Div, Mul},
+    ops::{Div, Mul, Sub},
     path::{Path, PathBuf},
     sync::{Arc, Once},
 };
@@ -57,3 +57,4 @@ pub type Fallible<T> = Result<T>;
 unzip_n!(pub 2);
 unzip_n!(pub 6);
 unzip_n!(pub 8);
+unzip_n!(pub 9);

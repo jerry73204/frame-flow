@@ -19,7 +19,7 @@ mod dataset {
             let image = match self {
                 Self::File(sample) => vision::image::load(&sample.image_file)?
                     .to_kind(Kind::Float)
-                    .g_div_scalar(255.0),
+                    .div(255.0),
                 Self::Tensor(sample) => sample.image.shallow_clone(),
             };
             Ok(image)
@@ -765,7 +765,9 @@ mod simple_dataset {
 
 async fn load_classes_file(path: impl AsRef<Path>) -> Result<IndexSet<String>> {
     let path = path.as_ref();
-    let content = tokio::fs::read_to_string(path).await?;
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("unable to open file '{}'", path.display()))?;
     let lines: Vec<_> = content.lines().collect();
     let classes: IndexSet<_> = lines.iter().cloned().map(ToOwned::to_owned).collect();
     ensure!(

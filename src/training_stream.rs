@@ -10,11 +10,10 @@ pub async fn training_stream(
         batch_size,
         // device,
         image_size,
-        peek_len,
-        pred_len,
+        seq_len,
         ..
     } = *train_cfg;
-    let seq_len = peek_len + pred_len.get();
+    let seq_len = seq_len.get();
     let image_size = image_size.get() as i64;
     let batch_size = batch_size.get();
     let latent_dim = latent_dim.get() as i64;
@@ -44,9 +43,11 @@ pub async fn training_stream(
                         let transform =
                             PixelRectTransform::from_resizing_letterbox(&orig_size, &new_size);
 
-                        // resize image
+                        // resize and scale image
                         let image = image
                             .resize2d_letterbox(image_size, image_size)?
+                            .mul(2.0)
+                            .sub(1.0)
                             .set_requires_grad(false);
 
                         // transform boxes

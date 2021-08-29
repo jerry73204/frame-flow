@@ -88,38 +88,91 @@ impl nn::Module for Pad2D {
     }
 }
 
+pub trait DenseDetectionTensorListExt
+where
+    Self: Sized,
+{
+    fn from_labels<'a, R>(
+        labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
+        anchors: &[impl Borrow<[R]>],
+        heights: &[usize],
+        widths: &[usize],
+        num_classes: usize,
+    ) -> Result<Self>
+    where
+        R: Borrow<RatioSize<R64>>;
+}
+
+impl DenseDetectionTensorListExt for DenseDetectionTensorList {
+    fn from_labels<'a, R>(
+        labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
+        anchors: &[impl Borrow<[R]>],
+        heights: &[usize],
+        widths: &[usize],
+        num_classes: usize,
+    ) -> Result<Self>
+    where
+        R: Borrow<RatioSize<R64>>,
+    {
+        let list_len = anchors.len();
+        ensure!(list_len == heights.len() && list_len == widths.len());
+        ensure!(list_len == 1, "only list size == 1 is supported");
+
+        let det = DenseDetectionTensor::from_labels(
+            labels,
+            anchors[0].borrow(),
+            heights[0],
+            widths[0],
+            num_classes,
+        )?;
+
+        let list = DenseDetectionTensorListUnchecked { tensors: vec![det] }
+            .build()
+            .unwrap();
+
+        Ok(list)
+    }
+}
+
 pub trait DenseDetectionTensorExt
 where
     Self: Sized,
 {
-    fn from_labels<'a>(
+    fn from_labels<'a, R>(
         labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
-        anchors: impl IntoIterator<Item = impl Into<Cow<'a, RatioSize<R64>>>>,
+        anchors: impl Borrow<[R]>,
         height: usize,
         width: usize,
         num_classes: usize,
-    ) -> Result<Self>;
+    ) -> Result<Self>
+    where
+        R: Borrow<RatioSize<R64>>;
 }
 
 impl DenseDetectionTensorExt for DenseDetectionTensor {
-    fn from_labels<'a>(
+    fn from_labels<'a, R>(
         labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
-        anchors: impl IntoIterator<Item = impl Into<Cow<'a, RatioSize<R64>>>>,
+        anchors: impl Borrow<[R]>,
         height: usize,
         width: usize,
         num_classes: usize,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        R: Borrow<RatioSize<R64>>,
+    {
         tch::no_grad(move || -> Result<_> {
             const MAX_ANCHOR_SCALE: f64 = 4.0;
+            const SNAP_THRESH: f64 = 0.5;
             let anchor_scale_range = MAX_ANCHOR_SCALE.recip()..=MAX_ANCHOR_SCALE;
 
             let anchors: Vec<_> = anchors
-                .into_iter()
-                .map(|anchor| anchor.into().into_owned())
+                .borrow()
+                .iter()
+                .map(|anchor| anchor.borrow().to_owned())
                 .collect();
             let num_anchors = anchors.len();
 
-            // filter out out-of-bound labels
+            // crop and filter out bad labels
             let labels: Vec<_> = {
                 let image_boundary =
                     PixelTLBR::from_tlbr(0.0, 0.0, height as f64, width as f64).unwrap();
@@ -149,16 +202,31 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                         };
                         let ratio_label = pixel_label.to_ratio_label(&image_size);
 
+                        Some(ratio_label)
+                    })
+                    .flat_map(|ratio_label| {
+                        let ratio_label = Arc::new(ratio_label);
                         let cy = ratio_label.cy();
                         let cx = ratio_label.cx();
-                        let row = cy.floor() as usize;
-                        let col = cx.floor() as usize;
+                        let cy_fract = cy.fract();
+                        let cx_fract = cx.fract();
+                        let row = cy.floor() as isize;
+                        let col = cx.floor() as isize;
 
-                        if !(0..height).contains(&row) || !(0..width).contains(&col) {
-                            return None;
-                        }
+                        let pos_c = iter::once((row, col));
+                        let pos_t = (cy_fract < SNAP_THRESH).then(|| (row - 1, col));
+                        let pos_b = (cy_fract > 1.0 - SNAP_THRESH).then(|| (row + 1, col));
+                        let pos_l = (cx_fract < SNAP_THRESH).then(|| (row, col - 1));
+                        let pos_r = (cx_fract > 1.0 - SNAP_THRESH).then(|| (row, col + 1));
 
-                        Some((ratio_label, row, col))
+                        chain!(pos_c, pos_t, pos_b, pos_l, pos_r)
+                            .filter(|(row, col)| {
+                                (0..height as isize).contains(&row)
+                                    && (0..width as isize).contains(&col)
+                            })
+                            .map(move |(row, col)| {
+                                (ratio_label.clone(), row as usize, col as usize)
+                            })
                     })
                     .map(|(ratio_label, row, col)| -> Result<_> {
                         ensure!((0..num_classes).contains(&ratio_label.class));

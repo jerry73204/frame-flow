@@ -26,216 +26,220 @@ pub async fn logging_worker(
         };
 
         match msg {
-            msg::LogMessage::Loss {
+            msg::LogMessage::Loss(msg::Loss {
                 step,
                 learning_rate,
-                sequence,
-                transformer,
-            } => {
+
+                detector_loss,
+                discriminator_loss,
+                generator_loss,
+                retraction_identity_loss,
+                triangular_identity_loss,
+                forward_consistency_loss,
+                backward_consistency_gen_loss,
+                backward_consistency_disc_loss,
+
+                detector_weights,
+                generator_weights,
+                discriminator_weights,
+                transformer_weights,
+                image_seq_discriminator_weights,
+
+                ground_truth_image_seq,
+                generated_image_seq,
+            }) => {
                 let step = step as i64;
 
-                for (seq_index, log_step) in sequence.into_iter().enumerate() {
-                    let msg::LossLog {
-                        real_det_loss,
-                        fake_det_loss,
-                        discriminator_loss,
-                        generator_loss,
-                        detector_grads,
-                        discriminator_grads,
-                        generator_grads,
-                        detector_weights,
-                        discriminator_weights,
-                        generator_weights,
-                    } = log_step;
+                event_writer
+                    .write_scalar_async("params/learning_rate", step, learning_rate as f32)
+                    .await?;
 
-                    if let Some(real_det_loss) = real_det_loss {
-                        event_writer
-                            .write_scalar_async(
-                                format!("real_det_loss/{}", seq_index),
-                                step,
-                                real_det_loss as f32,
-                            )
-                            .await?;
-                    }
-
-                    if let Some(fake_det_loss) = fake_det_loss {
-                        event_writer
-                            .write_scalar_async(
-                                format!("fake_det_loss/{}", seq_index),
-                                step,
-                                fake_det_loss as f32,
-                            )
-                            .await?;
-                    }
-
-                    if let Some(discriminator_loss) = discriminator_loss {
-                        event_writer
-                            .write_scalar_async(
-                                format!("discriminator_loss/{}", seq_index),
-                                step,
-                                discriminator_loss as f32,
-                            )
-                            .await?;
-                    }
-
-                    if let Some(generator_loss) = generator_loss {
-                        event_writer
-                            .write_scalar_async(
-                                format!("generator_loss/{}", seq_index),
-                                step,
-                                generator_loss as f32,
-                            )
-                            .await?;
-                    }
-
+                if let Some(loss) = detector_loss {
                     event_writer
-                        .write_scalar_async("params/learning_rate", step, learning_rate as f32)
+                        .write_scalar_async("loss/detector_loss", step, loss as f32)
                         .await?;
+                }
 
-                    // log weights
-                    if let Some(detector_weights) = detector_weights {
-                        for (name, weight) in detector_weights {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("detector_weights/{}", name),
-                                    step,
-                                    weight as f32,
-                                )
-                                .await?;
-                        }
-                    }
-                    if let Some(discriminator_weights) = discriminator_weights {
-                        for (name, weight) in discriminator_weights {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("discriminator_weights/{}", name),
-                                    step,
-                                    weight as f32,
-                                )
-                                .await?;
-                        }
-                    }
-                    if let Some(generator_weights) = generator_weights {
-                        for (name, weight) in generator_weights {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("generator_weights/{}", name),
-                                    step,
-                                    weight as f32,
-                                )
-                                .await?;
-                        }
+                if let Some(loss) = generator_loss {
+                    event_writer
+                        .write_scalar_async("loss/generator_loss", step, loss as f32)
+                        .await?;
+                }
+
+                if let Some(loss) = discriminator_loss {
+                    event_writer
+                        .write_scalar_async("loss/discriminator_loss", step, loss as f32)
+                        .await?;
+                }
+
+                if let Some(loss) = retraction_identity_loss {
+                    event_writer
+                        .write_scalar_async("loss/retraction_identity_loss", step, loss as f32)
+                        .await?;
+                }
+
+                if let Some(loss) = triangular_identity_loss {
+                    event_writer
+                        .write_scalar_async("loss/triangular_identity_loss", step, loss as f32)
+                        .await?;
+                }
+
+                if let Some(loss) = forward_consistency_loss {
+                    event_writer
+                        .write_scalar_async("loss/forward_consistency_loss", step, loss as f32)
+                        .await?;
+                }
+
+                if let Some(loss) = backward_consistency_gen_loss {
+                    event_writer
+                        .write_scalar_async("loss/backward_consistency_gen_loss", step, loss as f32)
+                        .await?;
+                }
+
+                if let Some(loss) = backward_consistency_disc_loss {
+                    event_writer
+                        .write_scalar_async(
+                            "loss/backward_consistency_disc_loss",
+                            step,
+                            loss as f32,
+                        )
+                        .await?;
+                }
+
+                // log weights and gradients
+                if let Some(msg::WeightsAndGrads { weights, grads }) = detector_weights {
+                    for (name, weight) in weights {
+                        event_writer
+                            .write_scalar_async(
+                                format!("detector_weights/{}", name),
+                                step,
+                                weight as f32,
+                            )
+                            .await?;
                     }
 
-                    // log gradients
-                    if let Some(detector_grads) = detector_grads {
-                        for (name, grad) in detector_grads {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("detector_gradients/{}", name),
-                                    step,
-                                    grad as f32,
-                                )
-                                .await?;
-                        }
-                    }
-                    if let Some(discriminator_grads) = discriminator_grads {
-                        for (name, grad) in discriminator_grads {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("discriminator_gradients/{}", name),
-                                    step,
-                                    grad as f32,
-                                )
-                                .await?;
-                        }
-                    }
-                    if let Some(generator_grads) = generator_grads {
-                        for (name, grad) in generator_grads {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("generator_gradients/{}", name),
-                                    step,
-                                    grad as f32,
-                                )
-                                .await?;
-                        }
+                    for (name, grad) in grads {
+                        event_writer
+                            .write_scalar_async(
+                                format!("detector_gradients/{}", name),
+                                step,
+                                grad as f32,
+                            )
+                            .await?;
                     }
                 }
 
-                {
-                    let msg::TransformerLossLog {
-                        transformer_loss,
-                        transformer_discriminator_loss,
-                        transformer_weights,
-                        transformer_grads,
-                        transformer_discriminator_weights,
-                        transformer_discriminator_grads,
-                    } = transformer;
-
-                    if let Some(transformer_loss) = transformer_loss {
-                        event_writer
-                            .write_scalar_async("transformer_loss", step, transformer_loss as f32)
-                            .await?;
-                    }
-                    if let Some(transformer_discriminator_loss) = transformer_discriminator_loss {
+                if let Some(msg::WeightsAndGrads { weights, grads }) = discriminator_weights {
+                    for (name, weight) in weights {
                         event_writer
                             .write_scalar_async(
-                                "transformer_discriminator_loss",
+                                format!("discriminator_weights/{}", name),
                                 step,
-                                transformer_discriminator_loss as f32,
+                                weight as f32,
                             )
                             .await?;
                     }
 
-                    // save weights
-                    if let Some(transformer_weights) = transformer_weights {
-                        for (name, weight) in transformer_weights {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("transformer_weights/{}", name),
-                                    step,
-                                    weight as f32,
-                                )
-                                .await?;
-                        }
+                    for (name, grad) in grads {
+                        event_writer
+                            .write_scalar_async(
+                                format!("discriminator_gradients/{}", name),
+                                step,
+                                grad as f32,
+                            )
+                            .await?;
                     }
-                    if let Some(transformer_discriminator_weights) =
-                        transformer_discriminator_weights
-                    {
-                        for (name, weight) in transformer_discriminator_weights {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("transformer_discriminator_weights/{}", name),
-                                    step,
-                                    weight as f32,
-                                )
-                                .await?;
-                        }
+                }
+
+                if let Some(msg::WeightsAndGrads { weights, grads }) = generator_weights {
+                    for (name, weight) in weights {
+                        event_writer
+                            .write_scalar_async(
+                                format!("generator_weights/{}", name),
+                                step,
+                                weight as f32,
+                            )
+                            .await?;
                     }
 
-                    // save gradients
-                    if let Some(transformer_grads) = transformer_grads {
-                        for (name, grad) in transformer_grads {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("transformer_gradients/{}", name),
-                                    step,
-                                    grad as f32,
-                                )
-                                .await?;
-                        }
+                    for (name, grad) in grads {
+                        event_writer
+                            .write_scalar_async(
+                                format!("generator_gradients/{}", name),
+                                step,
+                                grad as f32,
+                            )
+                            .await?;
                     }
-                    if let Some(transformer_discriminator_grads) = transformer_discriminator_grads {
-                        for (name, grad) in transformer_discriminator_grads {
-                            event_writer
-                                .write_scalar_async(
-                                    format!("transformer_discriminator_gradients/{}", name),
-                                    step,
-                                    grad as f32,
-                                )
-                                .await?;
-                        }
+                }
+
+                if let Some(msg::WeightsAndGrads { weights, grads }) = transformer_weights {
+                    for (name, weight) in weights {
+                        event_writer
+                            .write_scalar_async(
+                                format!("transformer_weights/{}", name),
+                                step,
+                                weight as f32,
+                            )
+                            .await?;
+                    }
+
+                    for (name, grad) in grads {
+                        event_writer
+                            .write_scalar_async(
+                                format!("transformer_gradients/{}", name),
+                                step,
+                                grad as f32,
+                            )
+                            .await?;
+                    }
+                }
+
+                if let Some(msg::WeightsAndGrads { weights, grads }) =
+                    image_seq_discriminator_weights
+                {
+                    for (name, weight) in weights {
+                        event_writer
+                            .write_scalar_async(
+                                format!("image_seq_discriminator_weights/{}", name),
+                                step,
+                                weight as f32,
+                            )
+                            .await?;
+                    }
+
+                    for (name, grad) in grads {
+                        event_writer
+                            .write_scalar_async(
+                                format!("image_seq_discriminator_gradients/{}", name),
+                                step,
+                                grad as f32,
+                            )
+                            .await?;
+                    }
+                }
+
+                if let Some(seq) = ground_truth_image_seq {
+                    for (seq_index, image) in seq.into_iter().enumerate() {
+                        event_writer
+                            .write_image_list_async(
+                                format!("ground_truth_image/seq_{}", seq_index),
+                                step,
+                                image,
+                            )
+                            .await?;
+                    }
+                }
+
+                if let Some(seq) = generated_image_seq {
+                    for (seq_index, image) in seq.into_iter().enumerate() {
+                        event_writer
+                            .write_image_list_async(
+                                format!("generated_image/seq_{}", seq_index),
+                                step,
+                                image,
+                            )
+                            .await?;
                     }
                 }
             }

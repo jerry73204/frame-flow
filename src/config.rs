@@ -78,8 +78,7 @@ pub struct Training {
     pub batch_size: NonZeroUsize,
     pub image_size: NonZeroUsize,
     pub latent_dim: NonZeroUsize,
-    pub peek_len: usize,
-    pub pred_len: NonZeroUsize,
+    pub seq_len: NonZeroUsize,
     #[serde(with = "tch_serde::serde_device")]
     pub device: Device,
     pub lr_schedule: train::config::LearningRateSchedule,
@@ -90,9 +89,11 @@ pub struct Training {
     pub train_detector_steps: usize,
     pub train_discriminator_steps: usize,
     pub train_generator_steps: usize,
-    pub train_consistency_steps: usize,
-    pub train_transformer_steps: usize,
-    pub train_transformer_discriminator_steps: usize,
+    pub train_retraction_identity_steps: usize,
+    pub train_triangular_identity_steps: usize,
+    pub train_forward_consistency_steps: usize,
+    pub train_backward_consistency_gen_steps: usize,
+    pub train_backward_consistency_disc_steps: usize,
     #[serde(default = "default_critic_noise_prob")]
     pub critic_noise_prob: R64,
 }
@@ -106,7 +107,7 @@ pub struct Logging {
     pub save_generator_checkpoint: bool,
     pub save_discriminator_checkpoint: bool,
     pub save_transformer_checkpoint: bool,
-    pub save_transformer_discriminator_checkpoint: bool,
+    pub save_image_seq_discriminator_checkpoint: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

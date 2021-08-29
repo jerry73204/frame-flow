@@ -2,12 +2,7 @@ use crate::common::*;
 
 #[derive(Debug)]
 pub enum LogMessage {
-    Loss {
-        step: usize,
-        learning_rate: f64,
-        sequence: Vec<LossLog>,
-        transformer: TransformerLossLog,
-    },
+    Loss(Loss),
     Image {
         step: usize,
         sequence: Vec<ImageLog>,
@@ -15,27 +10,27 @@ pub enum LogMessage {
 }
 
 #[derive(Debug)]
-pub struct LossLog {
-    pub real_det_loss: Option<f64>,
-    pub fake_det_loss: Option<f64>,
+pub struct Loss {
+    pub step: usize,
+    pub learning_rate: f64,
+
+    pub detector_loss: Option<f64>,
     pub discriminator_loss: Option<f64>,
     pub generator_loss: Option<f64>,
-    pub detector_grads: Option<Vec<(String, f64)>>,
-    pub generator_grads: Option<Vec<(String, f64)>>,
-    pub discriminator_grads: Option<Vec<(String, f64)>>,
-    pub detector_weights: Option<Vec<(String, f64)>>,
-    pub generator_weights: Option<Vec<(String, f64)>>,
-    pub discriminator_weights: Option<Vec<(String, f64)>>,
-}
+    pub retraction_identity_loss: Option<f64>,
+    pub triangular_identity_loss: Option<f64>,
+    pub forward_consistency_loss: Option<f64>,
+    pub backward_consistency_gen_loss: Option<f64>,
+    pub backward_consistency_disc_loss: Option<f64>,
 
-#[derive(Debug)]
-pub struct TransformerLossLog {
-    pub transformer_loss: Option<f64>,
-    pub transformer_discriminator_loss: Option<f64>,
-    pub transformer_weights: Option<Vec<(String, f64)>>,
-    pub transformer_grads: Option<Vec<(String, f64)>>,
-    pub transformer_discriminator_weights: Option<Vec<(String, f64)>>,
-    pub transformer_discriminator_grads: Option<Vec<(String, f64)>>,
+    pub detector_weights: Option<WeightsAndGrads>,
+    pub generator_weights: Option<WeightsAndGrads>,
+    pub discriminator_weights: Option<WeightsAndGrads>,
+    pub transformer_weights: Option<WeightsAndGrads>,
+    pub image_seq_discriminator_weights: Option<WeightsAndGrads>,
+
+    pub ground_truth_image_seq: Option<Vec<Tensor>>,
+    pub generated_image_seq: Option<Vec<Tensor>>,
 }
 
 #[derive(Debug)]
@@ -54,4 +49,10 @@ pub struct TrainingMessage {
     /// Sequence of batched sets of boxes.
     #[tensor_like(clone)]
     pub boxes_batch_seq: Vec<Vec<Vec<RatioRectLabel<R64>>>>,
+}
+
+#[derive(Debug)]
+pub struct WeightsAndGrads {
+    pub weights: Vec<(String, f64)>,
+    pub grads: Vec<(String, f64)>,
 }

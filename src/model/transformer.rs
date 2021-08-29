@@ -32,7 +32,7 @@ impl TransformerInit {
     pub fn build<'a>(
         self,
         path: impl Borrow<nn::Path<'a>>,
-        num_detections: usize,
+        input_len: usize,
         num_classes: usize,
         inner_c: usize,
     ) -> Result<Transformer> {
@@ -49,7 +49,7 @@ impl TransformerInit {
         } = self;
         let device = path.device();
         let in_c = 5 + num_classes;
-        ensure!(num_detections > 0);
+        ensure!(input_len > 0);
 
         let (ctx_encoder, ctx_decoder) =
             ChannelWiseAutoencoderInit { norm_kind }.build(path / "autoencoder", in_c, inner_c);
@@ -72,7 +72,7 @@ impl TransformerInit {
             num_scaling_blocks,
             num_down_sample,
         }
-        .build(path / "attention_block", inner_c * num_detections, inner_c)?;
+        .build(path / "attention_block", inner_c * input_len, inner_c)?;
 
         let patch_block = ResnetGeneratorInit {
             ksize,
@@ -82,12 +82,7 @@ impl TransformerInit {
             num_blocks: num_resnet_blocks,
             ..Default::default()
         }
-        .build(
-            path / "patch_block",
-            inner_c * num_detections,
-            inner_c,
-            inner_c,
-        );
+        .build(path / "patch_block", inner_c * input_len, inner_c, inner_c);
 
         let forward_fn =
             Box::new(
@@ -95,7 +90,7 @@ impl TransformerInit {
                       train: bool,
                       with_artifacts: bool|
                       -> Result<_> {
-                    ensure!(input.len() == num_detections);
+                    ensure!(input.len() == input_len);
                     ensure!(input.iter().all(|list| list.tensors.len() == 1));
                     ensure!(input
                         .iter()
@@ -190,13 +185,17 @@ impl TransformerInit {
                 },
             );
 
-        Ok(Transformer { forward_fn })
+        Ok(Transformer {
+            input_len,
+            forward_fn,
+        })
     }
 }
 
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct Transformer {
+    input_len: usize,
     #[derivative(Debug = "ignore")]
     forward_fn: Box<
         dyn Fn(
@@ -209,6 +208,10 @@ pub struct Transformer {
 }
 
 impl Transformer {
+    pub fn input_len(&self) -> usize {
+        self.input_len
+    }
+
     pub fn forward_t(
         &self,
         input: &[impl Borrow<DenseDetectionTensorList>],
