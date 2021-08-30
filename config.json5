@@ -81,8 +81,7 @@
         "image_size": 64,
         "latent_dim": 256,
         "device": "cuda:0",
-        "peek_len": 3,
-        "pred_len": 1,
+        "seq_len": 6,
         "lr_schedule": {
             "type": "StepWise",
             "steps": [
@@ -95,9 +94,11 @@
         "train_detector_steps": 1,
         "train_discriminator_steps": 5,
         "train_generator_steps": 1,
-        "train_consistency_steps": 1,
-        "train_transformer_steps": 1,
-        "train_transformer_discriminator_steps": 5,
+        "train_retraction_identity_steps": 1,
+        "train_triangular_identity_steps": 1,
+        "train_forward_consistency_steps": 1,
+        "train_backward_consistency_disc_steps": 1,
+        "train_backward_consistency_gen_steps": 5,
     },
     "logging": {
         "log_dir": "log-test",
@@ -108,6 +109,6 @@
         "save_generator_checkpoint": false,
         "save_discriminator_checkpoint": false,
         "save_transformer_checkpoint": false,
-        "save_transformer_discriminator_checkpoint": false,
+        "save_image_seq_discriminator_checkpoint": false,
     },
 }
