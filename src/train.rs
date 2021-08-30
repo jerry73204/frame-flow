@@ -822,12 +822,12 @@ pub fn training_worker(
 
     // load transformer discriminator model
     let (image_seq_discriminator_vs, image_seq_discriminator_model, image_seq_discriminator_opt) = {
-        let config::TransformerDiscriminatorModel {
+        let config::ImageSequenceDiscriminatorModel {
             num_blocks,
             num_detections,
             norm,
             ref weights_file,
-        } = config.model.transformer_discriminator;
+        } = config.model.image_seq_discriminator;
         // ensure!(num_detections == config.train.peek_len + config.train.pred_len.get());
 
         let mut vs = nn::VarStore::new(device);

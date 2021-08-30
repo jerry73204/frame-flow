@@ -117,7 +117,7 @@ pub struct Model {
     pub generator: GeneratorModel,
     pub discriminator: DiscriminatorModel,
     pub transformer: TransformerModel,
-    pub transformer_discriminator: TransformerDiscriminatorModel,
+    pub image_seq_discriminator: ImageSequenceDiscriminatorModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,7 +164,7 @@ pub struct TransformerModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransformerDiscriminatorModel {
+pub struct ImageSequenceDiscriminatorModel {
     pub weights_file: Option<PathBuf>,
     pub norm: NormKind,
     pub num_blocks: usize,

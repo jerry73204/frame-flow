@@ -43,7 +43,7 @@
             "num_down_sample": 3,
             "weights_file": "log-wayside-64x64-2021-08-23/2021-08-23-17-22-34.546+0800/checkpoints/transformer_2021-08-24-08-58-17.004+0800_016100.ckpt",
         },
-        "transformer_discriminator": {
+        "image_seq_discriminator": {
             "num_blocks": 6,
             "norm": "None",
             "num_detections": 4,
