@@ -109,6 +109,7 @@ impl TrainWorker {
         steps: usize,
         real_image: &Tensor,
         input_det: &DenseDetectionTensorList,
+        train_discriminator: bool,
         with_artifacts: bool,
     ) -> Result<(Option<f64>, Option<Tensor>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
@@ -131,7 +132,7 @@ impl TrainWorker {
             clamp_running_var(generator_vs);
 
             // generate fake image
-            let fake_image = generator_model.forward_t(&input_det, true)?;
+            let fake_image = generator_model.forward_t(input_det, true)?;
 
             // augmentation
             let (real_image, fake_image) = {
@@ -145,8 +146,8 @@ impl TrainWorker {
             };
 
             // run discriminator
-            let real_score = discriminator_model.forward_t(&real_image, false);
-            let fake_score = discriminator_model.forward_t(&fake_image, false);
+            let real_score = discriminator_model.forward_t(&real_image, train_discriminator);
+            let fake_score = discriminator_model.forward_t(&fake_image, train_discriminator);
 
             // compute loss
             let generator_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
@@ -158,7 +159,7 @@ impl TrainWorker {
         })?;
 
         let weights_and_grads =
-            (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(&generator_vs));
+            (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(generator_vs));
 
         Ok((loss, fake_image, weights_and_grads))
     }
@@ -168,6 +169,7 @@ impl TrainWorker {
         steps: usize,
         real_image: &Tensor,
         input_det: &DenseDetectionTensorList,
+        train_generator: bool,
         with_artifacts: bool,
     ) -> Result<(Option<f64>, Option<Tensor>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
@@ -192,7 +194,10 @@ impl TrainWorker {
             clamp_running_var(generator_vs);
 
             // generate fake image
-            let fake_image = generator_model.forward_t(&input_det, false)?;
+            let fake_image = generator_model
+                .forward_t(input_det, train_generator)?
+                .detach()
+                .copy();
 
             // augmentation
             let (real_image, fake_image) = {
@@ -216,7 +221,7 @@ impl TrainWorker {
                 &fake_score,
                 &real_image,
                 &fake_image,
-                &gp,
+                gp,
                 |xs, train| discriminator_model.forward_t(xs, train),
             )?;
 
@@ -1126,12 +1131,19 @@ pub fn training_worker(
                         config.train.train_discriminator_steps,
                         gt_image,
                         gt_det,
+                        train_generator,
                         true,
                     )?;
 
                 // train generator
                 let (generator_loss, generated_image_2, generator_weights) = worker
-                    .train_generator(config.train.train_generator_steps, gt_image, gt_det, true)?;
+                    .train_generator(
+                        config.train.train_generator_steps,
+                        gt_image,
+                        gt_det,
+                        train_discriminator,
+                        true,
+                    )?;
 
                 let generated_image = generated_image_1.and(generated_image_2);
 
