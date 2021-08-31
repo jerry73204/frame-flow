@@ -245,8 +245,8 @@ impl TrainWorker {
     pub fn train_retraction_identity(
         &mut self,
         steps: usize,
-        input_det: &DenseDetectionTensorList,
-        // with_artifacts: bool,
+        gt_det: &DenseDetectionTensorList,
+        gt_labels: &[Vec<RatioRectLabel<R64>>],
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
@@ -256,6 +256,7 @@ impl TrainWorker {
             generator_model,
             generator_opt,
             detector_opt,
+            detector_loss_fn,
             ..
         } = self;
 
@@ -266,20 +267,21 @@ impl TrainWorker {
             // clamp running_var in norms
             clamp_running_var(generator_vs);
 
-            let fake_image = generator_model.forward_t(input_det, true)?;
-            let fake_det = detector_model.forward_t(&fake_image, true)?;
+            let recon_image = generator_model.forward_t(gt_det, true)?;
+            let recon_det = detector_model.forward_t(&recon_image, true)?;
 
-            let similarity = crate::model::dense_detection_list_similarity(input_det, &fake_det)?;
-            let loss = similarity.total_loss();
+            let (loss, _) =
+                detector_loss_fn.forward(&recon_det.shallow_clone().try_into()?, gt_labels);
+            let similarity = crate::model::dense_detection_list_similarity(gt_det, &recon_det)?;
 
             // optimize generator
             detector_opt.zero_grad();
             generator_opt.zero_grad();
-            loss.backward();
+            loss.total_loss.backward();
             detector_opt.step();
             generator_opt.step();
 
-            Ok((Some(f64::from(loss)), Some(similarity)))
+            Ok((Some(f64::from(loss.total_loss)), Some(similarity)))
         })
     }
 
@@ -359,29 +361,30 @@ impl TrainWorker {
                 .map(|det| det.shallow_clone())
                 .collect();
 
-            let (total_consistency_loss, total_recon_loss): (AddVal<_>, AddVal<_>) =
-                (0..=(seq_len - input_len - 1))
-                    .map(|index| -> Result<_> {
-                        let fake_det_window = &fake_det_seq[index..(index + input_len)];
-                        let (last_fake_det, artifacts) =
-                            transformer_model.forward_t(fake_det_window, true, true)?;
+            let (total_consistency_loss, _total_recon_loss): (AddVal<_>, AddVal<_>) = (0
+                ..=(seq_len - input_len - 1))
+                .map(|index| -> Result<_> {
+                    let fake_det_window = &fake_det_seq[index..(index + input_len)];
+                    let (last_fake_det, artifacts) =
+                        transformer_model.forward_t(fake_det_window, true, true)?;
 
-                        let last_real_det = &real_det_seq[index + input_len];
-                        let consitency_loss = crate::model::dense_detection_list_similarity(
-                            last_real_det,
-                            &last_fake_det,
-                        )?
-                        .total_loss();
-                        let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
-                        fake_det_seq.push(last_fake_det);
+                    let last_real_det = &real_det_seq[index + input_len];
+                    let consitency_loss = crate::model::dense_detection_list_similarity(
+                        last_real_det,
+                        &last_fake_det,
+                    )?
+                    .total_loss();
+                    let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
+                    fake_det_seq.push(last_fake_det);
 
-                        Ok((consitency_loss, recon_loss))
-                    })
-                    .try_collect::<_, Vec<_>, _>()?
-                    .into_iter()
-                    .unzip_n();
+                    Ok((consitency_loss, recon_loss))
+                })
+                .try_collect::<_, Vec<_>, _>()?
+                .into_iter()
+                .unzip_n();
 
-            let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
+            // let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
+            let total_loss = total_consistency_loss.unwrap();
 
             // optimize
             transformer_opt.backward_step(&total_loss);
@@ -418,7 +421,7 @@ impl TrainWorker {
         let input_len = transformer_model.input_len();
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
-            let (total_consistency_loss, total_recon_loss): (AddVal<_>, AddVal<_>) = izip!(
+            let (total_consistency_loss, _total_recon_loss): (AddVal<_>, AddVal<_>) = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
             )
@@ -450,7 +453,8 @@ impl TrainWorker {
             .unzip_n();
 
             // optimize
-            let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
+            // let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
+            let total_loss = total_consistency_loss.unwrap();
             transformer_opt.backward_step(&total_loss);
 
             Ok(Some(f64::from(total_loss)))
@@ -484,7 +488,7 @@ impl TrainWorker {
         let input_len = transformer_model.input_len();
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
-            let (total_consistency_loss, total_recon_loss): (AddVal<_>, AddVal<_>) = izip!(
+            let (total_consistency_loss, _total_recon_loss): (AddVal<_>, AddVal<_>) = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
             )
@@ -533,7 +537,8 @@ impl TrainWorker {
             .unzip_n();
 
             // optimize
-            let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
+            // let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
+            let total_loss = total_consistency_loss.unwrap();
             image_seq_discriminator_opt.backward_step(&total_loss);
 
             Ok(Some(f64::from(total_loss)))
@@ -1155,6 +1160,7 @@ pub fn training_worker(
                     .train_retraction_identity(
                         config.train.train_retraction_identity_steps,
                         gt_det,
+                        gt_labels,
                     )?;
 
                 let (triangular_identity_loss, triangular_identity_similarity) = worker
