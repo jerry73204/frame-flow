@@ -9,9 +9,9 @@ edition = "2018"
 [dependencies]
 tch = "0.5.0"
 anyhow = "1.0.43"
-serde = { version = "1.0.127", features = ["derive"] }
+serde = { version = "1.0.130", features = ["derive"] }
 json5 = "0.3.0"
-structopt = "0.3.22"
+structopt = "0.3.23"
 tch-serde = "0.6.0"
 rand = "0.8.4"
 itertools = "0.10.1"
@@ -19,9 +19,9 @@ iterator-ext = "0.2.0"
 unzip-n = "0.1.2"
 approx = "0.5.0"
 tch-tensor-like = "0.4.0"
-tokio = { version = "1.10.0", features = ["fs"] }
+tokio = { version = "1.10.1", features = ["fs"] }
 tokio-stream = { version = "0.1.7", features = ["fs"] }
-futures = "0.3.16"
+futures = "0.3.17"
 par-stream = { version = "0.4.0", features = ["runtime_tokio"] }
 csv = "1.1.6"
 indexmap = "1.7.0"
@@ -44,10 +44,10 @@ owning_ref = "0.4.1"
 mona = "0.1.0"
 num-traits = "0.2.14"
 by_address = "1.0.4"
-serde_json = "1.0.66"
+serde_json = "1.0.67"
 derivative = "2.2.0"
 ndarray = "0.15.3"
-cv-convert = "0.10.0"
+cv-convert = "0.11.0"
 num-integer = "0.1.44"
 # pathfinding = "2.2.1"
 # tch-goodies = { version = "0.1.0", path = "../yolo-dl/tch-goodies" }
