@@ -334,6 +334,7 @@ impl TrainWorker {
         &mut self,
         steps: usize,
         gt_image_seq: &[Tensor],
+        gt_labels_seq: &[Vec<Vec<RatioRectLabel<R64>>>],
         with_artifacts: bool,
     ) -> Result<(Option<f64>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
@@ -342,6 +343,7 @@ impl TrainWorker {
             transformer_model,
             detector_model,
             transformer_opt,
+            detector_loss_fn,
             ..
         } = self;
         transformer_vs.unfreeze();
@@ -361,29 +363,29 @@ impl TrainWorker {
                 .map(|det| det.shallow_clone())
                 .collect();
 
-            let (total_consistency_loss, _total_recon_loss): (AddVal<_>, AddVal<_>) = (0
-                ..=(seq_len - input_len - 1))
+            let total_consistency_loss: AddVal<_> = (0..=(seq_len - input_len - 1))
                 .map(|index| -> Result<_> {
                     let fake_det_window = &fake_det_seq[index..(index + input_len)];
-                    let (last_fake_det, artifacts) =
-                        transformer_model.forward_t(fake_det_window, true, true)?;
+                    let last_gt_labels = &gt_labels_seq[index + input_len];
+                    let (last_fake_det, _artifacts) =
+                        transformer_model.forward_t(fake_det_window, true, false)?;
 
                     let last_real_det = &real_det_seq[index + input_len];
-                    let consitency_loss = crate::model::dense_detection_list_similarity(
-                        last_real_det,
-                        &last_fake_det,
-                    )?
-                    .total_loss();
-                    let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
+
+                    let (real_det_loss, _) = detector_loss_fn
+                        .forward(&last_real_det.shallow_clone().try_into()?, last_gt_labels);
+                    let (fake_det_loss, _) = detector_loss_fn
+                        .forward(&last_fake_det.shallow_clone().try_into()?, last_gt_labels);
+                    let consitency_loss =
+                        (real_det_loss.total_loss + fake_det_loss.total_loss) / 2.0;
+
+                    // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
                     fake_det_seq.push(last_fake_det);
 
-                    Ok((consitency_loss, recon_loss))
+                    Ok(consitency_loss)
                 })
-                .try_collect::<_, Vec<_>, _>()?
-                .into_iter()
-                .unzip_n();
+                .try_collect()?;
 
-            // let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
             let total_loss = total_consistency_loss.unwrap();
 
             // optimize
@@ -421,13 +423,13 @@ impl TrainWorker {
         let input_len = transformer_model.input_len();
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
-            let (total_consistency_loss, _total_recon_loss): (AddVal<_>, AddVal<_>) = izip!(
+            let total_consistency_loss: AddVal<_> = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
             )
             .map(|(gt_image_window, gt_det_window)| -> Result<_> {
-                let (last_fake_det, artifacts) =
-                    transformer_model.forward_t(gt_det_window, true, true)?;
+                let (last_fake_det, _artifacts) =
+                    transformer_model.forward_t(gt_det_window, true, false)?;
                 let last_fake_image = generator_model.forward_t(&last_fake_det, false);
                 let fake_image_window: Vec<_> = {
                     let prior_image_window = gt_det_window
@@ -444,13 +446,11 @@ impl TrainWorker {
 
                 // compute loss
                 let consistency_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
-                let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
+                // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
 
-                Ok((consistency_loss, recon_loss))
+                Ok(consistency_loss)
             })
-            .try_collect::<_, Vec<_>, _>()?
-            .into_iter()
-            .unzip_n();
+            .try_collect()?;
 
             // optimize
             // let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
@@ -488,13 +488,13 @@ impl TrainWorker {
         let input_len = transformer_model.input_len();
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
-            let (total_consistency_loss, _total_recon_loss): (AddVal<_>, AddVal<_>) = izip!(
+            let total_consistency_loss: AddVal<_> = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
             )
             .map(|(gt_image_window, gt_det_window)| -> Result<_> {
-                let (last_fake_det, artifacts) =
-                    transformer_model.forward_t(gt_det_window, true, true)?;
+                let (last_fake_det, _artifacts) =
+                    transformer_model.forward_t(gt_det_window, true, false)?;
 
                 let last_fake_image = generator_model.forward_t(&last_fake_det, false);
                 let fake_image_window: Vec<_> = {
@@ -523,18 +523,16 @@ impl TrainWorker {
                     gp_transformer,
                     |xs, train| image_seq_discriminator_model.model.forward_t(xs, train),
                 )?;
-                let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
+                // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
 
                 // clip gradient
                 if gan_loss_kind == config::GanLoss::WGan {
                     image_seq_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
                 }
 
-                Ok((consistency_loss, recon_loss))
+                Ok(consistency_loss)
             })
-            .try_collect::<_, Vec<_>, _>()?
-            .into_iter()
-            .unzip_n();
+            .try_collect()?;
 
             // optimize
             // let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
@@ -1195,6 +1193,7 @@ pub fn training_worker(
         let (forward_consistency_loss, transformer_weights_1) = worker.train_forward_consistency(
             config.train.train_forward_consistency_steps,
             &gt_image_seq,
+            &gt_labels_seq,
             true,
         )?;
 
