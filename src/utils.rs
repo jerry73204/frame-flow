@@ -317,12 +317,14 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                     false,
                 )
                 .copy();
-            let mut h_tensor = Tensor::zeros(
+            let mut h_tensor = Tensor::full(
                 &[1, 1, num_anchors as i64, height as i64, width as i64],
+                1e-4,
                 FLOAT_CPU,
             );
-            let mut w_tensor = Tensor::zeros(
+            let mut w_tensor = Tensor::full(
                 &[1, 1, num_anchors as i64, height as i64, width as i64],
+                1e-4,
                 FLOAT_CPU,
             );
             let obj_logit_tensor = Tensor::full(
