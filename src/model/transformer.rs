@@ -2,7 +2,7 @@ use super::{
     generator::ResnetGeneratorInit,
     misc::{NormKind, PaddingKind},
 };
-use crate::common::*;
+use crate::{common::*, utils::DenseDetectionTensorExt};
 use tch_modules::GroupNormInit;
 
 #[derive(Debug, Clone)]
@@ -165,7 +165,7 @@ impl TransformerInit {
                                     .map(|(orig, latent)| -> Tensor {
                                         let recon = det_decoder(latent, anchors.clone(), train);
                                         super::loss::dense_detection_similarity(
-                                            orig,
+                                            &orig.detach().copy(),
                                             &recon,
                                             Reduction::Mean,
                                         )

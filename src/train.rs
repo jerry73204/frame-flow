@@ -2,10 +2,11 @@ use crate::{
     common::*,
     config, message as msg,
     model::{
-        CustomGeneratorInit, DenseDetectionTensorListExt, DetectionEmbedding,
-        DetectionEmbeddingInit, Discriminator, Generator, NLayerDiscriminatorInit,
-        ResnetGeneratorInit, Transformer, TransformerInit, UnetGeneratorInit, WGanGp, WGanGpInit,
+        CustomGeneratorInit, DetectionEmbedding, DetectionEmbeddingInit, Discriminator, Generator,
+        NLayerDiscriminatorInit, ResnetGeneratorInit, Transformer, TransformerInit,
+        UnetGeneratorInit, WGanGp, WGanGpInit,
     },
+    utils::DenseDetectionTensorListExt,
     FILE_STRFTIME,
 };
 use yolo_dl::{loss::YoloLoss, model::YoloModel};
@@ -217,11 +218,15 @@ impl TrainWorker {
                 &fake_image,
                 &gp,
                 |xs, train| discriminator_model.forward_t(xs, train),
-                discriminator_opt,
             )?;
 
             // optimize generator
             discriminator_opt.backward_step(&loss);
+
+            // clip gradient
+            if gan_loss_kind == config::GanLoss::WGan {
+                discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+            }
 
             Ok((Some(f64::from(loss)), Some(fake_image)))
         })?;
@@ -350,14 +355,14 @@ impl TrainWorker {
                 .map(|det| det.shallow_clone())
                 .collect();
 
-            let (total_consistency_loss, total_recon_loss): (SumVal<_>, SumVal<_>) =
-                (0..(seq_len - input_len - 1))
+            let (total_consistency_loss, total_recon_loss): (AddVal<_>, AddVal<_>) =
+                (0..=(seq_len - input_len - 1))
                     .map(|index| -> Result<_> {
                         let fake_det_window = &fake_det_seq[index..(index + input_len)];
                         let (last_fake_det, artifacts) =
                             transformer_model.forward_t(fake_det_window, true, true)?;
 
-                        let last_real_det = &real_det_seq[index + input_len + 1];
+                        let last_real_det = &real_det_seq[index + input_len];
                         let consitency_loss = crate::model::dense_detection_list_similarity(
                             last_real_det,
                             &last_fake_det,
@@ -372,7 +377,7 @@ impl TrainWorker {
                     .into_iter()
                     .unzip_n();
 
-            let total_loss = total_consistency_loss.into_inner() + total_recon_loss.into_inner();
+            let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
 
             // optimize
             transformer_opt.backward_step(&total_loss);
@@ -409,7 +414,7 @@ impl TrainWorker {
         let input_len = transformer_model.input_len();
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
-            let (total_consistency_loss, total_recon_loss): (SumVal<_>, SumVal<_>) = izip!(
+            let (total_consistency_loss, total_recon_loss): (AddVal<_>, AddVal<_>) = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
             )
@@ -441,7 +446,7 @@ impl TrainWorker {
             .unzip_n();
 
             // optimize
-            let total_loss = total_consistency_loss.into_inner() + total_recon_loss.into_inner();
+            let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
             transformer_opt.backward_step(&total_loss);
 
             Ok(Some(f64::from(total_loss)))
@@ -475,7 +480,7 @@ impl TrainWorker {
         let input_len = transformer_model.input_len();
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
-            let (total_consistency_loss, total_recon_loss): (SumVal<_>, SumVal<_>) = izip!(
+            let (total_consistency_loss, total_recon_loss): (AddVal<_>, AddVal<_>) = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
             )
@@ -509,9 +514,13 @@ impl TrainWorker {
                     &fake_input_tensor,
                     gp_transformer,
                     |xs, train| image_seq_discriminator_model.model.forward_t(xs, train),
-                    image_seq_discriminator_opt,
                 )?;
                 let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
+
+                // clip gradient
+                if gan_loss_kind == config::GanLoss::WGan {
+                    image_seq_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+                }
 
                 Ok((consistency_loss, recon_loss))
             })
@@ -520,7 +529,7 @@ impl TrainWorker {
             .unzip_n();
 
             // optimize
-            let total_loss = total_consistency_loss.into_inner() + total_recon_loss.into_inner();
+            let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
             image_seq_discriminator_opt.backward_step(&total_loss);
 
             Ok(Some(f64::from(total_loss)))
@@ -910,6 +919,7 @@ pub fn training_worker(
     tch::no_grad(|| -> Result<_> {
         worker.freeze_all_vs();
         let warm_up_steps = config.train.warm_up_steps;
+        let mut rate_counter = train::utils::RateCounter::with_second_intertal();
         info!("run warm-up for {} steps", warm_up_steps);
 
         for _ in 0..warm_up_steps {
@@ -922,6 +932,7 @@ pub fn training_worker(
                 boxes_batch_seq: gt_labels_seq,
                 ..
             } = msg.to_device(device);
+            let seq_len = gt_image_seq.len();
 
             let gt_det_seq: Vec<_> = gt_labels_seq
                 .iter()
@@ -1023,6 +1034,18 @@ pub fn training_worker(
                     },
                 )?;
             }
+
+            rate_counter.add(seq_len as f64);
+
+            if let Some(batch_rate) = rate_counter.rate() {
+                let record_rate = batch_rate * batch_size as f64;
+                info!(
+                    "warm-up step: {}\t{:.2} batch/s\t{:.2} sample/s",
+                    train_step, batch_rate, record_rate
+                );
+            } else {
+                info!("warm-up step: {}", train_step,);
+            }
         }
 
         Ok(())
@@ -1044,15 +1067,17 @@ pub fn training_worker(
             .map(|batch| -> Result<_> {
                 let det_vec: Vec<_> = batch
                     .iter()
-                    .map(|labels| {
+                    .map(|labels| -> Result<_> {
                         let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
-                        DenseDetectionTensorList::from_labels(
+                        let det = DenseDetectionTensorList::from_labels(
                             labels,
                             &worker.detector_model.model.anchors(),
                             &[image_h],
                             &[image_w],
                             num_classes,
-                        )
+                        )?
+                        .to_device(device);
+                        Ok(det)
                     })
                     .try_collect()?;
                 let det_batch = DenseDetectionTensorList::cat_batch(&det_vec).unwrap();
@@ -1296,7 +1321,6 @@ fn discriminator_gan_loss(
     fake_input: &Tensor,
     gp: &WGanGp,
     discriminator_fn: impl Fn(&Tensor, bool) -> Tensor,
-    discriminator_opt: &mut nn::Optimizer<nn::Adam>,
 ) -> Result<Tensor> {
     ensure!(real_score.size()[0] == fake_score.size()[0]);
     ensure!(real_score.device() == fake_score.device());
@@ -1339,7 +1363,7 @@ fn discriminator_gan_loss(
         config::GanLoss::WGanGp => {
             let discriminator_loss = (fake_score - real_score).mean(Kind::Float);
             let gp_loss = gp.forward(real_input, fake_input, discriminator_fn, true)?;
-            discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+            // discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
             discriminator_loss + gp_loss
         }
     };

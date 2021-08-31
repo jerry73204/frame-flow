@@ -2,7 +2,7 @@ pub use anyhow::{bail, ensure, format_err, Context, Error, Result};
 pub use approx::{abs_diff_eq, assert_abs_diff_eq};
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
-pub use collected::{GroupHashMap, Last, MaxVal, SumVal};
+pub use collected::{AddVal, GroupHashMap, Last, MaxVal};
 pub use cv_convert::FromCv;
 pub use derivative::Derivative;
 pub use futures::{
