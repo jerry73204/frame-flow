@@ -939,7 +939,9 @@ pub fn training_worker(
                             )
                         })
                         .try_collect()?;
-                    let det_batch = DenseDetectionTensorList::cat_batch(&det_vec).unwrap();
+                    let det_batch = DenseDetectionTensorList::cat_batch(&det_vec)
+                        .unwrap()
+                        .to_device(device);
                     Ok(det_batch)
                 })
                 .try_collect()?;

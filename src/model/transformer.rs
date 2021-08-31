@@ -549,6 +549,13 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
     };
 
     let merge = {
+        // dbg!(input.cy.size(), y_offsets.size());
+        // let wtf = (&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0;
+        // dbg!(input.cy.max());
+        // dbg!(input.cy.min());
+        // dbg!(wtf.max());
+        // dbg!(wtf.min());
+
         let cy_logit = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0)
             .logit(None)
             .view([bsize, 1, num_anchors, in_h, in_w]);

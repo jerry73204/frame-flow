@@ -49,7 +49,7 @@ derivative = "2.2.0"
 ndarray = "0.15.3"
 cv-convert = "0.10.0"
 num-integer = "0.1.44"
-pathfinding = "2.2.1"
+# pathfinding = "2.2.1"
 # tch-goodies = { version = "0.1.0", path = "../yolo-dl/tch-goodies" }
 # tch-modules = { version = "0.1.0", path = "../yolo-dl/tch-modules" }
 # yolo-dl = { version = "0.1.0", path = "../yolo-dl/yolo-dl" }

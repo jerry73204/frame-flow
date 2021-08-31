@@ -1,5 +1,4 @@
 use crate::common::*;
-use pathfinding::kuhn_munkres::Weights;
 use tch_modules::{DarkBatchNorm, DarkBatchNormInit, InstanceNorm, InstanceNormInit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -171,13 +170,14 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                 .map(|anchor| anchor.borrow().to_owned())
                 .collect();
             let num_anchors = anchors.len();
+            let image_boundary =
+                PixelTLBR::from_tlbr(0.0, 0.0, height as f64, width as f64).unwrap();
+            let image_size = PixelSize::from_hw(height as f64, width as f64).unwrap();
 
             // crop and filter out bad labels
-            let labels: Vec<_> = {
-                let image_boundary =
-                    PixelTLBR::from_tlbr(0.0, 0.0, height as f64, width as f64).unwrap();
-                let image_size = PixelSize::from_hw(height as f64, width as f64).unwrap();
+            let mut used_positions = HashSet::new();
 
+            let assignments: Vec<_> =
                 labels
                     .into_iter()
                     .filter_map(|ratio_label| {
@@ -185,7 +185,6 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                         const MAX_HW_RATIO: f64 = 4.0;
 
                         let pixel_label = ratio_label.borrow().to_pixel_label(&image_size);
-
                         let bbox = pixel_label.intersect_with(&image_boundary)?;
 
                         if bbox.h() < MIN_SIZE && bbox.w() < MIN_SIZE {
@@ -202,12 +201,11 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                         };
                         let ratio_label = pixel_label.to_ratio_label(&image_size);
 
-                        Some(ratio_label)
+                        Some((ratio_label, pixel_label))
                     })
-                    .flat_map(|ratio_label| {
-                        let ratio_label = Arc::new(ratio_label);
-                        let cy = ratio_label.cy();
-                        let cx = ratio_label.cx();
+                    .flat_map(|(ratio_label, pixel_label)| {
+                        let cy = pixel_label.cy();
+                        let cx = pixel_label.cx();
                         let cy_fract = cy.fract();
                         let cx_fract = cx.fract();
                         let row = cy.floor() as isize;
@@ -219,126 +217,70 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                         let pos_l = (cx_fract < SNAP_THRESH).then(|| (row, col - 1));
                         let pos_r = (cx_fract > 1.0 - SNAP_THRESH).then(|| (row, col + 1));
 
+                        let ratio_label = Arc::new(ratio_label);
+                        let pixel_label = Arc::new(pixel_label);
+
                         chain!(pos_c, pos_t, pos_b, pos_l, pos_r)
                             .filter(|(row, col)| {
                                 (0..height as isize).contains(&row)
                                     && (0..width as isize).contains(&col)
                             })
                             .map(move |(row, col)| {
-                                (ratio_label.clone(), row as usize, col as usize)
+                                (
+                                    ratio_label.clone(),
+                                    pixel_label.clone(),
+                                    row as usize,
+                                    col as usize,
+                                )
                             })
                     })
-                    .map(|(ratio_label, row, col)| -> Result<_> {
+                    // filter by position constraint
+                    .filter(|&(_, ref pixel_label, row, col)| {
+                        let [cy, cx, _, _] = pixel_label.cycxhw();
+                        (0.0..=1.0).contains(&((cy - row as f64 + 0.5) / 2.0))
+                            && (0.0..=1.0).contains(&((cx - col as f64 + 0.5) / 2.0))
+                    })
+                    .filter_map(|(ratio_label, _, row, col)| {
+                        let position = anchors.iter().enumerate().find_map(
+                            |(anchor_index, anchor_size)| {
+                                let h_scale = ratio_label.h() / anchor_size.h.raw();
+                                let w_scale = ratio_label.w() / anchor_size.w.raw();
+                                let position = (row, col, anchor_index);
+                                let ok = !used_positions.contains(&position)
+                                    && anchor_scale_range.contains(&h_scale)
+                                    && anchor_scale_range.contains(&w_scale)
+                                    && (0.0..=2.0).contains(&h_scale.sqrt())
+                                    && (0.0..=2.0).contains(&w_scale.sqrt());
+                                ok.then(|| position)
+                            },
+                        )?;
+
+                        used_positions.insert(position);
+                        Some((ratio_label, position))
+                    })
+                    .map(|(ratio_label, position)| -> Result<_> {
                         ensure!((0..num_classes).contains(&ratio_label.class));
-                        Ok((ratio_label, row, col))
+                        Ok((ratio_label, position))
                     })
-                    .try_collect()?
-            };
-
-            // list candidates of position to label relations
-            let pos_label_relations: IndexSet<_> =
-                iproduct!(labels.iter().enumerate(), anchors.iter().enumerate())
-                    .filter_map(
-                        |((label_index, &(ref label, row, col)), (anchor_index, anchor))| {
-                            let h_scale = label.h() / anchor.h.raw();
-                            let w_scale = label.w() / anchor.w.raw();
-                            let position = (row, col, anchor_index);
-
-                            let ok = anchor_scale_range.contains(&h_scale)
-                                && anchor_scale_range.contains(&w_scale);
-                            ok.then(|| (position, label_index))
-                        },
-                    )
-                    .collect();
-
-            // list occurred positions
-            let positions: IndexSet<_> = pos_label_relations
-                .iter()
-                .map(|&(position_index, _)| position_index)
-                .collect();
-
-            struct WeightTable {
-                is_neg: bool,
-                max_rows: usize,
-                max_cols: usize,
-                relations: HashSet<(usize, usize)>,
-            }
-
-            impl Weights<isize> for WeightTable {
-                fn rows(&self) -> usize {
-                    self.max_rows
-                }
-
-                fn columns(&self) -> usize {
-                    self.max_cols
-                }
-
-                fn at(&self, row: usize, col: usize) -> isize {
-                    if self.relations.contains(&(row, col)) {
-                        if self.is_neg {
-                            1
-                        } else {
-                            -1
-                        }
-                    } else {
-                        0
-                    }
-                }
-
-                fn neg(&self) -> Self
-                where
-                    Self: Sized,
-                {
-                    let Self {
-                        is_neg,
-                        max_rows,
-                        max_cols,
-                        ref relations,
-                    } = *self;
-
-                    Self {
-                        is_neg: !is_neg,
-                        max_rows,
-                        max_cols,
-                        relations: relations.clone(),
-                    }
-                }
-            }
-
-            let table = WeightTable {
-                is_neg: false,
-                max_rows: positions.len(),
-                max_cols: labels.len(),
-                relations: pos_label_relations
-                    .iter()
-                    .map(|&(position, label_index)| {
-                        let row = positions.get_index_of(&position).unwrap();
-                        let col = label_index;
-                        (row, col)
-                    })
-                    .collect(),
-            };
-
-            let (_, assignments) = pathfinding::kuhn_munkres::kuhn_munkres(&table);
+                    .try_collect()?;
 
             let (row_vec, col_vec, anchor_vec, cy_vec, cx_vec, h_vec, w_vec, class_vec) =
                 assignments
-                    .iter()
-                    .enumerate()
-                    .map(|(table_row, &table_col)| {
-                        let (image_row, image_col, anchor_index) =
-                            *positions.get_index(table_row).unwrap();
-                        let label_index = table_col;
-                        let (label, _, _) = &labels[label_index];
-                        (image_row, image_col, anchor_index, label)
-                    })
-                    .map(|(row, col, anchor, label)| {
-                        let [cy, cx, h, w] = label.rect.cycxhw();
-                        let class = label.class;
+                    .into_iter()
+                    .map(|(ratio_label, (row, col, anchor_index))| {
+                        let [cy, cx, h, w] = ratio_label.rect.cycxhw();
+                        // dbg!(cy, cx, cy * height as f64, cx * width as f64, row, col);
+                        // assert!(
+                        //     (0.0..=1.0).contains(&((cy * height as f64 - row as f64 + 0.5) / 2.0))
+                        //         && (0.0..=1.0)
+                        //             .contains(&((cx * width as f64 - col as f64 + 0.5) / 2.0))
+                        // );
+
+                        let class = ratio_label.class;
                         (
                             row as i64,
                             col as i64,
-                            anchor as i64,
+                            anchor_index as i64,
                             cy as f32,
                             cx as f32,
                             h as f32,
@@ -348,7 +290,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                     })
                     .unzip_n_vec();
 
-            let num_assignments = assignments.len() as i64;
+            let num_assignments = row_vec.len() as i64;
             let batch_tensor = Tensor::zeros(&[num_assignments], INT64_CPU);
             let zero_entry_tensor = Tensor::full(&[num_assignments], 0, INT64_CPU);
             let cy_entry_tensor = &zero_entry_tensor;
@@ -365,14 +307,24 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             let h_value_tensor = Tensor::of_slice(&h_vec);
             let w_value_tensor = Tensor::of_slice(&w_vec);
 
-            let mut cy_tensor = Tensor::zeros(
-                &[1, 1, num_anchors as i64, height as i64, width as i64],
-                FLOAT_CPU,
-            );
-            let mut cx_tensor = Tensor::zeros(
-                &[1, 1, num_anchors as i64, height as i64, width as i64],
-                FLOAT_CPU,
-            );
+            let mut cy_tensor = Tensor::arange(height as i64, FLOAT_CPU)
+                .to_kind(Kind::Float)
+                .div(height as f64)
+                .view([1, 1, 1, height as i64, 1])
+                .expand(
+                    &[1, 1, num_anchors as i64, height as i64, width as i64],
+                    false,
+                )
+                .copy();
+            let mut cx_tensor = Tensor::arange(width as i64, FLOAT_CPU)
+                .to_kind(Kind::Float)
+                .div(width as f64)
+                .view([1, 1, 1, 1, width as i64])
+                .expand(
+                    &[1, 1, num_anchors as i64, height as i64, width as i64],
+                    false,
+                )
+                .copy();
             let mut h_tensor = Tensor::zeros(
                 &[1, 1, num_anchors as i64, height as i64, width as i64],
                 FLOAT_CPU,
@@ -381,11 +333,12 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                 &[1, 1, num_anchors as i64, height as i64, width as i64],
                 FLOAT_CPU,
             );
-            let obj_logit_tensor = Tensor::rand(
+            let obj_logit_tensor = Tensor::full(
                 &[1, 1, num_anchors as i64, height as i64, width as i64],
+                -10.0, // logit of approx. 0.0001
                 FLOAT_CPU,
             );
-            let class_logit_tensor = Tensor::zeros(
+            let class_logit_tensor = Tensor::full(
                 &[
                     1,
                     num_classes as i64,
@@ -393,6 +346,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                     height as i64,
                     width as i64,
                 ],
+                -10.0, // logit of approx. 0.0001
                 FLOAT_CPU,
             );
 
@@ -460,12 +414,12 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                 .fill_(5.0); // logit of 0.993
 
             let output = DenseDetectionTensorUnchecked {
-                cy: cy_tensor,
-                cx: cx_tensor,
-                h: h_tensor,
-                w: w_tensor,
-                obj_logit: obj_logit_tensor,
-                class_logit: class_logit_tensor,
+                cy: cy_tensor.set_requires_grad(false),
+                cx: cx_tensor.set_requires_grad(false),
+                h: h_tensor.set_requires_grad(false),
+                w: w_tensor.set_requires_grad(false),
+                obj_logit: obj_logit_tensor.set_requires_grad(false),
+                class_logit: class_logit_tensor.set_requires_grad(false),
                 anchors,
             }
             .build()
