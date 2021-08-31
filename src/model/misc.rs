@@ -234,7 +234,6 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                     })
                     .try_collect()?
             };
-            let num_labels = labels.len();
 
             // list candidates of position to label relations
             let pos_label_relations: IndexSet<_> =
@@ -340,25 +339,24 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                             row as i64,
                             col as i64,
                             anchor as i64,
-                            cy,
-                            cx,
-                            h,
-                            w,
+                            cy as f32,
+                            cx as f32,
+                            h as f32,
+                            w as f32,
                             class as i64,
                         )
                     })
                     .unzip_n_vec();
 
-            let batch_tensor = Tensor::zeros(&[num_labels as i64], INT64_CPU);
-            let cy_entry_tensor = Tensor::full(&[num_labels as i64], 0, INT64_CPU);
-            let cx_entry_tensor = Tensor::full(&[num_labels as i64], 1, INT64_CPU);
-            let h_entry_tensor = Tensor::full(&[num_labels as i64], 2, INT64_CPU);
-            let w_entry_tensor = Tensor::full(&[num_labels as i64], 3, INT64_CPU);
-            let obj_entry_tensor = Tensor::full(&[num_labels as i64], 4, INT64_CPU);
-            let class_entry_tensor = {
-                let vec: Vec<_> = class_vec.iter().cloned().map(|index| index + 5).collect();
-                Tensor::of_slice(&vec)
-            };
+            let num_assignments = assignments.len() as i64;
+            let batch_tensor = Tensor::zeros(&[num_assignments], INT64_CPU);
+            let zero_entry_tensor = Tensor::full(&[num_assignments], 0, INT64_CPU);
+            let cy_entry_tensor = &zero_entry_tensor;
+            let cx_entry_tensor = &zero_entry_tensor;
+            let h_entry_tensor = &zero_entry_tensor;
+            let w_entry_tensor = &zero_entry_tensor;
+            let obj_entry_tensor = &zero_entry_tensor;
+            let class_entry_tensor = Tensor::of_slice(&class_vec);
             let anchor_tensor = Tensor::of_slice(&anchor_vec);
             let row_tensor = Tensor::of_slice(&row_vec);
             let col_tensor = Tensor::of_slice(&col_vec);
@@ -401,7 +399,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             let _ = cy_tensor.index_put_(
                 &[
                     Some(&batch_tensor),
-                    Some(&cy_entry_tensor),
+                    Some(cy_entry_tensor),
                     Some(&anchor_tensor),
                     Some(&row_tensor),
                     Some(&col_tensor),
@@ -412,7 +410,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             let _ = cx_tensor.index_put_(
                 &[
                     Some(&batch_tensor),
-                    Some(&cx_entry_tensor),
+                    Some(cx_entry_tensor),
                     Some(&anchor_tensor),
                     Some(&row_tensor),
                     Some(&col_tensor),
@@ -423,7 +421,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             let _ = h_tensor.index_put_(
                 &[
                     Some(&batch_tensor),
-                    Some(&h_entry_tensor),
+                    Some(h_entry_tensor),
                     Some(&anchor_tensor),
                     Some(&row_tensor),
                     Some(&col_tensor),
@@ -434,7 +432,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             let _ = w_tensor.index_put_(
                 &[
                     Some(&batch_tensor),
-                    Some(&w_entry_tensor),
+                    Some(w_entry_tensor),
                     Some(&anchor_tensor),
                     Some(&row_tensor),
                     Some(&col_tensor),
@@ -445,7 +443,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             let _ = obj_logit_tensor
                 .index(&[
                     Some(&batch_tensor),
-                    Some(&obj_entry_tensor),
+                    Some(obj_entry_tensor),
                     Some(&anchor_tensor),
                     Some(&row_tensor),
                     Some(&col_tensor),
