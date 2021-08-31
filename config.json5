@@ -27,13 +27,13 @@
             "kind": "Resnet",
             // "kind": "Custom",
             "norm": "BatchNorm",
-            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-23-14-09-18.616+0800/checkpoints/generator_2021-08-23-17-09-43.215+0800_006200.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-08-22/2021-08-23-14-09-18.616+0800/checkpoints/generator_2021-08-23-17-09-43.215+0800_006200.ckpt",
         },
         "discriminator": {
             "num_blocks": 6,
             "norm": "None",
             // "norm": "InstanceNorm",
-            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-23-14-09-18.616+0800/checkpoints/discriminator_2021-08-23-17-09-43.212+0800_006200.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-08-22/2021-08-23-14-09-18.616+0800/checkpoints/discriminator_2021-08-23-17-09-43.212+0800_006200.ckpt",
         },
         "transformer": {
             "norm": "BatchNorm",
@@ -75,13 +75,13 @@
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 16,
+        "batch_size": 24,
         // unet
         // "batch_size": 20,
         "image_size": 64,
         "latent_dim": 256,
         "device": "cuda:0",
-        "seq_len": 4,
+        "seq_len": 1,
         "lr_schedule": {
             "type": "StepWise",
             "steps": [

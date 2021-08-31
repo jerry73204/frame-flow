@@ -1,4 +1,4 @@
-use crate::{common::*, message as msg};
+use crate::{common::*, message as msg, model::DetectionSimilarity};
 
 pub async fn logging_worker(
     log_dir: impl AsRef<Path>,
@@ -34,7 +34,9 @@ pub async fn logging_worker(
                 discriminator_loss,
                 generator_loss,
                 retraction_identity_loss,
+                retraction_identity_similarity,
                 triangular_identity_loss,
+                triangular_identity_similarity,
                 forward_consistency_loss,
                 backward_consistency_gen_loss,
                 backward_consistency_disc_loss,
@@ -102,6 +104,92 @@ pub async fn logging_worker(
                             "loss/backward_consistency_disc_loss",
                             step,
                             loss as f32,
+                        )
+                        .await?;
+                }
+
+                if let Some(similarity) = retraction_identity_similarity {
+                    let DetectionSimilarity {
+                        cy_loss,
+                        cx_loss,
+                        h_loss,
+                        w_loss,
+                        obj_loss,
+                        class_loss,
+                    } = similarity;
+
+                    let position_loss = cy_loss + cx_loss;
+                    let size_loss = h_loss + w_loss;
+
+                    event_writer
+                        .write_scalar_async(
+                            "retraction_identity_similarity/positoin_loss",
+                            step,
+                            f32::from(position_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "retraction_identity_similarity/size_loss",
+                            step,
+                            f32::from(size_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "retraction_identity_similarity/obj_loss",
+                            step,
+                            f32::from(obj_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "retraction_identity_similarity/class_loss",
+                            step,
+                            f32::from(class_loss),
+                        )
+                        .await?;
+                }
+
+                if let Some(similarity) = triangular_identity_similarity {
+                    let DetectionSimilarity {
+                        cy_loss,
+                        cx_loss,
+                        h_loss,
+                        w_loss,
+                        obj_loss,
+                        class_loss,
+                    } = similarity;
+
+                    let position_loss = cy_loss + cx_loss;
+                    let size_loss = h_loss + w_loss;
+
+                    event_writer
+                        .write_scalar_async(
+                            "triangular_identity_similarity/positoin_loss",
+                            step,
+                            f32::from(position_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "triangular_identity_similarity/size_loss",
+                            step,
+                            f32::from(size_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "triangular_identity_similarity/obj_loss",
+                            step,
+                            f32::from(obj_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "triangular_identity_similarity/class_loss",
+                            step,
+                            f32::from(class_loss),
                         )
                         .await?;
                 }

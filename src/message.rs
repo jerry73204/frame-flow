@@ -1,4 +1,4 @@
-use crate::common::*;
+use crate::{common::*, model::DetectionSimilarity};
 
 #[derive(Debug)]
 pub enum LogMessage {
@@ -18,7 +18,9 @@ pub struct Loss {
     pub discriminator_loss: Option<f64>,
     pub generator_loss: Option<f64>,
     pub retraction_identity_loss: Option<f64>,
+    pub retraction_identity_similarity: Option<DetectionSimilarity>,
     pub triangular_identity_loss: Option<f64>,
+    pub triangular_identity_similarity: Option<DetectionSimilarity>,
     pub forward_consistency_loss: Option<f64>,
     pub backward_consistency_gen_loss: Option<f64>,
     pub backward_consistency_disc_loss: Option<f64>,

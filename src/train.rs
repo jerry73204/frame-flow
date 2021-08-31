@@ -2,9 +2,9 @@ use crate::{
     common::*,
     config, message as msg,
     model::{
-        CustomGeneratorInit, DetectionEmbedding, DetectionEmbeddingInit, Discriminator, Generator,
-        NLayerDiscriminatorInit, ResnetGeneratorInit, Transformer, TransformerInit,
-        UnetGeneratorInit, WGanGp, WGanGpInit,
+        CustomGeneratorInit, DetectionEmbedding, DetectionEmbeddingInit, DetectionSimilarity,
+        Discriminator, Generator, NLayerDiscriminatorInit, ResnetGeneratorInit, Transformer,
+        TransformerInit, UnetGeneratorInit, WGanGp, WGanGpInit,
     },
     utils::DenseDetectionTensorListExt,
     FILE_STRFTIME,
@@ -247,7 +247,7 @@ impl TrainWorker {
         steps: usize,
         input_det: &DenseDetectionTensorList,
         // with_artifacts: bool,
-    ) -> Result<Option<f64>> {
+    ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
             detector_vs,
@@ -262,15 +262,15 @@ impl TrainWorker {
         detector_vs.unfreeze();
         generator_vs.unfreeze();
 
-        let output = (0..steps).try_fold(None, |_, _| -> Result<_> {
+        (0..steps).try_fold((None, None), |_, _| -> Result<_> {
             // clamp running_var in norms
             clamp_running_var(generator_vs);
 
-            let fake_image = generator_model.forward_t(&input_det, true)?;
+            let fake_image = generator_model.forward_t(input_det, true)?;
             let fake_det = detector_model.forward_t(&fake_image, true)?;
 
-            let loss =
-                crate::model::dense_detection_list_similarity(input_det, &fake_det)?.total_loss();
+            let similarity = crate::model::dense_detection_list_similarity(input_det, &fake_det)?;
+            let loss = similarity.total_loss();
 
             // optimize generator
             detector_opt.zero_grad();
@@ -279,18 +279,16 @@ impl TrainWorker {
             detector_opt.step();
             generator_opt.step();
 
-            Ok(Some(f64::from(loss)))
-        })?;
-
-        Ok(output)
+            Ok((Some(f64::from(loss)), Some(similarity)))
+        })
     }
 
     pub fn train_triangular_identity(
         &mut self,
         steps: usize,
-        input_image: &Tensor,
-        // with_artifacts: bool,
-    ) -> Result<Option<f64>> {
+        gt_image: &Tensor,
+        gt_labels: &[Vec<RatioRectLabel<R64>>],
+    ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
             detector_vs,
@@ -299,34 +297,35 @@ impl TrainWorker {
             generator_model,
             generator_opt,
             detector_opt,
+            detector_loss_fn,
             ..
         } = self;
 
         detector_vs.unfreeze();
         generator_vs.unfreeze();
 
-        let output = (0..steps).try_fold(None, |_, _| -> Result<_> {
+        (0..steps).try_fold((None, None), |_, _| -> Result<_> {
             // clamp running_var in norms
             clamp_running_var(generator_vs);
 
-            let orig_det = detector_model.forward_t(&input_image, true)?;
+            let orig_det = detector_model.forward_t(gt_image, true)?;
             let fake_image = generator_model.forward_t(&orig_det, true)?;
             let recon_det = detector_model.forward_t(&fake_image, true)?;
 
-            let loss =
-                crate::model::dense_detection_list_similarity(&orig_det, &recon_det)?.total_loss();
+            let (loss, _) =
+                detector_loss_fn.forward(&recon_det.shallow_clone().try_into()?, gt_labels);
+
+            let similarity = crate::model::dense_detection_list_similarity(&orig_det, &recon_det)?;
 
             // optimize generator
             detector_opt.zero_grad();
             generator_opt.zero_grad();
-            loss.backward();
+            loss.total_loss.backward();
             detector_opt.step();
             generator_opt.step();
 
-            Ok(Some(f64::from(loss)))
-        })?;
-
-        Ok(output)
+            Ok((Some(f64::from(loss.total_loss)), Some(similarity)))
+        })
     }
 
     pub fn train_forward_consistency(
@@ -1098,9 +1097,13 @@ pub fn training_worker(
             generator_loss,
             generator_weights,
             retraction_identity_loss,
+            retraction_identity_similarity,
             triangular_identity_loss,
+            triangular_identity_similarity,
             generated_image_seq,
         ): (
+            Last<_>,
+            Last<_>,
             Last<_>,
             Last<_>,
             Last<_>,
@@ -1148,15 +1151,18 @@ pub fn training_worker(
                 let generated_image = generated_image_1.and(generated_image_2);
 
                 // train retraction identity
-                let retraction_identity_loss = worker.train_retraction_identity(
-                    config.train.train_retraction_identity_steps,
-                    gt_det,
-                )?;
+                let (retraction_identity_loss, retraction_identity_similarity) = worker
+                    .train_retraction_identity(
+                        config.train.train_retraction_identity_steps,
+                        gt_det,
+                    )?;
 
-                let triangular_identity_loss = worker.train_triangular_identity(
-                    config.train.train_triangular_identity_steps,
-                    gt_image,
-                )?;
+                let (triangular_identity_loss, triangular_identity_similarity) = worker
+                    .train_triangular_identity(
+                        config.train.train_triangular_identity_steps,
+                        gt_image,
+                        gt_labels,
+                    )?;
 
                 // create logs
                 Ok((
@@ -1167,7 +1173,9 @@ pub fn training_worker(
                     generator_loss,
                     generator_weights,
                     retraction_identity_loss,
+                    retraction_identity_similarity,
                     triangular_identity_loss,
+                    triangular_identity_similarity,
                     generated_image,
                 ))
             })
@@ -1220,7 +1228,13 @@ pub fn training_worker(
                 discriminator_loss: discriminator_loss.into_inner().unwrap(),
                 generator_loss: generator_loss.into_inner().unwrap(),
                 retraction_identity_loss: retraction_identity_loss.into_inner().unwrap(),
+                retraction_identity_similarity: retraction_identity_similarity
+                    .into_inner()
+                    .unwrap(),
                 triangular_identity_loss: triangular_identity_loss.into_inner().unwrap(),
+                triangular_identity_similarity: triangular_identity_similarity
+                    .into_inner()
+                    .unwrap(),
                 forward_consistency_loss,
                 backward_consistency_gen_loss,
                 backward_consistency_disc_loss,
