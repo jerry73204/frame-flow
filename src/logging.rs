@@ -123,7 +123,7 @@ pub async fn logging_worker(
 
                     event_writer
                         .write_scalar_async(
-                            "retraction_identity_similarity/positoin_loss",
+                            "retraction_identity_similarity/position_loss",
                             step,
                             f32::from(position_loss),
                         )
