@@ -1,7 +1,7 @@
 {
     "dataset": {
         "type": "simple",
-        "dataset_dir": "/home/aeon/dataset/pcd-gen_output",
+        "dataset_dir": "/home/aeon/dataset/2021-08-21-pcd-gen_output",
         "file_name_digits": 8,
     },
     // "dataset": {
@@ -75,7 +75,7 @@
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 10,
+        "batch_size": 16,
         // unet
         // "batch_size": 20,
         "image_size": 64,
@@ -94,21 +94,21 @@
         "train_detector_steps": 1,
         "train_discriminator_steps": 5,
         "train_generator_steps": 1,
-        "train_retraction_identity_steps": 1,
-        "train_triangular_identity_steps": 1,
-        "train_forward_consistency_steps": 1,
-        "train_backward_consistency_disc_steps": 1,
-        "train_backward_consistency_gen_steps": 5,
+        "train_retraction_identity_steps": 0,
+        "train_triangular_identity_steps": 0,
+        "train_forward_consistency_steps": 0,
+        "train_backward_consistency_disc_steps": 0,
+        "train_backward_consistency_gen_steps": 0,
     },
     "logging": {
-        "log_dir": "log-test",
-        // "log_dir": "log-wayside-64x64-2021-08-31",
+        // "log_dir": "log-test",
+        "log_dir": "log-wayside-64x64-2021-08-31",
         "save_image_steps": 10,
         "save_checkpoint_steps": 100,
         "save_detector_checkpoint": true,
         "save_generator_checkpoint": true,
         "save_discriminator_checkpoint": true,
-        "save_transformer_checkpoint": true,
-        "save_image_seq_discriminator_checkpoint": true,
+        "save_transformer_checkpoint": false,
+        "save_image_seq_discriminator_checkpoint": false,
     },
 }
