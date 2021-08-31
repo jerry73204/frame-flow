@@ -89,6 +89,8 @@ where
     ) -> Result<Self>
     where
         R: Borrow<RatioSize<R64>>;
+
+    fn has_nan(&self) -> bool;
 }
 
 impl DenseDetectionTensorListExt for DenseDetectionTensorList {
@@ -120,6 +122,10 @@ impl DenseDetectionTensorListExt for DenseDetectionTensorList {
 
         Ok(list)
     }
+
+    fn has_nan(&self) -> bool {
+        self.tensors.iter().any(|tensor| tensor.has_nan())
+    }
 }
 
 pub trait DenseDetectionTensorExt
@@ -138,6 +144,7 @@ where
 
     fn detach(&self) -> Self;
     fn copy(&self) -> Self;
+    fn has_nan(&self) -> bool;
 }
 
 impl DenseDetectionTensorExt for DenseDetectionTensor {
@@ -469,5 +476,24 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
         }
         .build()
         .unwrap()
+    }
+
+    fn has_nan(&self) -> bool {
+        let DenseDetectionTensorUnchecked {
+            cy,
+            cx,
+            h,
+            w,
+            obj_logit,
+            class_logit,
+            ..
+        } = &**self;
+
+        cy.has_nan()
+            || cx.has_nan()
+            || h.has_nan()
+            || w.has_nan()
+            || obj_logit.has_nan()
+            || class_logit.has_nan()
     }
 }

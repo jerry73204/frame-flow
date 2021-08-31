@@ -36,7 +36,7 @@ impl TransformerInit {
         num_classes: usize,
         inner_c: usize,
     ) -> Result<Transformer> {
-        const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
+        // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
 
         let path = path.borrow();
         let Self {
@@ -47,7 +47,7 @@ impl TransformerInit {
             num_scaling_blocks,
             num_down_sample,
         } = self;
-        let device = path.device();
+        // let device = path.device();
         let in_c = 5 + num_classes;
         ensure!(input_len > 0);
 
@@ -55,8 +55,14 @@ impl TransformerInit {
             ChannelWiseAutoencoderInit { norm_kind }.build(path / "autoencoder", in_c, inner_c);
 
         let det_encoder = move |det: &DenseDetectionTensor, train: bool| -> Result<_> {
+            // assert!(!det.has_nan());
+
             let (xs, anchors) = encode_detection(det)?;
+            // assert!(!xs.has_nan());
+
             let xs = ctx_encoder.forward_t(&xs, train);
+            // assert!(!xs.has_nan());
+
             Ok((xs, anchors))
         };
         let det_decoder = move |xs: &Tensor, anchors, train: bool| {
@@ -74,15 +80,15 @@ impl TransformerInit {
         }
         .build(path / "attention_block", inner_c * input_len, inner_c)?;
 
-        let patch_block = ResnetGeneratorInit {
-            ksize,
-            norm_kind,
-            padding_kind,
-            num_scale_blocks: num_scaling_blocks,
-            num_blocks: num_resnet_blocks,
-            ..Default::default()
-        }
-        .build(path / "patch_block", inner_c * input_len, inner_c, inner_c);
+        // let patch_block = ResnetGeneratorInit {
+        //     ksize,
+        //     norm_kind,
+        //     padding_kind,
+        //     num_scale_blocks: num_scaling_blocks,
+        //     num_blocks: num_resnet_blocks,
+        //     ..Default::default()
+        // }
+        // .build(path / "patch_block", inner_c * input_len, inner_c, inner_c);
 
         let forward_fn =
             Box::new(
@@ -127,28 +133,33 @@ impl TransformerInit {
                     let last_context = in_context_vec.last().unwrap();
 
                     let shifted = attention_block.forward_t(last_context, &merge_context, train)?;
-                    let patch = patch_block.forward_t(&merge_context, train);
-                    let patch_mask = {
-                        let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
-                        let border_w = (in_w as f64 * BORDER_SIZE_RATIO).floor() as usize;
-                        Tensor::from_cv(nd::Array2::from_shape_fn(
-                            [in_h as usize, in_w as usize],
-                            |(row, col)| {
-                                let ok = row < border_h
-                                    || row >= (in_h as usize - border_h)
-                                    || col < border_w
-                                    || col >= (in_w as usize - border_w);
-                                if ok {
-                                    1f32
-                                } else {
-                                    0f32
-                                }
-                            },
-                        ))
-                        .set_requires_grad(false)
-                        .to_device(device)
-                    };
-                    let out_context = shifted + patch * patch_mask;
+                    // let patch = patch_block.forward_t(&merge_context, train);
+                    // let patch_mask = {
+                    //     let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
+                    //     let border_w = (in_w as f64 * BORDER_SIZE_RATIO).floor() as usize;
+                    //     Tensor::from_cv(nd::Array2::from_shape_fn(
+                    //         [in_h as usize, in_w as usize],
+                    //         |(row, col)| {
+                    //             let ok = row < border_h
+                    //                 || row >= (in_h as usize - border_h)
+                    //                 || col < border_w
+                    //                 || col >= (in_w as usize - border_w);
+                    //             if ok {
+                    //                 1f32
+                    //             } else {
+                    //                 0f32
+                    //             }
+                    //         },
+                    //     ))
+                    //     .set_requires_grad(false)
+                    //     .to_device(device)
+                    // };
+
+                    // assert!(!shifted.has_nan());
+                    // assert!(!patch.has_nan());
+
+                    let out_context = shifted // + patch * patch_mask
+                              ;
                     let out_detection = det_decoder(&out_context, anchors.clone(), train);
 
                     let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
@@ -292,6 +303,9 @@ impl TransformerBlockInit {
 
         let forward_fn = Box::new(
             move |input: &Tensor, context: &Tensor, train: bool| -> Result<Tensor> {
+                // assert!(!input.has_nan());
+                // assert!(!context.has_nan());
+
                 let (bsize, _, in_h, in_w) = input.size4()?;
                 ensure!(
                     matches!(context.size4()?, (bsize_, ctx_c_, ctx_h, ctx_w) if bsize == bsize_ && ctx_c == ctx_c_ as usize && in_h == ctx_h && in_w == ctx_w)
@@ -301,11 +315,14 @@ impl TransformerBlockInit {
                 let patch_w = in_w / 2i64.pow(num_down_sample as u32);
 
                 let context = context_norm.forward_t(context, train);
+                // assert!(!context.has_nan());
                 let key = key_transform.forward_t(&context, train);
+                // assert!(!key.has_nan());
                 let query = {
                     let xs = query_transform.forward_t(&context, train);
                     query_down_sample.forward_t(&xs, train)
                 };
+                // assert!(!query.has_nan());
 
                 let attention = Tensor::einsum(
                     "bcq,bck->bqk",
@@ -317,6 +334,7 @@ impl TransformerBlockInit {
                 .div((inner_c as f64).sqrt())
                 .softmax(1, Kind::Float)
                 .view([bsize, patch_h * patch_w, in_h * in_w]);
+                // assert!(!attention.has_nan());
 
                 let patches = Tensor::einsum(
                     "bqk,bck->bcqk",
@@ -401,6 +419,10 @@ impl ChannelWiseAutoencoderInit {
             let seq = {
                 let path = &path / "block_0";
                 nn::seq_t()
+                    // .inspect(|xs| {
+                    //     // dbg!(xs.min(), xs.max());
+                    //     assert!(!xs.has_nan());
+                    // })
                     .add(nn::conv2d(
                         &path / "conv",
                         in_c as i64,
@@ -412,7 +434,14 @@ impl ChannelWiseAutoencoderInit {
                             ..Default::default()
                         },
                     ))
+                    // .inspect(|xs| {
+                    //     // dbg!(xs.min(), xs.max());
+                    //     assert!(!xs.has_nan());
+                    // })
                     .add(norm_kind.build(&path / "norm", inner_c as i64))
+                    // .inspect(|xs| {
+                    //     assert!(!xs.has_nan());
+                    // })
                     .add_fn(|xs| xs.lrelu())
             };
 
@@ -548,12 +577,13 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
     };
 
     let merge = {
-        // dbg!(input.cy.size(), y_offsets.size());
         // let wtf = (&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0;
         // dbg!(input.cy.max());
         // dbg!(input.cy.min());
         // dbg!(wtf.max());
         // dbg!(wtf.min());
+        // assert!(bool::from(input.h.ge(0.0).all()));
+        // assert!(bool::from(input.w.ge(0.0).all()));
 
         let cy_logit = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0)
             .logit(None)
@@ -577,10 +607,22 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
                 .class_logit
                 .view([bsize, num_classes as i64, num_anchors, in_h, in_w]);
 
+        // dbg!(cy_logit.min(), cy_logit.max());
+        // dbg!(cx_logit.min(), cx_logit.max());
+        // dbg!(h_logit.min(), h_logit.max());
+        // dbg!(w_logit.min(), w_logit.max());
+        // dbg!(obj_logit.min(), obj_logit.max());
+        // dbg!(class_logit.min(), class_logit.max());
+
+        // assert!(bool::from(input.h.ge(0.0).all()));
+        // assert!(bool::from(input.w.ge(0.0).all()));
+
         ensure!(!cy_logit.has_nan());
         ensure!(!cx_logit.has_nan());
         ensure!(!h_logit.has_nan());
         ensure!(!w_logit.has_nan());
+        ensure!(!obj_logit.has_nan());
+        ensure!(!class_logit.has_nan());
 
         Tensor::cat(
             &[cy_logit, cx_logit, h_logit, w_logit, obj_logit, class_logit],
@@ -589,10 +631,15 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
         .view([bsize, -1, in_h, in_w])
     };
 
+    // dbg!(merge.min(), merge.max());
+    // assert!(!merge.has_nan());
+
     Ok((merge, input.anchors.clone()))
 }
 
 pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
+    // assert!(!input.has_nan());
+
     let device = input.device();
     let num_anchors = anchors.len() as i64;
     let (bsize, _, in_h, in_w) = input.size4().unwrap();
@@ -633,7 +680,7 @@ pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDe
     let obj_logit = xs.i((.., 4..5, .., .., ..));
     let class_logit = xs.i((.., 5.., .., .., ..));
 
-    DenseDetectionTensorUnchecked {
+    let output = DenseDetectionTensorUnchecked {
         cy,
         cx,
         h,
@@ -642,8 +689,12 @@ pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDe
         class_logit,
         anchors,
     }
-    .try_into()
-    .unwrap()
+    .build()
+    .unwrap();
+
+    assert!(!output.has_nan());
+
+    output
 }
 
 // fn autoencoder_loss(src: &Tensor, dst: &Tensor) -> Tensor {
