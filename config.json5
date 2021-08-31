@@ -1,7 +1,7 @@
 {
     "dataset": {
         "type": "simple",
-        "dataset_dir": "/home/aeon/dataset/2021-08-21-pcd-gen_output",
+        "dataset_dir": "pcd-gen_output",
         "file_name_digits": 8,
     },
     // "dataset": {

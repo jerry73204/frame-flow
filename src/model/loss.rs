@@ -1,88 +1,4 @@
 use crate::common::*;
-// use crate::{common::*, config};
-// use tch_modules::{BceWithLogitsLoss, BceWithLogitsLossInit, L2Loss};
-
-// #[derive(Debug)]
-// pub enum GanLoss {
-//     L2(L2Loss),
-//     BceWithLogits(BceWithLogitsLoss),
-//     WGan(WGanLoss),
-// }
-
-// impl GanLoss {
-//     pub fn forward(&self, pred: &Tensor, target: &Tensor) -> Result<Tensor> {
-//         ensure!(pred.kind() == Kind::Float);
-//         ensure!(target.kind() == Kind::Bool);
-
-//         let loss = match self {
-//             Self::L2(loss) => loss.forward(pred, &target.to_kind(Kind::Float)),
-//             Self::BceWithLogits(loss) => loss.forward(pred, &target.to_kind(Kind::Float)),
-//             Self::WGan(loss) => loss.forward(pred, target)?,
-//         };
-
-//         Ok(loss)
-//     }
-// }
-
-// impl From<L2Loss> for GanLoss {
-//     fn from(v: L2Loss) -> Self {
-//         Self::L2(v)
-//     }
-// }
-
-// impl From<BceWithLogitsLoss> for GanLoss {
-//     fn from(v: BceWithLogitsLoss) -> Self {
-//         Self::BceWithLogits(v)
-//     }
-// }
-
-// impl From<WGanLoss> for GanLoss {
-//     fn from(v: WGanLoss) -> Self {
-//         Self::WGan(v)
-//     }
-// }
-
-// impl GanLoss {
-//     pub fn new<'a>(
-//         path: impl Borrow<nn::Path<'a>>,
-//         config: &config::GanLoss,
-//         reduction: Reduction,
-//     ) -> Self {
-//         match config {
-//             config::GanLoss::L2 => L2Loss::new(reduction).into(),
-//             config::GanLoss::BceWithLogits => {
-//                 BceWithLogitsLossInit::default(reduction).build(path).into()
-//             }
-//             config::GanLoss::WGan => WGanLoss::new(reduction).into(),
-//         }
-//     }
-// }
-
-// #[derive(Debug)]
-// pub struct WGanLoss {
-//     reduction: Reduction,
-// }
-
-// impl WGanLoss {
-//     pub fn new(reduction: Reduction) -> Self {
-//         Self { reduction }
-//     }
-
-//     pub fn forward(&self, pred: &Tensor, target: &Tensor) -> Result<Tensor> {
-//         ensure!(pred.kind() == Kind::Float);
-//         ensure!(target.kind() == Kind::Bool);
-
-//         let loss = pred * target.to_kind(Kind::Float) * -2.0 + 1.0;
-//         let loss = match self.reduction {
-//             Reduction::None => loss,
-//             Reduction::Mean => loss.mean(Kind::Float),
-//             Reduction::Sum => loss.sum(Kind::Float),
-//             Reduction::Other(_) => unimplemented!(),
-//         };
-
-//         Ok(loss)
-//     }
-// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WGanGpKind {
@@ -139,70 +55,133 @@ pub fn dense_detection_list_similarity(
 ) -> Result<DetectionSimilarity> {
     ensure!(lhs.tensors.len() == rhs.tensors.len());
 
-    let (cy_loss, cx_loss, h_loss, w_loss, obj_loss, class_loss) =
-        izip!(&lhs.tensors, &rhs.tensors)
-            .map(|(lhs, rhs)| -> Result<_> {
-                let DetectionSimilarity {
-                    cy_loss,
-                    cx_loss,
-                    h_loss,
-                    w_loss,
-                    obj_loss,
-                    class_loss,
-                } = dense_detection_similarity(lhs, rhs, Reduction::None)?;
+    let (count, cy_loss, cx_loss, h_loss, w_loss, obj_loss, class_loss): (
+        Count<_>,
+        AddVal<_>,
+        AddVal<_>,
+        AddVal<_>,
+        AddVal<_>,
+        AddVal<_>,
+        AddVal<_>,
+    ) = izip!(&lhs.tensors, &rhs.tensors)
+        .map(|(lhs, rhs)| -> Result<_> {
+            let DetectionSimilarity {
+                cy_loss,
+                cx_loss,
+                h_loss,
+                w_loss,
+                obj_loss,
+                class_loss,
+            } = dense_detection_similarity(lhs, rhs)?;
 
-                Ok((
-                    cy_loss.view([-1]),
-                    cx_loss.view([-1]),
-                    h_loss.view([-1]),
-                    w_loss.view([-1]),
-                    obj_loss.view([-1]),
-                    class_loss.view([-1]),
-                ))
-            })
-            .try_collect::<_, Vec<_>, _>()?
-            .into_iter()
-            .unzip_n_vec();
+            Ok(((), cy_loss, cx_loss, h_loss, w_loss, obj_loss, class_loss))
+        })
+        .try_collect::<_, Vec<_>, _>()?
+        .into_iter()
+        .unzip_n();
+
+    let count = count.get() as f64;
 
     Ok(DetectionSimilarity {
-        cy_loss: Tensor::cat(&cy_loss, 0).mean(Kind::Float),
-        cx_loss: Tensor::cat(&cx_loss, 0).mean(Kind::Float),
-        h_loss: Tensor::cat(&h_loss, 0).mean(Kind::Float),
-        w_loss: Tensor::cat(&w_loss, 0).mean(Kind::Float),
-        obj_loss: Tensor::cat(&obj_loss, 0).mean(Kind::Float),
-        class_loss: Tensor::cat(&class_loss, 0).mean(Kind::Float),
+        cy_loss: cy_loss.unwrap() / count,
+        cx_loss: cx_loss.unwrap() / count,
+        h_loss: h_loss.unwrap() / count,
+        w_loss: w_loss.unwrap() / count,
+        obj_loss: obj_loss.unwrap() / count,
+        class_loss: class_loss.unwrap() / count,
     })
 }
 
 pub fn dense_detection_similarity(
     lhs: &DenseDetectionTensor,
     rhs: &DenseDetectionTensor,
-    reduction: Reduction,
 ) -> Result<DetectionSimilarity> {
-    ensure!(lhs.cy.size() == rhs.cy.size());
-    ensure!(lhs.cx.size() == rhs.cx.size());
-    ensure!(lhs.h.size() == rhs.h.size());
-    ensure!(lhs.w.size() == rhs.w.size());
-    ensure!(lhs.cy.size() == rhs.cy.size());
-    ensure!(lhs.cx.size() == rhs.cx.size());
+    let diff1 = dense_detection_difference(lhs, rhs, Reduction::Mean)?;
+    let diff2 = dense_detection_difference(rhs, lhs, Reduction::Mean)?;
 
     Ok(DetectionSimilarity {
-        cy_loss: lhs.cy.mse_loss(&rhs.cy, reduction),
-        cx_loss: lhs.cx.mse_loss(&rhs.cx, reduction),
-        h_loss: lhs.h.mse_loss(&rhs.h, reduction),
-        w_loss: lhs.w.mse_loss(&rhs.w, reduction),
-        obj_loss: lhs.obj_logit.binary_cross_entropy_with_logits::<Tensor>(
-            &rhs.obj_logit.sigmoid(),
+        cy_loss: (diff1.cy_loss + diff2.cy_loss) / 2.0,
+        cx_loss: (diff1.cx_loss + diff2.cx_loss) / 2.0,
+        h_loss: (diff1.h_loss + diff2.h_loss) / 2.0,
+        w_loss: (diff1.w_loss + diff2.w_loss) / 2.0,
+        obj_loss: (diff1.obj_loss + diff2.obj_loss) / 2.0,
+        class_loss: (diff1.class_loss + diff2.class_loss) / 2.0,
+    })
+}
+
+fn dense_detection_difference(
+    src: &DenseDetectionTensor,
+    dst: &DenseDetectionTensor,
+    reduction: Reduction,
+) -> Result<DetectionSimilarity> {
+    const CONFIDENCE_THRESH: f64 = 0.5;
+
+    ensure!(src.cy.size() == dst.cy.size());
+    ensure!(src.cx.size() == dst.cx.size());
+    ensure!(src.h.size() == dst.h.size());
+    ensure!(src.w.size() == dst.w.size());
+    ensure!(src.cy.size() == dst.cy.size());
+    ensure!(src.cx.size() == dst.cx.size());
+
+    let (confidence, _) = dst.confidence().max_dim(1, true);
+    let indexes: Vec<_> = confidence
+        .ge(CONFIDENCE_THRESH)
+        .nonzero_numpy()
+        .into_iter()
+        .map(Some)
+        .collect();
+
+    let cy_loss = src
+        .cy
+        .index(&indexes)
+        .mse_loss(&dst.cy.index(&indexes), reduction);
+    let cx_loss = src
+        .cx
+        .index(&indexes)
+        .mse_loss(&dst.cx.index(&indexes), reduction);
+    let h_loss = src
+        .h
+        .index(&indexes)
+        .mse_loss(&dst.h.index(&indexes), reduction);
+    let w_loss = src
+        .w
+        .index(&indexes)
+        .mse_loss(&dst.w.index(&indexes), reduction);
+    let obj_loss = src.obj_logit.binary_cross_entropy_with_logits::<Tensor>(
+        &dst.obj_logit.sigmoid(),
+        None,
+        None,
+        reduction,
+    );
+    let class_loss = {
+        let batch_indexes = indexes[0].as_ref();
+        let anchor_indexes = indexes[2].as_ref();
+        let row_indexes = indexes[3].as_ref();
+        let col_indexes = indexes[4].as_ref();
+        let indexes = &[
+            batch_indexes,
             None,
-            None,
-            reduction,
-        ),
-        class_loss: lhs.class_logit.binary_cross_entropy_with_logits::<Tensor>(
-            &rhs.class_logit.sigmoid(),
-            None,
-            None,
-            reduction,
-        ),
+            anchor_indexes,
+            row_indexes,
+            col_indexes,
+        ];
+        src.class_logit
+            .index(indexes)
+            .binary_cross_entropy_with_logits::<Tensor>(
+                &dst.class_logit.index(indexes).sigmoid(),
+                None,
+                None,
+                reduction,
+            )
+    };
+
+    Ok(DetectionSimilarity {
+        cy_loss,
+        cx_loss,
+        h_loss,
+        w_loss,
+        obj_loss,
+        class_loss,
     })
 }
 

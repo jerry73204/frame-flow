@@ -167,7 +167,6 @@ impl TransformerInit {
                                         super::loss::dense_detection_similarity(
                                             &orig.detach().copy(),
                                             &recon,
-                                            Reduction::Mean,
                                         )
                                         .unwrap()
                                         .total_loss()

@@ -2,7 +2,7 @@ pub use anyhow::{bail, ensure, format_err, Context, Error, Result};
 pub use approx::{abs_diff_eq, assert_abs_diff_eq};
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
-pub use collected::{AddVal, GroupHashMap, Last, MaxVal};
+pub use collected::{AddVal, Count, GroupHashMap, Last, MaxVal};
 pub use cv_convert::FromCv;
 pub use derivative::Derivative;
 pub use futures::{
@@ -56,6 +56,7 @@ pub type Fallible<T> = Result<T>;
 
 unzip_n!(pub 2);
 unzip_n!(pub 6);
+unzip_n!(pub 7);
 unzip_n!(pub 8);
 unzip_n!(pub 9);
 unzip_n!(pub 11);
