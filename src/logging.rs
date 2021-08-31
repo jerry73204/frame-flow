@@ -166,7 +166,7 @@ pub async fn logging_worker(
 
                     event_writer
                         .write_scalar_async(
-                            "triangular_identity_similarity/positoin_loss",
+                            "triangular_identity_similarity/position_loss",
                             step,
                             f32::from(position_loss),
                         )
