@@ -1,7 +1,7 @@
 {
     "dataset": {
         "type": "simple",
-        "dataset_dir": "/home/aeon/dataset/2021-08-21-pcd-gen_output",
+        "dataset_dir": "/home/aeon/dataset/pcd-gen_output",
         "file_name_digits": 8,
     },
     // "dataset": {
@@ -76,12 +76,12 @@
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 30,
+        "batch_size": 72,
         // unet
         // "batch_size": 20,
         "image_size": 64,
         "latent_dim": 256,
-        "device": "cuda:1",
+        "device": "cuda:0",
         "seq_len": 4,
         "lr_schedule": {
             "type": "StepWise",
