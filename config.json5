@@ -76,13 +76,13 @@
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 72,
+        "batch_size": 64,
         // unet
         // "batch_size": 20,
         "image_size": 64,
         "latent_dim": 256,
         "device": "cuda:0",
-        "seq_len": 4,
+        "seq_len": 5,
         "lr_schedule": {
             "type": "StepWise",
             "steps": [
@@ -93,17 +93,17 @@
         "label_flip_prob": 0,
         "critic_noise_prob": 0.5,
         "train_detector_steps": 1,
-        "train_discriminator_steps": 5,
+        "train_discriminator_steps": 4,
         "train_generator_steps": 1,
         "train_retraction_identity_steps": 1,
         "train_triangular_identity_steps": 1,
-        "train_forward_consistency_steps": 1,
+        "train_forward_consistency_steps": 2,
         "train_backward_consistency_disc_steps": 5,
         "train_backward_consistency_gen_steps": 1,
     },
     "logging": {
         // "log_dir": "log-test",
-        "log_dir": "/home/aeon/log-wayside-64x64-2021-09-02",
+        "log_dir": "log-wayside-64x64-2021-09-02",
         "save_image_steps": 10,
         "save_checkpoint_steps": 100,
         "save_detector_checkpoint": true,
