@@ -1103,7 +1103,7 @@ pub fn training_worker(
             retraction_identity_similarity,
             triangular_identity_loss,
             triangular_identity_similarity,
-            generated_image_seq,
+            generator_generated_image_seq,
         ): (
             Last<_>,
             Last<_>,
@@ -1187,7 +1187,8 @@ pub fn training_worker(
             .into_iter()
             .unzip_n();
 
-        let generated_image_seq: Option<Vec<_>> = generated_image_seq.into_iter().collect();
+        let generator_generated_image_seq: Option<Vec<_>> =
+            generator_generated_image_seq.into_iter().collect();
 
         // train forward time consistency
         let (forward_consistency_loss, transformer_weights_1) = worker.train_forward_consistency(
@@ -1217,14 +1218,63 @@ pub fn training_worker(
 
         let transformer_weights = transformer_weights_1.or(transformer_weights_2);
 
+        let save_images = config
+            .logging
+            .save_image_steps
+            .into_iter()
+            .all(|steps| train_step % steps.get() == 0);
+
+        let transformer_images = (train_transformer && save_images)
+            .then(|| -> Result<_> {
+                let TrainWorker {
+                    detector_model,
+                    generator_model,
+                    transformer_model,
+                    ..
+                } = &mut worker;
+
+                let input_len = transformer_model.input_len();
+
+                let mut generated_det_seq: Vec<_> = gt_image_seq[0..input_len]
+                    .iter()
+                    .map(|gt_image| detector_model.forward_t(gt_image, false))
+                    .try_collect()?;
+                let mut generated_image_seq: Vec<_> = generated_det_seq
+                    .iter()
+                    .map(|det| generator_model.forward_t(det, false))
+                    .try_collect()?;
+                let mut attention_image_seq = vec![];
+
+                for index in 0..=(seq_len - input_len - 1) {
+                    let input_seq_seq = &generated_det_seq[index..(index + input_len)];
+                    let (generated_det, artifacts) =
+                        transformer_model.forward_t(input_seq_seq, false, true)?;
+                    let generated_image = generator_model.forward_t(&generated_det, false)?;
+
+                    generated_det_seq.push(generated_det);
+                    generated_image_seq.push(generated_image);
+                    attention_image_seq.push(artifacts.unwrap().attention_image);
+                }
+
+                Ok((generated_image_seq, generated_det_seq, attention_image_seq))
+            })
+            .transpose()?;
+
+        let (
+            transformer_generated_image_seq,
+            transformer_generated_det_seq,
+            transformer_attention_image_seq,
+        ) = match transformer_images {
+            Some((generated_image_seq, generated_det_seq, attention_image_seq)) => (
+                Some(generated_image_seq),
+                Some(generated_det_seq),
+                Some(attention_image_seq),
+            ),
+            None => (None, None, None),
+        };
+
         // send to logger
         {
-            let save_images = config
-                .logging
-                .save_image_steps
-                .into_iter()
-                .all(|steps| train_step % steps.get() == 0);
-
             let msg = msg::LogMessage::Loss(msg::Loss {
                 step: train_step,
                 learning_rate: lr,
@@ -1251,7 +1301,11 @@ pub fn training_worker(
                 image_seq_discriminator_weights,
 
                 ground_truth_image_seq: save_images.then(|| gt_image_seq),
-                generated_image_seq: generated_image_seq.and_then(|seq| save_images.then(|| seq)),
+                generator_generated_image_seq: generator_generated_image_seq
+                    .and_then(|seq| save_images.then(|| seq)),
+                transformer_generated_image_seq,
+                transformer_generated_det_seq,
+                transformer_attention_image_seq,
             });
 
             let result = log_tx.blocking_send(msg);

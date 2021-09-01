@@ -48,7 +48,10 @@ pub async fn logging_worker(
                 image_seq_discriminator_weights,
 
                 ground_truth_image_seq,
-                generated_image_seq,
+                generator_generated_image_seq,
+                transformer_generated_image_seq,
+                transformer_generated_det_seq,
+                transformer_attention_image_seq,
             }) => {
                 let step = step as i64;
 
@@ -319,13 +322,58 @@ pub async fn logging_worker(
                     }
                 }
 
-                if let Some(seq) = generated_image_seq {
+                if let Some(seq) = generator_generated_image_seq {
                     for (seq_index, image) in seq.into_iter().enumerate() {
                         event_writer
                             .write_image_list_async(
-                                format!("generated_image/seq_{}", seq_index),
+                                format!("generator_generated_image/seq_{}", seq_index),
                                 step,
                                 image,
+                            )
+                            .await?;
+                    }
+                }
+
+                if let Some(seq) = transformer_generated_image_seq {
+                    for (seq_index, image) in seq.into_iter().enumerate() {
+                        event_writer
+                            .write_image_list_async(
+                                format!("transformer_generated_image/seq_{}", seq_index),
+                                step,
+                                image,
+                            )
+                            .await?;
+                    }
+                }
+
+                if let Some(seq) = transformer_generated_det_seq {
+                    for (seq_index, det) in seq.into_iter().enumerate() {
+                        assert!(det.tensors.len() == 1);
+                        let (obj_image, _) = det.tensors[0].obj_logit.sigmoid().max_dim(2, false);
+
+                        event_writer
+                            .write_image_list_async(
+                                format!("transformer_detection_objectness/seq_{}", seq_index),
+                                step,
+                                obj_image,
+                            )
+                            .await?;
+                    }
+                }
+
+                if let Some(seq) = transformer_attention_image_seq {
+                    for (seq_index, attention_image) in seq.into_iter().enumerate() {
+                        let (bsize, _one, field_h, field_w, image_h, image_w) =
+                            attention_image.size6().unwrap();
+                        let attention_image = attention_image
+                            .permute(&[0, 1, 2, 4, 3, 5])
+                            .reshape(&[bsize, 1, field_h * image_h, field_w * image_w]);
+
+                        event_writer
+                            .write_image_list_async(
+                                format!("transformer_attention_image/seq_{}", seq_index),
+                                step,
+                                attention_image,
                             )
                             .await?;
                     }

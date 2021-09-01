@@ -32,7 +32,11 @@ pub struct Loss {
     pub image_seq_discriminator_weights: Option<WeightsAndGrads>,
 
     pub ground_truth_image_seq: Option<Vec<Tensor>>,
-    pub generated_image_seq: Option<Vec<Tensor>>,
+    pub generator_generated_image_seq: Option<Vec<Tensor>>,
+
+    pub transformer_generated_image_seq: Option<Vec<Tensor>>,
+    pub transformer_generated_det_seq: Option<Vec<DenseDetectionTensorList>>,
+    pub transformer_attention_image_seq: Option<Vec<Tensor>>,
 }
 
 #[derive(Debug)]

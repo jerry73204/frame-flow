@@ -132,7 +132,12 @@ impl TransformerInit {
                     let merge_context = Tensor::cat(&in_context_vec, 1);
                     let last_context = in_context_vec.last().unwrap();
 
-                    let shifted = attention_block.forward_t(last_context, &merge_context, train)?;
+                    let (shifted, attention_image) = attention_block.forward_t(
+                        last_context,
+                        &merge_context,
+                        train,
+                        with_artifacts,
+                    )?;
                     // let patch = patch_block.forward_t(&merge_context, train);
                     // let patch_mask = {
                     //     let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
@@ -188,6 +193,7 @@ impl TransformerInit {
 
                         TransformerArtifacts {
                             autoencoder_recon_loss,
+                            attention_image: attention_image.unwrap(),
                         }
                     });
 
@@ -302,7 +308,11 @@ impl TransformerBlockInit {
         };
 
         let forward_fn = Box::new(
-            move |input: &Tensor, context: &Tensor, train: bool| -> Result<Tensor> {
+            move |input: &Tensor,
+                  context: &Tensor,
+                  train: bool,
+                  with_artifacts: bool|
+                  -> Result<(Tensor, Option<Tensor>)> {
                 // assert!(!input.has_nan());
                 // assert!(!context.has_nan());
 
@@ -335,6 +345,9 @@ impl TransformerBlockInit {
                 .softmax(1, Kind::Float)
                 .view([bsize, patch_h * patch_w, in_h * in_w]);
                 // assert!(!attention.has_nan());
+
+                let attention_image = with_artifacts
+                    .then(|| attention.view([bsize, 1, patch_h, patch_w, in_h, in_w]));
 
                 let patches = Tensor::einsum(
                     "bqk,bck->bcqk",
@@ -371,7 +384,7 @@ impl TransformerBlockInit {
                         &[1, 1], // stride
                     );
 
-                Ok(output)
+                Ok((output, attention_image))
             },
         );
 
@@ -383,18 +396,26 @@ impl TransformerBlockInit {
 #[derivative(Debug)]
 pub struct TransformerBlock {
     #[derivative(Debug = "ignore")]
-    forward_fn: Box<dyn Fn(&Tensor, &Tensor, bool) -> Result<Tensor> + Send>,
+    forward_fn:
+        Box<dyn Fn(&Tensor, &Tensor, bool, bool) -> Result<(Tensor, Option<Tensor>)> + Send>,
 }
 
 impl TransformerBlock {
-    pub fn forward_t(&self, input: &Tensor, context: &Tensor, train: bool) -> Result<Tensor> {
-        (self.forward_fn)(input, context, train)
+    pub fn forward_t(
+        &self,
+        input: &Tensor,
+        context: &Tensor,
+        train: bool,
+        with_artifacts: bool,
+    ) -> Result<(Tensor, Option<Tensor>)> {
+        (self.forward_fn)(input, context, train, with_artifacts)
     }
 }
 
 #[derive(Debug)]
 pub struct TransformerArtifacts {
     pub autoencoder_recon_loss: Tensor,
+    pub attention_image: Tensor,
 }
 
 #[derive(Debug, Clone)]
@@ -638,7 +659,7 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
 }
 
 pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
-    // assert!(!input.has_nan());
+    assert!(!input.has_nan());
 
     let device = input.device();
     let num_anchors = anchors.len() as i64;
