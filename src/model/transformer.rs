@@ -2,7 +2,10 @@ use super::{
     generator::ResnetGeneratorInit,
     misc::{NormKind, PaddingKind},
 };
-use crate::{common::*, utils::DenseDetectionTensorExt};
+use crate::{
+    common::*,
+    utils::{DenseDetectionTensorExt, DenseDetectionTensorListExt},
+};
 use tch_modules::GroupNormInit;
 
 #[derive(Debug, Clone)]
@@ -55,13 +58,13 @@ impl TransformerInit {
             ChannelWiseAutoencoderInit { norm_kind }.build(path / "autoencoder", in_c, inner_c);
 
         let det_encoder = move |det: &DenseDetectionTensor, train: bool| -> Result<_> {
-            // assert!(!det.has_nan());
+            assert!(!det.has_nan());
 
             let (xs, anchors) = encode_detection(det)?;
-            // assert!(!xs.has_nan());
+            assert!(!xs.has_nan());
 
             let xs = ctx_encoder.forward_t(&xs, train);
-            // assert!(!xs.has_nan());
+            assert!(!xs.has_nan());
 
             Ok((xs, anchors))
         };
@@ -104,6 +107,7 @@ impl TransformerInit {
                         .flatten()
                         .all(|tensor| tensor.num_anchors() == 1
                             && tensor.num_classes() == num_classes));
+                    assert!(!input.iter().any(|&list| list.has_nan()));
 
                     let in_h = input[0].tensors[0].height() as i64;
                     let in_w = input[0].tensors[0].width() as i64;
@@ -131,6 +135,7 @@ impl TransformerInit {
 
                     let merge_context = Tensor::cat(&in_context_vec, 1);
                     let last_context = in_context_vec.last().unwrap();
+                    assert!(!merge_context.has_nan());
 
                     let (shifted, attention_image) = attention_block.forward_t(
                         last_context,
@@ -163,8 +168,10 @@ impl TransformerInit {
                     // assert!(!shifted.has_nan());
                     // assert!(!patch.has_nan());
 
-                    let out_context = shifted // + patch * patch_mask
-                              ;
+                    // let out_context = shifted + patch * patch_mask;
+                    let out_context = shifted;
+                    assert!(!out_context.has_nan());
+
                     let out_detection = det_decoder(&out_context, anchors.clone(), train);
 
                     let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {

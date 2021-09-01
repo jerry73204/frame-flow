@@ -80,7 +80,7 @@ pub trait DenseDetectionTensorListExt
 where
     Self: Sized,
 {
-    fn from_labels<'a, R>(
+    fn from_labels<R>(
         labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
         anchors: &[impl Borrow<[R]>],
         heights: &[usize],
@@ -94,7 +94,7 @@ where
 }
 
 impl DenseDetectionTensorListExt for DenseDetectionTensorList {
-    fn from_labels<'a, R>(
+    fn from_labels<R>(
         labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
         anchors: &[impl Borrow<[R]>],
         heights: &[usize],
@@ -132,7 +132,7 @@ pub trait DenseDetectionTensorExt
 where
     Self: Sized,
 {
-    fn from_labels<'a, R>(
+    fn from_labels<R>(
         labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
         anchors: impl Borrow<[R]>,
         height: usize,
@@ -148,7 +148,7 @@ where
 }
 
 impl DenseDetectionTensorExt for DenseDetectionTensor {
-    fn from_labels<'a, R>(
+    fn from_labels<R>(
         labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
         anchors: impl Borrow<[R]>,
         height: usize,
@@ -425,6 +425,8 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             }
             .build()
             .unwrap();
+
+            assert!(!output.has_nan());
 
             Ok(output)
         })
