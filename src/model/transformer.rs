@@ -58,14 +58,8 @@ impl TransformerInit {
         //     ChannelWiseAutoencoderInit { norm_kind }.build(path / "autoencoder", in_c, inner_c);
 
         // let det_encoder = move |det: &DenseDetectionTensor, train: bool| -> Result<_> {
-        //     assert!(!det.has_nan());
-
         //     let (xs, anchors) = encode_detection(det)?;
-        //     assert!(!xs.has_nan());
-
         //     let xs = ctx_encoder.forward_t(&xs, train);
-        //     assert!(!xs.has_nan());
-
         //     Ok((xs, anchors))
         // };
         // let det_decoder = move |xs: &Tensor, anchors, train: bool| {
@@ -81,17 +75,17 @@ impl TransformerInit {
             num_scaling_blocks,
             num_down_sample,
         }
-        .build(path / "attention_block", in_c, in_c * input_len, inner_c)?;
+        .build(path / "attention_block", in_c * input_len, inner_c)?;
 
-        // let patch_block = ResnetGeneratorInit {
-        //     ksize,
-        //     norm_kind,
-        //     padding_kind,
-        //     num_scale_blocks: num_scaling_blocks,
-        //     num_blocks: num_resnet_blocks,
-        //     ..Default::default()
-        // }
-        // .build(path / "patch_block", inner_c * input_len, inner_c, inner_c);
+        let param_block = ResnetGeneratorInit {
+            ksize,
+            norm_kind,
+            padding_kind,
+            num_scale_blocks: num_scaling_blocks,
+            num_blocks: num_resnet_blocks,
+            ..Default::default()
+        }
+        .build(path / "param_block", in_c * input_len, in_c, inner_c);
 
         let forward_fn = Box::new(
             move |input: &[&DenseDetectionTensorList],
@@ -112,40 +106,71 @@ impl TransformerInit {
 
                 let in_h = input[0].tensors[0].height() as i64;
                 let in_w = input[0].tensors[0].width() as i64;
-                let anchors = input[0].tensors[0].anchors.clone();
+                let anchors = &input[0].tensors[0].anchors;
                 ensure!(input
                     .iter()
                     .flat_map(|list| &list.tensors)
                     .all(|det| det.height() == in_h as usize
                         && det.width() == in_w as usize
-                        && det.anchors == anchors));
+                        && &det.anchors == anchors));
 
-                let in_context_vec: Vec<_> = input
-                    .iter()
-                    .flat_map(|list| &list.tensors)
-                    .map(|det| -> Result<_> {
-                        let (context, _) = encode_detection(det)?;
-                        Ok(context)
-                    })
-                    .try_collect()?;
-                // let anchors = {
-                //     let mut iter = anchors_set.into_iter();
-                //     let anchors = iter.next().unwrap();
-                //     ensure!(iter.next().is_none());
-                //     anchors
-                // };
+                let in_context = {
+                    let in_context_vec: Vec<_> = input
+                        .iter()
+                        .flat_map(|list| &list.tensors)
+                        .map(|det| -> Result<_> {
+                            let (context, _) = encode_detection(det)?;
+                            Ok(context)
+                        })
+                        .try_collect()?;
+                    Tensor::cat(&in_context_vec, 1)
+                };
+                assert!(!in_context.has_nan());
 
-                let merge_context = Tensor::cat(&in_context_vec, 1);
                 let (last_context, anchors) = unpack_detection(&input.last().unwrap().tensors[0])?;
-                assert!(!merge_context.has_nan());
 
-                let (shifted, attention_image) = attention_block.forward_t(
-                    &last_context,
-                    &merge_context,
-                    train,
-                    with_artifacts,
-                )?;
-                // let patch = patch_block.forward_t(&merge_context, train);
+                let (obj_detection, attention_image) = {
+                    let (xs, attention_image) = attention_block.forward_t(
+                        &last_context,
+                        &in_context,
+                        train,
+                        with_artifacts,
+                    )?;
+                    assert!(!xs.has_nan());
+                    let detection = pack_detection(&xs, anchors.clone());
+                    (detection, attention_image)
+                };
+
+                let param_detection = {
+                    let xs = param_block.forward_t(&in_context, train);
+                    decode_detection(&xs, anchors)
+                };
+
+                let combined_detection = {
+                    let DenseDetectionTensorUnchecked {
+                        obj_logit, anchors, ..
+                    } = obj_detection.into();
+                    let DenseDetectionTensorUnchecked {
+                        cy,
+                        cx,
+                        h,
+                        w,
+                        class_logit,
+                        ..
+                    } = param_detection.into();
+                    DenseDetectionTensorUnchecked {
+                        cy,
+                        cx,
+                        h,
+                        w,
+                        obj_logit,
+                        class_logit,
+                        anchors,
+                    }
+                    .build()
+                    .unwrap()
+                };
+
                 // let patch_mask = {
                 //     let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
                 //     let border_w = (in_w as f64 * BORDER_SIZE_RATIO).floor() as usize;
@@ -171,13 +196,9 @@ impl TransformerInit {
                 // assert!(!patch.has_nan());
 
                 // let out_context = shifted + patch * patch_mask;
-                let out_context = shifted;
-                assert!(!out_context.has_nan());
-
-                let out_detection = pack_detection(&out_context, anchors);
 
                 let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
-                    tensors: vec![out_detection],
+                    tensors: vec![combined_detection],
                 }
                 .try_into()
                 .unwrap();
@@ -262,7 +283,6 @@ impl TransformerBlockInit {
     pub fn build<'a>(
         self,
         path: impl Borrow<nn::Path<'a>>,
-        input_c: usize,
         ctx_c: usize,
         inner_c: usize,
     ) -> Result<TransformerBlock> {
@@ -276,7 +296,6 @@ impl TransformerBlockInit {
             num_down_sample,
         } = self;
         let bias = norm_kind == NormKind::InstanceNorm;
-        let input_c = input_c as i64;
 
         let resnet_init = ResnetGeneratorInit {
             ksize,
@@ -327,7 +346,7 @@ impl TransformerBlockInit {
                 // assert!(!input.has_nan());
                 // assert!(!context.has_nan());
 
-                let (bsize, _, in_h, in_w) = input.size4()?;
+                let (bsize, in_c, in_h, in_w) = input.size4()?;
                 ensure!(
                     matches!(context.size4()?, (bsize_, ctx_c_, ctx_h, ctx_w) if bsize == bsize_ && ctx_c == ctx_c_ as usize && in_h == ctx_h && in_w == ctx_w)
                 );
@@ -358,7 +377,7 @@ impl TransformerBlockInit {
                 // assert!(!attention.has_nan());
 
                 let patches = {
-                    let patches = input.view([bsize, input_c, in_h, in_w]).unfold2d(
+                    let patches = input.view([bsize, -1, in_h, in_w]).unfold2d(
                         &[patch_h, patch_w],
                         &[1, 1], // dilation
                         &[patch_h / 2, patch_w / 2],
@@ -366,17 +385,15 @@ impl TransformerBlockInit {
                     );
 
                     match (patch_h & 1 == 1, patch_w & 1 == 1) {
-                        (true, true) => {
-                            patches.view([bsize, input_c, patch_h, patch_w, in_h, in_w])
-                        }
+                        (true, true) => patches.view([bsize, -1, patch_h, patch_w, in_h, in_w]),
                         (true, false) => patches
-                            .view([bsize, input_c, patch_h, patch_w, in_h, in_w + 1])
+                            .view([bsize, -1, patch_h, patch_w, in_h, in_w + 1])
                             .i((.., .., .., .., .., 0..in_w)),
                         (false, true) => patches
-                            .view([bsize, input_c, patch_h, patch_w, in_h + 1, in_w])
+                            .view([bsize, -1, patch_h, patch_w, in_h + 1, in_w])
                             .i((.., .., .., .., 0..in_h, ..)),
                         (false, false) => patches
-                            .view([bsize, input_c, patch_h, patch_w, in_h + 1, in_w + 1])
+                            .view([bsize, -1, patch_h, patch_w, in_h + 1, in_w + 1])
                             .i((.., .., .., .., 0..in_h, 0..in_w)),
                     }
                 };
@@ -403,7 +420,7 @@ impl TransformerBlockInit {
 
                 // // merge patches
                 let output = convolution
-                    .view([bsize, input_c * patch_h * patch_w, in_h * in_w])
+                    .view([bsize, in_c * patch_h * patch_w, in_h * in_w])
                     .col2im(
                         &[in_h, in_w],
                         &[patch_h, patch_w],
