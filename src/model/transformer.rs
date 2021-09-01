@@ -54,24 +54,24 @@ impl TransformerInit {
         let in_c = 5 + num_classes;
         ensure!(input_len > 0);
 
-        let (ctx_encoder, ctx_decoder) =
-            ChannelWiseAutoencoderInit { norm_kind }.build(path / "autoencoder", in_c, inner_c);
+        // let (ctx_encoder, ctx_decoder) =
+        //     ChannelWiseAutoencoderInit { norm_kind }.build(path / "autoencoder", in_c, inner_c);
 
-        let det_encoder = move |det: &DenseDetectionTensor, train: bool| -> Result<_> {
-            assert!(!det.has_nan());
+        // let det_encoder = move |det: &DenseDetectionTensor, train: bool| -> Result<_> {
+        //     assert!(!det.has_nan());
 
-            let (xs, anchors) = encode_detection(det)?;
-            assert!(!xs.has_nan());
+        //     let (xs, anchors) = encode_detection(det)?;
+        //     assert!(!xs.has_nan());
 
-            let xs = ctx_encoder.forward_t(&xs, train);
-            assert!(!xs.has_nan());
+        //     let xs = ctx_encoder.forward_t(&xs, train);
+        //     assert!(!xs.has_nan());
 
-            Ok((xs, anchors))
-        };
-        let det_decoder = move |xs: &Tensor, anchors, train: bool| {
-            let xs = ctx_decoder.forward_t(xs, train);
-            decode_detection(&xs, anchors)
-        };
+        //     Ok((xs, anchors))
+        // };
+        // let det_decoder = move |xs: &Tensor, anchors, train: bool| {
+        //     let xs = ctx_decoder.forward_t(xs, train);
+        //     decode_detection(&xs, anchors)
+        // };
 
         let attention_block = TransformerBlockInit {
             ksize,
@@ -81,7 +81,7 @@ impl TransformerInit {
             num_scaling_blocks,
             num_down_sample,
         }
-        .build(path / "attention_block", inner_c * input_len, inner_c)?;
+        .build(path / "attention_block", in_c, in_c * input_len, inner_c)?;
 
         // let patch_block = ResnetGeneratorInit {
         //     ksize,
@@ -93,120 +93,122 @@ impl TransformerInit {
         // }
         // .build(path / "patch_block", inner_c * input_len, inner_c, inner_c);
 
-        let forward_fn =
-            Box::new(
-                move |input: &[&DenseDetectionTensorList],
-                      train: bool,
-                      with_artifacts: bool|
-                      -> Result<_> {
-                    ensure!(input.len() == input_len);
-                    ensure!(input.iter().all(|list| list.tensors.len() == 1));
-                    ensure!(input
+        let forward_fn = Box::new(
+            move |input: &[&DenseDetectionTensorList],
+                  train: bool,
+                  with_artifacts: bool|
+                  -> Result<_> {
+                ensure!(input.len() == input_len);
+                ensure!(input.iter().all(|list| list.tensors.len() == 1));
+                ensure!(
+                    input
                         .iter()
                         .map(|list| &list.tensors)
                         .flatten()
                         .all(|tensor| tensor.num_anchors() == 1
-                            && tensor.num_classes() == num_classes));
-                    assert!(!input.iter().any(|&list| list.has_nan()));
+                            && tensor.num_classes() == num_classes)
+                );
+                assert!(!input.iter().any(|&list| list.has_nan()));
 
-                    let in_h = input[0].tensors[0].height() as i64;
-                    let in_w = input[0].tensors[0].width() as i64;
-                    let anchors = input[0].tensors[0].anchors.clone();
-                    ensure!(input
-                        .iter()
-                        .flat_map(|list| &list.tensors)
-                        .all(|det| det.height() == in_h as usize
-                            && det.width() == in_w as usize
-                            && det.anchors == anchors));
+                let in_h = input[0].tensors[0].height() as i64;
+                let in_w = input[0].tensors[0].width() as i64;
+                let anchors = input[0].tensors[0].anchors.clone();
+                ensure!(input
+                    .iter()
+                    .flat_map(|list| &list.tensors)
+                    .all(|det| det.height() == in_h as usize
+                        && det.width() == in_w as usize
+                        && det.anchors == anchors));
 
-                    let (in_context_vec, anchors_set): (Vec<_>, HashSet<_>) = input
-                        .iter()
-                        .flat_map(|list| &list.tensors)
-                        .map(|det| det_encoder(det, train))
-                        .try_collect::<_, Vec<_>, _>()?
-                        .into_iter()
-                        .unzip();
-                    let anchors = {
-                        let mut iter = anchors_set.into_iter();
-                        let anchors = iter.next().unwrap();
-                        ensure!(iter.next().is_none());
-                        anchors
-                    };
+                let in_context_vec: Vec<_> = input
+                    .iter()
+                    .flat_map(|list| &list.tensors)
+                    .map(|det| -> Result<_> {
+                        let (context, _) = encode_detection(det)?;
+                        Ok(context)
+                    })
+                    .try_collect()?;
+                // let anchors = {
+                //     let mut iter = anchors_set.into_iter();
+                //     let anchors = iter.next().unwrap();
+                //     ensure!(iter.next().is_none());
+                //     anchors
+                // };
 
-                    let merge_context = Tensor::cat(&in_context_vec, 1);
-                    let last_context = in_context_vec.last().unwrap();
-                    assert!(!merge_context.has_nan());
+                let merge_context = Tensor::cat(&in_context_vec, 1);
+                let (last_context, anchors) = unpack_detection(&input.last().unwrap().tensors[0])?;
+                assert!(!merge_context.has_nan());
 
-                    let (shifted, attention_image) = attention_block.forward_t(
-                        last_context,
-                        &merge_context,
-                        train,
-                        with_artifacts,
-                    )?;
-                    // let patch = patch_block.forward_t(&merge_context, train);
-                    // let patch_mask = {
-                    //     let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
-                    //     let border_w = (in_w as f64 * BORDER_SIZE_RATIO).floor() as usize;
-                    //     Tensor::from_cv(nd::Array2::from_shape_fn(
-                    //         [in_h as usize, in_w as usize],
-                    //         |(row, col)| {
-                    //             let ok = row < border_h
-                    //                 || row >= (in_h as usize - border_h)
-                    //                 || col < border_w
-                    //                 || col >= (in_w as usize - border_w);
-                    //             if ok {
-                    //                 1f32
-                    //             } else {
-                    //                 0f32
-                    //             }
-                    //         },
-                    //     ))
-                    //     .set_requires_grad(false)
-                    //     .to_device(device)
+                let (shifted, attention_image) = attention_block.forward_t(
+                    &last_context,
+                    &merge_context,
+                    train,
+                    with_artifacts,
+                )?;
+                // let patch = patch_block.forward_t(&merge_context, train);
+                // let patch_mask = {
+                //     let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
+                //     let border_w = (in_w as f64 * BORDER_SIZE_RATIO).floor() as usize;
+                //     Tensor::from_cv(nd::Array2::from_shape_fn(
+                //         [in_h as usize, in_w as usize],
+                //         |(row, col)| {
+                //             let ok = row < border_h
+                //                 || row >= (in_h as usize - border_h)
+                //                 || col < border_w
+                //                 || col >= (in_w as usize - border_w);
+                //             if ok {
+                //                 1f32
+                //             } else {
+                //                 0f32
+                //             }
+                //         },
+                //     ))
+                //     .set_requires_grad(false)
+                //     .to_device(device)
+                // };
+
+                // assert!(!shifted.has_nan());
+                // assert!(!patch.has_nan());
+
+                // let out_context = shifted + patch * patch_mask;
+                let out_context = shifted;
+                assert!(!out_context.has_nan());
+
+                let out_detection = pack_detection(&out_context, anchors);
+
+                let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
+                    tensors: vec![out_detection],
+                }
+                .try_into()
+                .unwrap();
+
+                let artifacts = with_artifacts.then(|| {
+                    // compute reconstruction for detection autoencoder
+                    // let autoencoder_recon_loss = {
+                    //     let recon_loss_vec: Vec<_> =
+                    //         izip!(input.iter().flat_map(|list| &list.tensors), &in_context_vec)
+                    //             .map(|(orig, latent)| -> Tensor {
+                    //                 let recon = det_decoder(latent, anchors.clone(), train);
+                    //                 super::loss::dense_detection_similarity(
+                    //                     &orig.detach().copy(),
+                    //                     &recon,
+                    //                 )
+                    //                 .unwrap()
+                    //                 .total_loss()
+                    //             })
+                    //             .collect();
+                    //     recon_loss_vec.iter().sum::<Tensor>() / recon_loss_vec.len() as f64
                     // };
 
-                    // assert!(!shifted.has_nan());
-                    // assert!(!patch.has_nan());
-
-                    // let out_context = shifted + patch * patch_mask;
-                    let out_context = shifted;
-                    assert!(!out_context.has_nan());
-
-                    let out_detection = det_decoder(&out_context, anchors.clone(), train);
-
-                    let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
-                        tensors: vec![out_detection],
+                    TransformerArtifacts {
+                        // autoencoder_recon_loss,
+                        attention_image: attention_image.unwrap(),
                     }
-                    .try_into()
-                    .unwrap();
+                });
 
-                    let artifacts = with_artifacts.then(|| {
-                        // compute reconstruction for detection autoencoder
-                        let autoencoder_recon_loss = {
-                            let recon_loss_vec: Vec<_> =
-                                izip!(input.iter().flat_map(|list| &list.tensors), &in_context_vec)
-                                    .map(|(orig, latent)| -> Tensor {
-                                        let recon = det_decoder(latent, anchors.clone(), train);
-                                        super::loss::dense_detection_similarity(
-                                            &orig.detach().copy(),
-                                            &recon,
-                                        )
-                                        .unwrap()
-                                        .total_loss()
-                                    })
-                                    .collect();
-                            recon_loss_vec.iter().sum::<Tensor>() / recon_loss_vec.len() as f64
-                        };
-
-                        TransformerArtifacts {
-                            autoencoder_recon_loss,
-                            attention_image: attention_image.unwrap(),
-                        }
-                    });
-
-                    Ok((output, artifacts))
-                },
-            );
+                Ok((output, artifacts))
+            },
+        );
 
         Ok(Transformer {
             input_len,
@@ -260,6 +262,7 @@ impl TransformerBlockInit {
     pub fn build<'a>(
         self,
         path: impl Borrow<nn::Path<'a>>,
+        input_c: usize,
         ctx_c: usize,
         inner_c: usize,
     ) -> Result<TransformerBlock> {
@@ -358,9 +361,9 @@ impl TransformerBlockInit {
 
                 let patches = Tensor::einsum(
                     "bqk,bck->bcqk",
-                    &[attention, input.view([bsize, inner_c as i64, -1])],
+                    &[attention, input.view([bsize, input_c as i64, -1])],
                 )
-                .view([bsize, inner_c as i64, patch_h, patch_w, in_h, in_w]);
+                .view([bsize, input_c as i64, patch_h, patch_w, in_h, in_w]);
 
                 // pad patch sizes to odd numbers
                 let (patches, patch_h) = if patch_h & 1 == 1 {
@@ -382,7 +385,7 @@ impl TransformerBlockInit {
 
                 // merge patches
                 let output = patches
-                    .view([bsize, inner_c as i64 * patch_h * patch_w, in_h * in_w])
+                    .view([bsize, input_c as i64 * patch_h * patch_w, in_h * in_w])
                     .col2im(
                         &[in_h, in_w],
                         &[patch_h, patch_w],
@@ -421,7 +424,7 @@ impl TransformerBlock {
 
 #[derive(Debug)]
 pub struct TransformerArtifacts {
-    pub autoencoder_recon_loss: Tensor,
+    // pub autoencoder_recon_loss: Tensor,
     pub attention_image: Tensor,
 }
 
@@ -725,9 +728,172 @@ pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDe
     output
 }
 
-// fn autoencoder_loss(src: &Tensor, dst: &Tensor) -> Tensor {
+pub fn unpack_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<RatioSize<R64>>)> {
+    let device = input.device();
+    let bsize = input.batch_size() as i64;
+    let num_classes = input.num_classes() as i64;
+    let in_h = input.height() as i64;
+    let in_w = input.width() as i64;
+    let num_anchors = input.anchors.len() as i64;
 
-// }
+    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
+        .set_requires_grad(false)
+        .view([1, 1, 1, in_h, 1]);
+    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
+        .set_requires_grad(false)
+        .view([1, 1, 1, 1, in_w]);
+    let (anchor_heights, anchor_widths) = {
+        let (anchor_h_vec, anchor_w_vec) = input
+            .anchors
+            .iter()
+            .cloned()
+            .map(|anchor_size| {
+                let anchor_size = anchor_size.cast::<f32>().unwrap();
+                (anchor_size.h, anchor_size.w)
+            })
+            .unzip_n_vec();
+
+        let anchor_heights = Tensor::of_slice(&anchor_h_vec)
+            .set_requires_grad(false)
+            .to_device(device)
+            .view([1, 1, num_anchors, 1, 1]);
+        let anchor_widths = Tensor::of_slice(&anchor_w_vec)
+            .set_requires_grad(false)
+            .to_device(device)
+            .view([1, 1, num_anchors, 1, 1]);
+
+        (anchor_heights, anchor_widths)
+    };
+
+    let merge = {
+        // let wtf = (&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0;
+        // dbg!(input.cy.max());
+        // dbg!(input.cy.min());
+        // dbg!(wtf.max());
+        // dbg!(wtf.min());
+        // assert!(bool::from(input.h.ge(0.0).all()));
+        // assert!(bool::from(input.w.ge(0.0).all()));
+
+        let cy_unbiased = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0).view([
+            bsize,
+            1,
+            num_anchors,
+            in_h,
+            in_w,
+        ]);
+        let cx_unbiased = ((&input.cx * in_w as f64 - &x_offsets + 0.5) / 2.0).view([
+            bsize,
+            1,
+            num_anchors,
+            in_h,
+            in_w,
+        ]);
+        let h_unbiased =
+            ((&input.h / anchor_heights).sqrt() / 2.0).view([bsize, 1, num_anchors, in_h, in_w]);
+        let w_unbiased =
+            ((&input.w / anchor_widths).sqrt() / 2.0).view([bsize, 1, num_anchors, in_h, in_w]);
+        let obj_prob = input.obj_prob().view([bsize, 1, num_anchors, in_h, in_w]);
+        let class_prob =
+            input
+                .class_prob()
+                .view([bsize, num_classes as i64, num_anchors, in_h, in_w]);
+
+        // dbg!(cy_logit.min(), cy_logit.max());
+        // dbg!(cx_logit.min(), cx_logit.max());
+        // dbg!(h_logit.min(), h_logit.max());
+        // dbg!(w_logit.min(), w_logit.max());
+        // dbg!(obj_logit.min(), obj_logit.max());
+        // dbg!(class_logit.min(), class_logit.max());
+
+        // assert!(bool::from(input.h.ge(0.0).all()));
+        // assert!(bool::from(input.w.ge(0.0).all()));
+
+        ensure!(!cy_unbiased.has_nan());
+        ensure!(!cx_unbiased.has_nan());
+        ensure!(!h_unbiased.has_nan());
+        ensure!(!w_unbiased.has_nan());
+        ensure!(!obj_prob.has_nan());
+        ensure!(!class_prob.has_nan());
+
+        Tensor::cat(
+            &[
+                cy_unbiased,
+                cx_unbiased,
+                h_unbiased,
+                w_unbiased,
+                obj_prob,
+                class_prob,
+            ],
+            1,
+        )
+        .view([bsize, -1, in_h, in_w])
+    };
+
+    // dbg!(merge.min(), merge.max());
+    // assert!(!merge.has_nan());
+
+    Ok((merge, input.anchors.clone()))
+}
+
+pub fn pack_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
+    assert!(!input.has_nan());
+
+    let device = input.device();
+    let num_anchors = anchors.len() as i64;
+    let (bsize, _, in_h, in_w) = input.size4().unwrap();
+
+    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
+        .set_requires_grad(false)
+        .view([1, 1, 1, in_h, 1]);
+    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
+        .set_requires_grad(false)
+        .view([1, 1, 1, 1, in_w]);
+    let (anchor_heights, anchor_widths) = {
+        let (anchor_h_vec, anchor_w_vec) = anchors
+            .iter()
+            .cloned()
+            .map(|anchor_size| {
+                let anchor_size = anchor_size.cast::<f32>().unwrap();
+                (anchor_size.h, anchor_size.w)
+            })
+            .unzip_n_vec();
+
+        let anchor_heights = Tensor::of_slice(&anchor_h_vec)
+            .set_requires_grad(false)
+            .to_device(device)
+            .view([1, 1, num_anchors, 1, 1]);
+        let anchor_widths = Tensor::of_slice(&anchor_w_vec)
+            .set_requires_grad(false)
+            .to_device(device)
+            .view([1, 1, num_anchors, 1, 1]);
+
+        (anchor_heights, anchor_widths)
+    };
+
+    let xs = input.view([bsize, -1, num_anchors, in_h, in_w]);
+    let cy = ((xs.i((.., 0..1, .., .., ..)) * 2.0 - 0.5) + y_offsets) / in_h as f64;
+    let cx = ((xs.i((.., 1..2, .., .., ..)) * 2.0 - 0.5) + x_offsets) / in_w as f64;
+    let h = xs.i((.., 2..3, .., .., ..)).mul(2.0).pow(2.0) * anchor_heights;
+    let w = xs.i((.., 3..4, .., .., ..)).mul(2.0).pow(2.0) * anchor_widths;
+    let obj_logit = xs.i((.., 4..5, .., .., ..)).logit(1e-6);
+    let class_logit = xs.i((.., 5.., .., .., ..)).logit(1e-6);
+
+    let output = DenseDetectionTensorUnchecked {
+        cy,
+        cx,
+        h,
+        w,
+        obj_logit,
+        class_logit,
+        anchors,
+    }
+    .build()
+    .unwrap();
+
+    assert!(!output.has_nan());
+
+    output
+}
 
 #[cfg(test)]
 mod tests {
@@ -779,11 +945,9 @@ mod tests {
                 * anchor_heights;
             let w =
                 Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 4.0 * anchor_widths;
-            let obj_logit =
-                Tensor::randn(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU).abs() * 10.0;
+            let obj_logit = Tensor::randn(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 0.5;
             let class_logit =
-                Tensor::randn(&[bsize, num_classes, num_anchors, in_h, in_w], FLOAT_CPU).abs()
-                    * 10.0;
+                Tensor::randn(&[bsize, num_classes, num_anchors, in_h, in_w], FLOAT_CPU) * 0.5;
 
             let orig: DenseDetectionTensor = DenseDetectionTensorUnchecked {
                 cy,
@@ -813,6 +977,87 @@ mod tests {
             assert_abs_diff_eq!(w_diff, 0.0, epsilon = 1e-6);
             assert_abs_diff_eq!(obj_diff, 0.0, epsilon = 1e-6);
             assert_abs_diff_eq!(class_diff, 0.0, epsilon = 1e-6);
+        });
+    }
+
+    #[test]
+    fn detection_pack_unpack() {
+        tch::no_grad(|| {
+            let bsize = 4;
+            let num_classes = 10;
+            let in_h = 16;
+            let in_w = 9;
+            let anchors: Vec<_> = [(0.5, 0.1), (0.1, 0.6)]
+                .iter()
+                .map(|&(h, w)| RatioSize::from_hw(r64(h), r64(w)).unwrap())
+                .collect();
+            let num_anchors = anchors.len() as i64;
+            let y_offsets = Tensor::arange(in_h, FLOAT_CPU)
+                .set_requires_grad(false)
+                .view([1, 1, 1, in_h, 1]);
+            let x_offsets = Tensor::arange(in_w, FLOAT_CPU)
+                .set_requires_grad(false)
+                .view([1, 1, 1, 1, in_w]);
+            let (anchor_h_vec, anchor_w_vec) = anchors
+                .iter()
+                .cloned()
+                .map(|anchor_size| {
+                    let anchor_size = anchor_size.cast::<f32>().unwrap();
+                    (anchor_size.h, anchor_size.w)
+                })
+                .unzip_n_vec();
+            let anchor_heights = Tensor::of_slice(&anchor_h_vec)
+                .set_requires_grad(false)
+                .to_device(Device::Cpu)
+                .view([1, 1, num_anchors, 1, 1]);
+            let anchor_widths = Tensor::of_slice(&anchor_w_vec)
+                .set_requires_grad(false)
+                .to_device(Device::Cpu)
+                .view([1, 1, num_anchors, 1, 1]);
+
+            let cy = (Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 2.0 - 0.5
+                + y_offsets)
+                / in_h as f64;
+            let cx = (Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 2.0 - 0.5
+                + x_offsets)
+                / in_w as f64;
+            let h = Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU)
+                * 4.0
+                * anchor_heights;
+            let w =
+                Tensor::rand(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 4.0 * anchor_widths;
+            let obj_logit = Tensor::randn(&[bsize, 1, num_anchors, in_h, in_w], FLOAT_CPU) * 0.5;
+            let class_logit =
+                Tensor::randn(&[bsize, num_classes, num_anchors, in_h, in_w], FLOAT_CPU) * 0.5;
+
+            let orig: DenseDetectionTensor = DenseDetectionTensorUnchecked {
+                cy,
+                cx,
+                h,
+                w,
+                obj_logit,
+                class_logit,
+                anchors: anchors.clone(),
+            }
+            .try_into()
+            .unwrap();
+
+            let (tensor, _anchors) = unpack_detection(&orig).unwrap();
+            let recon = pack_detection(&tensor, anchors);
+
+            let cy_diff: f64 = (&orig.cy - &recon.cy).abs().max().into();
+            let cx_diff: f64 = (&orig.cx - &recon.cx).abs().max().into();
+            let h_diff: f64 = (&orig.h - &recon.h).abs().max().into();
+            let w_diff: f64 = (&orig.w - &recon.w).abs().max().into();
+            let obj_diff: f64 = (&orig.obj_logit - &recon.obj_logit).abs().max().into();
+            let class_diff: f64 = (&orig.class_logit - &recon.class_logit).abs().max().into();
+
+            assert_abs_diff_eq!(cy_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(cx_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(h_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(w_diff, 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(obj_diff, 0.0, epsilon = 1e-5);
+            assert_abs_diff_eq!(class_diff, 0.0, epsilon = 1e-5);
         });
     }
 }
