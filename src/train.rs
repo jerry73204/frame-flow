@@ -132,7 +132,7 @@ impl TrainWorker {
             clamp_running_var(generator_vs);
 
             // generate fake image
-            let fake_image = generator_model.forward_t(input_det, true)?;
+            let fake_image = generator_model.forward_t(input_det, None, true)?;
 
             // augmentation
             let (real_image, fake_image) = {
@@ -195,7 +195,7 @@ impl TrainWorker {
 
             // generate fake image
             let fake_image = generator_model
-                .forward_t(input_det, train_generator)?
+                .forward_t(input_det, None, train_generator)?
                 .detach()
                 .copy();
 
@@ -267,7 +267,7 @@ impl TrainWorker {
             // clamp running_var in norms
             clamp_running_var(generator_vs);
 
-            let recon_image = generator_model.forward_t(gt_det, true)?;
+            let recon_image = generator_model.forward_t(gt_det, None, true)?;
             let recon_det = detector_model.forward_t(&recon_image, false)?;
 
             let (loss, _) =
@@ -312,7 +312,7 @@ impl TrainWorker {
             clamp_running_var(generator_vs);
 
             let orig_det = detector_model.forward_t(gt_image, false)?;
-            let fake_image = generator_model.forward_t(&orig_det, true)?;
+            let fake_image = generator_model.forward_t(&orig_det, None, true)?;
             let recon_det = detector_model.forward_t(&fake_image, false)?;
 
             let (loss, _) =
@@ -423,6 +423,7 @@ impl TrainWorker {
         transformer_vs.unfreeze();
 
         let input_len = transformer_model.input_len();
+        let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
             let total_consistency_loss: AddVal<_> = izip!(
@@ -432,11 +433,12 @@ impl TrainWorker {
             .map(|(gt_image_window, gt_det_window)| -> Result<_> {
                 let (last_fake_det, _artifacts) =
                     transformer_model.forward_t(gt_det_window, true, false)?;
-                let last_fake_image = generator_model.forward_t(&last_fake_det, false);
+                let last_fake_image =
+                    generator_model.forward_t(&last_fake_det, Some(&noise), false);
                 let fake_image_window: Vec<_> = {
                     let prior_image_window = gt_det_window
                         .iter()
-                        .map(|gt_det| generator_model.forward_t(gt_det, false));
+                        .map(|gt_det| generator_model.forward_t(gt_det, Some(&noise), false));
                     chain!(prior_image_window, iter::once(last_fake_image)).try_collect()?
                 };
 
@@ -488,6 +490,7 @@ impl TrainWorker {
         } = *self;
 
         let input_len = transformer_model.input_len();
+        let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
             let total_consistency_loss: AddVal<_> = izip!(
@@ -498,11 +501,12 @@ impl TrainWorker {
                 let (last_fake_det, _artifacts) =
                     transformer_model.forward_t(gt_det_window, true, false)?;
 
-                let last_fake_image = generator_model.forward_t(&last_fake_det, false);
+                let last_fake_image =
+                    generator_model.forward_t(&last_fake_det, Some(&noise), false);
                 let fake_image_window: Vec<_> = {
                     let prior_image_seq = gt_det_window
                         .iter()
-                        .map(|gt_det| generator_model.forward_t(gt_det, false));
+                        .map(|gt_det| generator_model.forward_t(gt_det, Some(&noise), false));
                     chain!(prior_image_seq, iter::once(last_fake_image)).try_collect()?
                 };
 
@@ -980,7 +984,7 @@ pub fn training_worker(
                 if train_generator {
                     clamp_running_var(&mut worker.generator_vs);
                     let det = worker.detector_model.forward_t(gt_image, false)?;
-                    let fake_image = worker.generator_model.forward_t(&det, true)?;
+                    let fake_image = worker.generator_model.forward_t(&det, None, true)?;
                     debug_assert_eq!(gt_image.size(), fake_image.size());
                 }
 
@@ -988,10 +992,8 @@ pub fn training_worker(
                 if train_discriminator {
                     clamp_running_var(&mut worker.discriminator_vs);
                     let det = worker.detector_model.forward_t(gt_image, false)?;
-                    let fake_image = worker.generator_model.forward_t(&det, false)?;
-
+                    let fake_image = worker.generator_model.forward_t(&det, None, false)?;
                     let _ = worker.discriminator_model.forward_t(gt_image, true);
-
                     let _ = worker.discriminator_model.forward_t(&fake_image, true);
                 }
 
@@ -1022,9 +1024,11 @@ pub fn training_worker(
             }
 
             if train_image_seq_discriminator {
+                let noise = Tensor::randn(&[worker.generator_model.latent_dim], FLOAT_CPU);
+
                 let fake_image_seq: Vec<_> = gt_det_seq
                     .iter()
-                    .map(|det| worker.generator_model.forward_t(det, false))
+                    .map(|det| worker.generator_model.forward_t(det, Some(&noise), false))
                     .try_collect()?;
 
                 izip!(
@@ -1227,38 +1231,46 @@ pub fn training_worker(
             .all(|steps| train_step % steps.get() == 0);
 
         let transformer_images = (train_transformer && save_images)
-            .then(|| -> Result<_> {
-                let TrainWorker {
-                    detector_model,
-                    generator_model,
-                    transformer_model,
-                    ..
-                } = &mut worker;
+            .then(|| {
+                tch::no_grad(|| -> Result<_> {
+                    let TrainWorker {
+                        detector_model,
+                        generator_model,
+                        transformer_model,
+                        ..
+                    } = &mut worker;
 
-                let input_len = transformer_model.input_len();
+                    let input_len = transformer_model.input_len();
+                    let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
-                let mut generated_det_seq: Vec<_> = gt_image_seq[0..input_len]
-                    .iter()
-                    .map(|gt_image| detector_model.forward_t(gt_image, false))
-                    .try_collect()?;
-                let mut generated_image_seq: Vec<_> = generated_det_seq
-                    .iter()
-                    .map(|det| generator_model.forward_t(det, false))
-                    .try_collect()?;
-                let mut attention_image_seq = vec![];
+                    let mut generated_det_seq: Vec<_> = gt_image_seq[0..input_len]
+                        .iter()
+                        .map(|gt_image| detector_model.forward_t(gt_image, false))
+                        .try_collect()?;
+                    let mut generated_image_seq: Vec<_> = generated_det_seq
+                        .iter()
+                        .map(|det| generator_model.forward_t(det, Some(&noise), false))
+                        .try_collect()?;
+                    let mut attention_image_seq = vec![];
 
-                for index in 0..=(seq_len - input_len - 1) {
-                    let input_seq_seq = &generated_det_seq[index..(index + input_len)];
-                    let (generated_det, artifacts) =
-                        transformer_model.forward_t(input_seq_seq, false, true)?;
-                    let generated_image = generator_model.forward_t(&generated_det, false)?;
+                    for index in 0..=(seq_len - input_len - 1) {
+                        let input_seq_seq = &generated_det_seq[index..(index + input_len)];
+                        let (generated_det, artifacts) =
+                            transformer_model.forward_t(input_seq_seq, false, true)?;
+                        let generated_image =
+                            generator_model.forward_t(&generated_det, Some(&noise), false)?;
 
-                    generated_det_seq.push(generated_det);
-                    generated_image_seq.push(generated_image);
-                    attention_image_seq.push(artifacts.unwrap().attention_image);
-                }
+                        generated_det_seq.push(generated_det);
+                        generated_image_seq.push(generated_image);
+                        attention_image_seq.push(artifacts.unwrap().attention_image);
+                    }
 
-                Ok((generated_image_seq, generated_det_seq, attention_image_seq))
+                    Ok((
+                        generated_image_seq.to_device(Device::Cpu),
+                        generated_det_seq.to_device(Device::Cpu),
+                        attention_image_seq.to_device(Device::Cpu),
+                    ))
+                })
             })
             .transpose()?;
 
@@ -1511,7 +1523,12 @@ struct GeneratorWrapper {
 }
 
 impl GeneratorWrapper {
-    pub fn forward_t(&self, input: &DenseDetectionTensorList, train: bool) -> Result<Tensor> {
+    pub fn forward_t(
+        &self,
+        input: &DenseDetectionTensorList,
+        noise: Option<&Tensor>,
+        train: bool,
+    ) -> Result<Tensor> {
         let Self {
             latent_dim,
             ref embedding_model,
@@ -1522,8 +1539,15 @@ impl GeneratorWrapper {
         let embedding = embedding_model.forward_t(&input, train)?;
         let noise = {
             let (b, _c, h, w) = embedding.size4()?;
-            Tensor::randn(&[b, latent_dim, 1, 1], (Kind::Float, device))
-                .expand(&[b, latent_dim, h, w], false)
+            let noise = match noise {
+                Some(noise) => {
+                    let noise = noise.borrow();
+                    ensure!(noise.size1()? == latent_dim);
+                    noise.view([1, latent_dim, 1, 1]).to_device(device)
+                }
+                None => Tensor::randn(&[b, latent_dim, 1, 1], (Kind::Float, device)),
+            };
+            noise.expand(&[b, latent_dim, h, w], false)
         };
         let input = Tensor::cat(&[embedding, noise], 1);
         let output = generator_model.forward_t(&input, train);
