@@ -312,18 +312,6 @@ pub async fn logging_worker(
                     }
                 }
 
-                if let Some(seq) = ground_truth_image_seq {
-                    for (seq_index, image) in seq.into_iter().enumerate() {
-                        event_writer
-                            .write_image_list_async(
-                                format!("ground_truth_image/seq_{}", seq_index),
-                                step,
-                                image,
-                            )
-                            .await?;
-                    }
-                }
-
                 let sub_image_dir = {
                     let dir = image_dir.join(format!(
                         "{:08}_{}",
@@ -344,19 +332,27 @@ pub async fn logging_worker(
                         Fallible::Ok(seq)
                     };
 
-                if let Some(seq) = generator_generated_image_seq {
+                if let Some(seq) = ground_truth_image_seq {
                     let seq =
                         save_image_seq_async("ground_truth", sub_image_dir.clone(), seq).await?;
+                    save_image_seq_to_tfrecord(&mut event_writer, "ground_truth", step, seq)
+                        .await?;
+                }
 
-                    for (seq_index, image) in seq.into_iter().enumerate() {
-                        event_writer
-                            .write_image_list_async(
-                                format!("generator_generated_image/seq_{}", seq_index),
-                                step,
-                                image,
-                            )
-                            .await?;
-                    }
+                if let Some(seq) = generator_generated_image_seq {
+                    let seq = save_image_seq_async(
+                        "generator_generated_image",
+                        sub_image_dir.clone(),
+                        seq,
+                    )
+                    .await?;
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "generator_generated_image",
+                        step,
+                        seq,
+                    )
+                    .await?;
                 }
 
                 if let Some(seq) = transformer_generated_image_seq {
@@ -367,15 +363,13 @@ pub async fn logging_worker(
                     )
                     .await?;
 
-                    for (seq_index, image) in seq.into_iter().enumerate() {
-                        event_writer
-                            .write_image_list_async(
-                                format!("transformer_generated_image/seq_{}", seq_index),
-                                step,
-                                image,
-                            )
-                            .await?;
-                    }
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "transformer_generated_image",
+                        step,
+                        seq,
+                    )
+                    .await?;
                 }
 
                 if let Some(seq) = transformer_generated_det_seq {
@@ -395,15 +389,13 @@ pub async fn logging_worker(
                     )
                     .await?;
 
-                    for (seq_index, image) in objectness_seq.into_iter().enumerate() {
-                        event_writer
-                            .write_image_list_async(
-                                format!("transformer_detection_objectness/seq_{}", seq_index),
-                                step,
-                                image,
-                            )
-                            .await?;
-                    }
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "transformer_detection_objectness",
+                        step,
+                        objectness_seq,
+                    )
+                    .await?;
                 }
 
                 if let Some(seq) = transformer_attention_image_seq {
@@ -429,15 +421,13 @@ pub async fn logging_worker(
                         save_image_seq_async("transformer_attention_image", sub_image_dir, seq)
                             .await?;
 
-                    for (seq_index, attention_image) in seq.into_iter().enumerate() {
-                        event_writer
-                            .write_image_list_async(
-                                format!("transformer_attention_image/seq_{}", seq_index),
-                                step,
-                                attention_image,
-                            )
-                            .await?;
-                    }
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "transformer_attention_image",
+                        step,
+                        seq,
+                    )
+                    .await?;
                 }
             }
             msg::LogMessage::Image { step, sequence } => {
@@ -495,6 +485,34 @@ fn save_image_seq(
             fs::create_dir_all(&dir)?;
 
             vision::image::save(&image, path)?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn save_image_seq_to_tfrecord<W>(
+    event_writer: &mut EventWriter<W>,
+    name: &'static str,
+    step: i64,
+    seq: Vec<Tensor>,
+) -> Result<()>
+where
+    W: Unpin + futures::AsyncWriteExt,
+{
+    let batch_size = seq[0].size()[0];
+
+    for (seq_index, image) in seq.into_iter().enumerate() {
+        for batch_index in 0..batch_size {
+            let image = image.select(0, batch_index);
+
+            event_writer
+                .write_image_async(
+                    format!("{}/batch_{:04}/seq_{:04}", name, batch_index, seq_index),
+                    step,
+                    image,
+                )
+                .await?;
         }
     }
 
