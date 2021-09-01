@@ -1,10 +1,12 @@
-use crate::{common::*, message as msg, model::DetectionSimilarity};
+use crate::{common::*, message as msg, model::DetectionSimilarity, FILE_STRFTIME};
 
 pub async fn logging_worker(
     log_dir: impl AsRef<Path>,
     mut log_rx: mpsc::Receiver<msg::LogMessage>,
 ) -> Result<()> {
-    let event_dir = log_dir.as_ref().join("events");
+    let log_dir = log_dir.as_ref();
+    let event_dir = log_dir.join("events");
+    let image_dir = log_dir.join("image");
     tokio::fs::create_dir_all(&event_dir).await?;
 
     let mut event_writer = {
@@ -322,7 +324,30 @@ pub async fn logging_worker(
                     }
                 }
 
+                let sub_image_dir = {
+                    let dir = image_dir.join(format!(
+                        "{:08}_{}",
+                        step,
+                        Local::now().format(FILE_STRFTIME)
+                    ));
+                    Arc::new(dir)
+                };
+
+                let save_image_seq_async =
+                    |name: &'static str, dir: Arc<PathBuf>, seq: Vec<Tensor>| async move {
+                        let seq = tokio::task::spawn_blocking(move || -> Result<_> {
+                            save_image_seq(name, &**dir, &seq)?;
+                            Ok(seq)
+                        })
+                        .await??;
+
+                        Fallible::Ok(seq)
+                    };
+
                 if let Some(seq) = generator_generated_image_seq {
+                    let seq =
+                        save_image_seq_async("ground_truth", sub_image_dir.clone(), seq).await?;
+
                     for (seq_index, image) in seq.into_iter().enumerate() {
                         event_writer
                             .write_image_list_async(
@@ -335,6 +360,13 @@ pub async fn logging_worker(
                 }
 
                 if let Some(seq) = transformer_generated_image_seq {
+                    let seq = save_image_seq_async(
+                        "transformer_generated_image",
+                        sub_image_dir.clone(),
+                        seq,
+                    )
+                    .await?;
+
                     for (seq_index, image) in seq.into_iter().enumerate() {
                         event_writer
                             .write_image_list_async(
@@ -347,30 +379,57 @@ pub async fn logging_worker(
                 }
 
                 if let Some(seq) = transformer_generated_det_seq {
-                    for (seq_index, det) in seq.into_iter().enumerate() {
-                        assert!(det.tensors.len() == 1);
-                        let (obj_image, _) = det.tensors[0].obj_logit.sigmoid().max_dim(2, false);
+                    let objectness_seq: Vec<_> = seq
+                        .into_iter()
+                        .map(|det| {
+                            assert!(det.tensors.len() == 1);
+                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
+                            max
+                        })
+                        .collect();
 
+                    let objectness_seq = save_image_seq_async(
+                        "transformer_generated_objectness",
+                        sub_image_dir.clone(),
+                        objectness_seq,
+                    )
+                    .await?;
+
+                    for (seq_index, image) in objectness_seq.into_iter().enumerate() {
                         event_writer
                             .write_image_list_async(
                                 format!("transformer_detection_objectness/seq_{}", seq_index),
                                 step,
-                                obj_image,
+                                image,
                             )
                             .await?;
                     }
                 }
 
                 if let Some(seq) = transformer_attention_image_seq {
-                    for (seq_index, attention_image) in seq.into_iter().enumerate() {
-                        let (bsize, _one, field_h, field_w, image_h, image_w) =
-                            attention_image.size6().unwrap();
-                        let attention_image = attention_image
-                            .constant_pad_nd(&[0, 0, 0, 0, 0, 1])
-                            .constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1])
-                            .permute(&[0, 1, 4, 2, 5, 3])
-                            .reshape(&[bsize, 1, (field_h + 1) * image_h, (field_w + 1) * image_w]);
+                    let seq: Vec<_> = seq
+                        .into_iter()
+                        .map(|image| {
+                            let (bsize, _one, field_h, field_w, image_h, image_w) =
+                                image.size6().unwrap();
+                            image
+                                .constant_pad_nd(&[0, 0, 0, 0, 0, 1])
+                                .constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1])
+                                .permute(&[0, 1, 4, 2, 5, 3])
+                                .reshape(&[
+                                    bsize,
+                                    1,
+                                    (field_h + 1) * image_h,
+                                    (field_w + 1) * image_w,
+                                ])
+                        })
+                        .collect();
 
+                    let seq =
+                        save_image_seq_async("transformer_attention_image", sub_image_dir, seq)
+                            .await?;
+
+                    for (seq_index, attention_image) in seq.into_iter().enumerate() {
                         event_writer
                             .write_image_list_async(
                                 format!("transformer_attention_image/seq_{}", seq_index),
@@ -409,6 +468,33 @@ pub async fn logging_worker(
                     }
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn save_image_seq(
+    name: &str,
+    base_dir: impl AsRef<Path>,
+    seq: &[impl Borrow<Tensor>],
+) -> Result<()> {
+    let base_dir = base_dir.as_ref();
+    let batch_size = seq[0].borrow().size()[0];
+
+    for (seq_index, batch) in seq.iter().enumerate() {
+        let batch = batch.borrow();
+
+        for batch_index in 0..batch_size {
+            let image = batch.select(0, batch_index).mul(255.0).to_kind(Kind::Uint8);
+
+            let dir = base_dir
+                .join(format!("batch_{:03}", batch_index))
+                .join(name);
+            let path = dir.join(format!("seq_{:03}.jpg", seq_index));
+            fs::create_dir_all(&dir)?;
+
+            vision::image::save(&image, path)?;
         }
     }
 
