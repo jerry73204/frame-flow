@@ -614,15 +614,15 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
         // assert!(bool::from(input.w.ge(0.0).all()));
 
         let cy_logit = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0)
-            .logit(None)
+            .logit(1e-5)
             .view([bsize, 1, num_anchors, in_h, in_w]);
         let cx_logit = ((&input.cx * in_w as f64 - &x_offsets + 0.5) / 2.0)
-            .logit(None)
+            .logit(1e-5)
             .view([bsize, 1, num_anchors, in_h, in_w]);
         let h_logit = ((&input.h / anchor_heights).sqrt() / 2.0)
-            .logit(None)
+            .logit(1e-5)
             .view([bsize, 1, num_anchors, in_h, in_w]);
-        let w_logit = ((&input.w / anchor_widths).sqrt() / 2.0).logit(None).view([
+        let w_logit = ((&input.w / anchor_widths).sqrt() / 2.0).logit(1e-5).view([
             bsize,
             1,
             num_anchors,
