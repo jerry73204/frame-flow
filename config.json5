@@ -21,20 +21,20 @@
         },
         "detector": {
             "model_file": "cfg/model/yolov4-csp-custom-64x64-2021-08-21.json5",
-            // "weights_file": "log-wayside-64x64-2021-08-31/2021-09-01-11-01-01.054+0800/checkpoints/detector_2021-09-01-13-13-44.336+0800_000800.ckpt",
-            "weights_file": "cfg/weights/yolov4-csp-custom-64x64-2021-08-22-12-41-00.823+0800_194000_02.21592.ckpt",
+            "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-02-46-02.109+0800/checkpoints/detector_2021-09-02-03-01-33.281+0800_000100.ckpt",
+            // "weights_file": "cfg/weights/yolov4-csp-custom-64x64-2021-08-22-12-41-00.823+0800_194000_02.21592.ckpt",
         },
         "generator": {
             "kind": "Resnet",
             // "kind": "Custom",
             "norm": "BatchNorm",
-            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-23-14-09-18.616+0800/checkpoints/generator_2021-08-23-17-09-43.215+0800_006200.ckpt",
+            "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-02-46-02.109+0800/checkpoints/generator_2021-09-02-03-01-33.281+0800_000100.ckpt",
         },
         "discriminator": {
             "num_blocks": 6,
             "norm": "None",
             // "norm": "InstanceNorm",
-            "weights_file": "log-wayside-64x64-2021-08-22/2021-08-23-14-09-18.616+0800/checkpoints/discriminator_2021-08-23-17-09-43.212+0800_006200.ckpt",
+            "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-02-46-02.109+0800/checkpoints/discriminator_2021-09-02-03-01-33.281+0800_000100.ckpt",
         },
         "transformer": {
             "norm": "BatchNorm",
@@ -42,14 +42,14 @@
             "num_resnet_blocks": 1,
             "num_scaling_blocks": 3,
             "num_down_sample": 3,
-            // "weights_file": "log-wayside-64x64-2021-08-31/2021-09-01-11-01-01.054+0800/checkpoints/transformer_2021-09-01-13-13-44.336+0800_000800.ckpt",
+            "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-02-46-02.109+0800/checkpoints/transformer_2021-09-02-03-01-33.281+0800_000100.ckpt",
         },
         "image_seq_discriminator": {
             "num_detections": 3,
             "num_blocks": 6,
             "norm": "None",
             // "norm": "InstanceNorm",
-            // "weights_file": "log-wayside-64x64-2021-08-31/2021-09-01-11-01-01.054+0800/checkpoints/image_seq_discriminator_2021-09-01-13-13-44.336+0800_000800.ckpt",
+            "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-02-46-02.109+0800/checkpoints/image_seq_discriminator_2021-09-02-03-01-33.281+0800_000100.ckpt",
         },
     },
     "loss": {
