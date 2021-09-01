@@ -489,6 +489,8 @@ impl TrainWorker {
             ..
         } = *self;
 
+        image_seq_discriminator_vs.unfreeze();
+
         let input_len = transformer_model.input_len();
         let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
