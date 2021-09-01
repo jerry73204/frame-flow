@@ -250,17 +250,17 @@ impl TrainWorker {
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
-            detector_vs,
+            // detector_vs,
             generator_vs,
             detector_model,
             generator_model,
             generator_opt,
-            detector_opt,
+            // detector_opt,
             detector_loss_fn,
             ..
         } = self;
 
-        detector_vs.unfreeze();
+        // detector_vs.unfreeze();
         generator_vs.unfreeze();
 
         (0..steps).try_fold((None, None), |_, _| -> Result<_> {
@@ -268,18 +268,19 @@ impl TrainWorker {
             clamp_running_var(generator_vs);
 
             let recon_image = generator_model.forward_t(gt_det, true)?;
-            let recon_det = detector_model.forward_t(&recon_image, true)?;
+            let recon_det = detector_model.forward_t(&recon_image, false)?;
 
             let (loss, _) =
                 detector_loss_fn.forward(&recon_det.shallow_clone().try_into()?, gt_labels);
             let similarity = crate::model::dense_detection_list_similarity(gt_det, &recon_det)?;
 
             // optimize generator
-            detector_opt.zero_grad();
-            generator_opt.zero_grad();
-            loss.total_loss.backward();
-            detector_opt.step();
-            generator_opt.step();
+            generator_opt.backward_step(&loss.total_loss);
+            // detector_opt.zero_grad();
+            // generator_opt.zero_grad();
+            // loss.total_loss.backward();
+            // detector_opt.step();
+            // generator_opt.step();
 
             Ok((Some(f64::from(loss.total_loss)), Some(similarity)))
         })
@@ -293,26 +294,26 @@ impl TrainWorker {
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
-            detector_vs,
+            // detector_vs,
             generator_vs,
             detector_model,
             generator_model,
             generator_opt,
-            detector_opt,
+            // detector_opt,
             detector_loss_fn,
             ..
         } = self;
 
-        detector_vs.unfreeze();
+        // detector_vs.unfreeze();
         generator_vs.unfreeze();
 
         (0..steps).try_fold((None, None), |_, _| -> Result<_> {
             // clamp running_var in norms
             clamp_running_var(generator_vs);
 
-            let orig_det = detector_model.forward_t(gt_image, true)?;
+            let orig_det = detector_model.forward_t(gt_image, false)?;
             let fake_image = generator_model.forward_t(&orig_det, true)?;
-            let recon_det = detector_model.forward_t(&fake_image, true)?;
+            let recon_det = detector_model.forward_t(&fake_image, false)?;
 
             let (loss, _) =
                 detector_loss_fn.forward(&recon_det.shallow_clone().try_into()?, gt_labels);
@@ -320,11 +321,12 @@ impl TrainWorker {
             let similarity = crate::model::dense_detection_list_similarity(&orig_det, &recon_det)?;
 
             // optimize generator
-            detector_opt.zero_grad();
-            generator_opt.zero_grad();
-            loss.total_loss.backward();
-            detector_opt.step();
-            generator_opt.step();
+            generator_opt.backward_step(&loss.total_loss);
+            // detector_opt.zero_grad();
+            // generator_opt.zero_grad();
+            // loss.total_loss.backward();
+            // detector_opt.step();
+            // generator_opt.step();
 
             Ok((Some(f64::from(loss.total_loss)), Some(similarity)))
         })
@@ -350,7 +352,7 @@ impl TrainWorker {
 
         let seq_len = gt_image_seq.len();
         let input_len = transformer_model.input_len();
-        ensure!(input_len + 1 <= seq_len);
+        ensure!(input_len < seq_len);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
             let real_det_seq: Vec<_> = gt_image_seq
