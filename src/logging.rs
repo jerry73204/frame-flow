@@ -366,7 +366,7 @@ pub async fn logging_worker(
                         let (bsize, _one, field_h, field_w, image_h, image_w) =
                             attention_image.size6().unwrap();
                         let attention_image = attention_image
-                            .permute(&[0, 1, 2, 4, 3, 5])
+                            .permute(&[0, 1, 4, 2, 5, 3])
                             .reshape(&[bsize, 1, field_h * image_h, field_w * image_w]);
 
                         event_writer
