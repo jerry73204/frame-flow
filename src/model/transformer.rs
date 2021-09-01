@@ -276,6 +276,7 @@ impl TransformerBlockInit {
             num_down_sample,
         } = self;
         let bias = norm_kind == NormKind::InstanceNorm;
+        let input_c = input_c as i64;
 
         let resnet_init = ResnetGeneratorInit {
             ksize,
@@ -353,39 +354,56 @@ impl TransformerBlockInit {
                 )
                 .div((inner_c as f64).sqrt())
                 .softmax(1, Kind::Float)
-                .view([bsize, patch_h * patch_w, in_h * in_w]);
+                .view([bsize, 1, patch_h, patch_w, in_h, in_w]);
                 // assert!(!attention.has_nan());
 
-                let attention_image = with_artifacts
-                    .then(|| attention.view([bsize, 1, patch_h, patch_w, in_h, in_w]));
+                let patches = {
+                    let patches = input.view([bsize, input_c, in_h, in_w]).unfold2d(
+                        &[patch_h, patch_w],
+                        &[1, 1], // dilation
+                        &[patch_h / 2, patch_w / 2],
+                        &[1, 1], // stride
+                    );
 
-                let patches = Tensor::einsum(
-                    "bqk,bck->bcqk",
-                    &[attention, input.view([bsize, input_c as i64, -1])],
-                )
-                .view([bsize, input_c as i64, patch_h, patch_w, in_h, in_w]);
+                    match (patch_h & 1 == 1, patch_w & 1 == 1) {
+                        (true, true) => {
+                            patches.view([bsize, input_c, patch_h, patch_w, in_h, in_w])
+                        }
+                        (true, false) => patches
+                            .view([bsize, input_c, patch_h, patch_w, in_h, in_w + 1])
+                            .i((.., .., .., .., .., 0..in_w)),
+                        (false, true) => patches
+                            .view([bsize, input_c, patch_h, patch_w, in_h + 1, in_w])
+                            .i((.., .., .., .., 0..in_h, ..)),
+                        (false, false) => patches
+                            .view([bsize, input_c, patch_h, patch_w, in_h + 1, in_w + 1])
+                            .i((.., .., .., .., 0..in_h, 0..in_w)),
+                    }
+                };
+                let attention_image = with_artifacts.then(|| attention.shallow_clone());
+                let convolution = attention * patches;
 
-                // pad patch sizes to odd numbers
-                let (patches, patch_h) = if patch_h & 1 == 1 {
-                    (patches, patch_h)
+                // // pad patch sizes to odd numbers
+                let (convolution, patch_h) = if patch_h & 1 == 1 {
+                    (convolution, patch_h)
                 } else {
                     (
-                        patches.constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1]),
+                        convolution.constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1]),
                         patch_h + 1,
                     )
                 };
-                let (patches, patch_w) = if patch_w & 1 == 1 {
-                    (patches, patch_w)
+                let (convolution, patch_w) = if patch_w & 1 == 1 {
+                    (convolution, patch_w)
                 } else {
                     (
-                        patches.constant_pad_nd(&[0, 0, 0, 0, 0, 1, 0, 0]),
+                        convolution.constant_pad_nd(&[0, 0, 0, 0, 0, 1, 0, 0]),
                         patch_w + 1,
                     )
                 };
 
-                // merge patches
-                let output = patches
-                    .view([bsize, input_c as i64 * patch_h * patch_w, in_h * in_w])
+                // // merge patches
+                let output = convolution
+                    .view([bsize, input_c * patch_h * patch_w, in_h * in_w])
                     .col2im(
                         &[in_h, in_w],
                         &[patch_h, patch_w],
@@ -575,6 +593,7 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
     let bsize = input.batch_size() as i64;
     let num_classes = input.num_classes() as i64;
     let in_h = input.height() as i64;
+
     let in_w = input.width() as i64;
     let num_anchors = input.anchors.len() as i64;
 
