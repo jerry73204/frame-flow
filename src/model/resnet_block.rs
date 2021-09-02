@@ -1,5 +1,5 @@
 use super::misc::{NormKind, PaddingKind};
-use crate::common::*;
+use crate::{common::*, utils::*};
 
 #[derive(Debug, Clone)]
 pub struct ResnetBlockInit {
@@ -32,7 +32,13 @@ impl ResnetBlockInit {
         let channels = channels as i64;
 
         let seq = nn::seq_t()
+            .inspect(|xs| {
+                assert!(!xs.has_nan());
+            })
             .add(padding_kind.build([1, 1, 1, 1]))
+            .inspect(|xs| {
+                assert!(!xs.has_nan());
+            })
             .add(nn::conv2d(
                 path / "conv1",
                 channels,
@@ -44,7 +50,13 @@ impl ResnetBlockInit {
                     ..Default::default()
                 },
             ))
+            .inspect(|xs| {
+                assert!(!xs.has_nan());
+            })
             .add(norm_kind.build(path / "norm1", channels))
+            .inspect(|xs| {
+                assert!(!xs.has_nan());
+            })
             .add_fn(|xs| xs.relu());
 
         let seq = if dropout {
@@ -55,6 +67,9 @@ impl ResnetBlockInit {
 
         let seq = seq
             .add(padding_kind.build([1, 1, 1, 1]))
+            .inspect(|xs| {
+                assert!(!xs.has_nan());
+            })
             .add(nn::conv2d(
                 path / "conv2",
                 channels,
@@ -66,7 +81,13 @@ impl ResnetBlockInit {
                     ..Default::default()
                 },
             ))
-            .add(norm_kind.build(path / "norm2", channels));
+            .inspect(|xs| {
+                assert!(!xs.has_nan());
+            })
+            .add(norm_kind.build(path / "norm2", channels))
+            .inspect(|xs| {
+                assert!(!xs.has_nan());
+            });
 
         ResnetBlock { seq }
     }

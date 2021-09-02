@@ -3,7 +3,7 @@ use super::{
     misc::{NormKind, PaddingKind},
     unet_block::{UnetBlock, UnetBlockInit, UnetModule},
 };
-use crate::common::*;
+use crate::{common::*, utils::*};
 
 pub use custom::*;
 pub use generator::*;

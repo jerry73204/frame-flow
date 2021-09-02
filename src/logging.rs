@@ -53,7 +53,7 @@ pub async fn logging_worker(
                 generator_generated_image_seq,
                 transformer_generated_image_seq,
                 transformer_generated_det_seq,
-                transformer_attention_image_seq,
+                transformer_artifacts_seq,
             }) => {
                 let step = step as i64;
 
@@ -398,37 +398,48 @@ pub async fn logging_worker(
                     .await?;
                 }
 
-                // if let Some(seq) = transformer_attention_image_seq {
-                //     let seq: Vec<_> = seq
-                //         .into_iter()
-                //         .map(|image| {
-                //             let (bsize, _one, field_h, field_w, image_h, image_w) =
-                //                 image.size6().unwrap();
-                //             image
-                //                 .constant_pad_nd(&[0, 0, 0, 0, 0, 1])
-                //                 .constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1])
-                //                 .permute(&[0, 1, 4, 2, 5, 3])
-                //                 .reshape(&[
-                //                     bsize,
-                //                     1,
-                //                     (field_h + 1) * image_h,
-                //                     (field_w + 1) * image_w,
-                //                 ])
-                //         })
-                //         .collect();
+                if let Some(seq) = transformer_artifacts_seq {
+                    let (motion_dx_seq, motion_dy_seq, motion_potential_seq) = seq
+                        .into_iter()
+                        .map(
+                            |msg::TransformerArtifacts {
+                                 motion_field,
+                                 motion_potential,
+                             }| {
+                                let motion_dx = motion_field.i((.., 0..1, .., ..));
+                                let motion_dy = motion_field.i((.., 1..2, .., ..));
+                                (motion_dx, motion_dy, motion_potential)
+                            },
+                        )
+                        .unzip_n_vec();
 
-                //     let seq =
-                //         save_image_seq_async("transformer_attention_image", sub_image_dir, seq)
-                //             .await?;
+                    let motion_dx_seq =
+                        save_image_seq_async("motion_dx", sub_image_dir.clone(), motion_dx_seq)
+                            .await?;
+                    let motion_dy_seq =
+                        save_image_seq_async("motion_dy", sub_image_dir.clone(), motion_dy_seq)
+                            .await?;
+                    let motion_potential_seq = save_image_seq_async(
+                        "motion_potential",
+                        sub_image_dir.clone(),
+                        motion_potential_seq,
+                    )
+                    .await?;
 
-                //     save_image_seq_to_tfrecord(
-                //         &mut event_writer,
-                //         "transformer_attention_image",
-                //         step,
-                //         seq,
-                //     )
-                //     .await?;
-                // }
+                    save_image_seq_to_tfrecord(&mut event_writer, "motion_dx", step, motion_dx_seq)
+                        .await?;
+
+                    save_image_seq_to_tfrecord(&mut event_writer, "motion_dy", step, motion_dy_seq)
+                        .await?;
+
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "motion_potential",
+                        step,
+                        motion_potential_seq,
+                    )
+                    .await?;
+                }
             }
             msg::LogMessage::Image { step, sequence } => {
                 let step = step as i64;
@@ -506,13 +517,16 @@ where
         for batch_index in 0..batch_size {
             let image = image.select(0, batch_index);
 
-            event_writer
-                .write_image_async(
-                    format!("{}/batch_{:04}/seq_{:04}", name, batch_index, seq_index),
-                    step,
-                    image,
+            let name = format!("{}/batch_{:04}/seq_{:04}", name, batch_index, seq_index);
+
+            let result = event_writer.write_image_async(&name, step, image).await;
+
+            if let Err(err) = result {
+                warn!(
+                    "unable to write to TensorBoard, name = '{}': {:?}",
+                    name, err
                 )
-                .await?;
+            }
         }
     }
 

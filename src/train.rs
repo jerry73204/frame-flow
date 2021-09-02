@@ -833,7 +833,7 @@ pub fn training_worker(
             num_down_sample,
             ..Default::default()
         }
-        .build(&root / "transformer", num_input_detections, num_classes, 1)?;
+        .build(&root / "transformer", num_input_detections, num_classes, 64)?;
 
         if let Some(weights_file) = weights_file {
             vs.load_partial(weights_file)?;
@@ -1253,7 +1253,7 @@ pub fn training_worker(
                         .iter()
                         .map(|det| generator_model.forward_t(det, Some(&noise), false))
                         .try_collect()?;
-                    let mut attention_image_seq = vec![];
+                    let mut transformer_artifacts_seq = vec![];
 
                     for index in 0..=(seq_len - input_len - 1) {
                         let input_seq_seq = &generated_det_seq[index..(index + input_len)];
@@ -1264,13 +1264,13 @@ pub fn training_worker(
 
                         generated_det_seq.push(generated_det);
                         generated_image_seq.push(generated_image);
-                        attention_image_seq.push(artifacts.unwrap().attention_image);
+                        transformer_artifacts_seq.push(artifacts.unwrap());
                     }
 
                     Ok((
                         generated_image_seq.to_device(Device::Cpu),
                         generated_det_seq.to_device(Device::Cpu),
-                        attention_image_seq.to_device(Device::Cpu),
+                        transformer_artifacts_seq.to_device(Device::Cpu),
                     ))
                 })
             })
@@ -1279,12 +1279,12 @@ pub fn training_worker(
         let (
             transformer_generated_image_seq,
             transformer_generated_det_seq,
-            transformer_attention_image_seq,
+            transformer_artifacts_seq,
         ) = match transformer_images {
-            Some((generated_image_seq, generated_det_seq, attention_image_seq)) => (
+            Some((generated_image_seq, generated_det_seq, transformer_artifacts_seq)) => (
                 Some(generated_image_seq),
                 Some(generated_det_seq),
-                Some(attention_image_seq),
+                Some(transformer_artifacts_seq),
             ),
             None => (None, None, None),
         };
@@ -1321,7 +1321,7 @@ pub fn training_worker(
                     .and_then(|seq| save_images.then(|| seq)),
                 transformer_generated_image_seq,
                 transformer_generated_det_seq,
-                transformer_attention_image_seq,
+                transformer_artifacts_seq,
             });
 
             let result = log_tx.blocking_send(msg);

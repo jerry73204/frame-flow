@@ -36,7 +36,7 @@ pub struct Loss {
 
     pub transformer_generated_image_seq: Option<Vec<Tensor>>,
     pub transformer_generated_det_seq: Option<Vec<DenseDetectionTensorList>>,
-    pub transformer_attention_image_seq: Option<Vec<Tensor>>,
+    pub transformer_artifacts_seq: Option<Vec<TransformerArtifacts>>,
 }
 
 #[derive(Debug)]
@@ -61,4 +61,12 @@ pub struct TrainingMessage {
 pub struct WeightsAndGrads {
     pub weights: Vec<(String, f64)>,
     pub grads: Vec<(String, f64)>,
+}
+
+#[derive(Debug, TensorLike)]
+pub struct TransformerArtifacts {
+    // pub autoencoder_recon_loss: Tensor,
+    // pub attention_image: Tensor,
+    pub motion_potential: Tensor,
+    pub motion_field: Tensor,
 }

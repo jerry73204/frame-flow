@@ -42,14 +42,14 @@
             "num_resnet_blocks": 1,
             "num_scaling_blocks": 3,
             "num_down_sample": 2,
-            "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-04-58-18.338+0800/checkpoints/transformer_2021-09-02-09-13-43.222+0800_002100.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-04-58-18.338+0800/checkpoints/transformer_2021-09-02-09-13-43.222+0800_002100.ckpt",
         },
         "image_seq_discriminator": {
             "num_detections": 4,
             "num_blocks": 6,
             "norm": "None",
             // "norm": "InstanceNorm",
-            "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-04-58-18.338+0800/checkpoints/image_seq_discriminator_2021-09-02-09-13-43.222+0800_002100.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-04-58-18.338+0800/checkpoints/image_seq_discriminator_2021-09-02-09-13-43.222+0800_002100.ckpt",
         },
     },
     "loss": {
@@ -76,7 +76,7 @@
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 64,
+        "batch_size": 80,
         // unet
         // "batch_size": 20,
         "image_size": 64,
