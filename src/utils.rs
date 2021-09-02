@@ -499,3 +499,27 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             || class_logit.has_nan()
     }
 }
+
+pub trait CustomTensorExt {
+    fn spatial_gradient(&self) -> (Self, Self)
+    where
+        Self: Sized;
+}
+
+impl CustomTensorExt for Tensor {
+    fn spatial_gradient(&self) -> (Self, Self)
+    where
+        Self: Sized,
+    {
+        let left = self;
+        let right = self.constant_pad_nd(&[0, 1, 0, 0]).i((.., .., .., 1..));
+
+        let top = self;
+        let bottom = self.constant_pad_nd(&[0, 0, 0, 1]).i((.., .., 1.., ..));
+
+        let dx = right - left;
+        let dy = bottom - top;
+
+        (dx, dy)
+    }
+}

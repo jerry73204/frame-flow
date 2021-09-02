@@ -398,37 +398,37 @@ pub async fn logging_worker(
                     .await?;
                 }
 
-                if let Some(seq) = transformer_attention_image_seq {
-                    let seq: Vec<_> = seq
-                        .into_iter()
-                        .map(|image| {
-                            let (bsize, _one, field_h, field_w, image_h, image_w) =
-                                image.size6().unwrap();
-                            image
-                                .constant_pad_nd(&[0, 0, 0, 0, 0, 1])
-                                .constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1])
-                                .permute(&[0, 1, 4, 2, 5, 3])
-                                .reshape(&[
-                                    bsize,
-                                    1,
-                                    (field_h + 1) * image_h,
-                                    (field_w + 1) * image_w,
-                                ])
-                        })
-                        .collect();
+                // if let Some(seq) = transformer_attention_image_seq {
+                //     let seq: Vec<_> = seq
+                //         .into_iter()
+                //         .map(|image| {
+                //             let (bsize, _one, field_h, field_w, image_h, image_w) =
+                //                 image.size6().unwrap();
+                //             image
+                //                 .constant_pad_nd(&[0, 0, 0, 0, 0, 1])
+                //                 .constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1])
+                //                 .permute(&[0, 1, 4, 2, 5, 3])
+                //                 .reshape(&[
+                //                     bsize,
+                //                     1,
+                //                     (field_h + 1) * image_h,
+                //                     (field_w + 1) * image_w,
+                //                 ])
+                //         })
+                //         .collect();
 
-                    let seq =
-                        save_image_seq_async("transformer_attention_image", sub_image_dir, seq)
-                            .await?;
+                //     let seq =
+                //         save_image_seq_async("transformer_attention_image", sub_image_dir, seq)
+                //             .await?;
 
-                    save_image_seq_to_tfrecord(
-                        &mut event_writer,
-                        "transformer_attention_image",
-                        step,
-                        seq,
-                    )
-                    .await?;
-                }
+                //     save_image_seq_to_tfrecord(
+                //         &mut event_writer,
+                //         "transformer_attention_image",
+                //         step,
+                //         seq,
+                //     )
+                //     .await?;
+                // }
             }
             msg::LogMessage::Image { step, sequence } => {
                 let step = step as i64;

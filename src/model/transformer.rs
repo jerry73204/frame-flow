@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     common::*,
-    utils::{DenseDetectionTensorExt, DenseDetectionTensorListExt},
+    utils::{CustomTensorExt, DenseDetectionTensorExt, DenseDetectionTensorListExt},
 };
 use tch_modules::GroupNormInit;
 
@@ -127,18 +127,18 @@ impl TransformerInit {
                 };
                 assert!(!in_context.has_nan());
 
-                let (last_context, anchors) = unpack_detection(&input.last().unwrap().tensors[0])?;
+                let (_last_context, anchors) = unpack_detection(&input.last().unwrap().tensors[0])?;
 
-                let (obj_detection, attention_image) = {
-                    let (xs, attention_image) = attention_block.forward_t(
-                        &last_context,
-                        &in_context,
-                        train,
-                        with_artifacts,
-                    )?;
+                let (obj_logit, motion_field) = {
+                    let obj_prob = input.last().unwrap().tensors[0].obj_prob();
+                    let (b, _, _, h, w) = obj_prob.size5().unwrap();
+                    let obj_prob = obj_prob.view([b, 1, h, w]);
+
+                    let (xs, motion_field) =
+                        attention_block.forward_t(&obj_prob, &in_context, train, with_artifacts)?;
                     assert!(!xs.has_nan());
-                    let detection = pack_detection(&xs, anchors.clone());
-                    (detection, attention_image)
+                    let xs = xs.logit(1e-5).view([b, 1, 1, h, w]);
+                    (xs, motion_field)
                 };
 
                 let param_detection = {
@@ -147,15 +147,16 @@ impl TransformerInit {
                 };
 
                 let combined_detection = {
-                    let DenseDetectionTensorUnchecked {
-                        obj_logit, anchors, ..
-                    } = obj_detection.into();
+                    // let DenseDetectionTensorUnchecked {
+                    //     obj_logit, anchors, ..
+                    // } = obj_detection.into();
                     let DenseDetectionTensorUnchecked {
                         cy,
                         cx,
                         h,
                         w,
                         class_logit,
+                        anchors,
                         ..
                     } = param_detection.into();
                     DenseDetectionTensorUnchecked {
@@ -223,7 +224,7 @@ impl TransformerInit {
 
                     TransformerArtifacts {
                         // autoencoder_recon_loss,
-                        attention_image: attention_image.unwrap(),
+                        attention_image: motion_field.unwrap(),
                     }
                 });
 
@@ -295,7 +296,7 @@ impl TransformerBlockInit {
             num_scaling_blocks,
             num_down_sample,
         } = self;
-        let bias = norm_kind == NormKind::InstanceNorm;
+        // let bias = norm_kind == NormKind::InstanceNorm;
 
         let resnet_init = ResnetGeneratorInit {
             ksize,
@@ -306,36 +307,37 @@ impl TransformerBlockInit {
             ..Default::default()
         };
 
-        let context_norm =
-            GroupNormInit::default().build(path / "context_norm", ctx_c as i64, ctx_c as i64);
-        let query_transform =
-            resnet_init
-                .clone()
-                .build(path / "query_transform", ctx_c, inner_c, inner_c);
-        let key_transform = resnet_init.build(path / "key_transform", ctx_c, inner_c, inner_c);
-        let query_down_sample = {
-            let path = path / "query_down_sample";
-            let padding = ksize / 2;
+        // let context_norm =
+        //     GroupNormInit::default().build(path / "context_norm", ctx_c as i64, ctx_c as i64);
+        let motion_transform = resnet_init.build(path / "motion_transform", ctx_c, 1, inner_c);
+        // let query_transform =
+        //     resnet_init
+        //         .clone()
+        //         .build(path / "query_transform", ctx_c, inner_c, inner_c);
+        // let key_transform = resnet_init.build(path / "key_transform", ctx_c, inner_c, inner_c);
+        // let query_down_sample = {
+        //     let path = path / "query_down_sample";
+        //     let padding = ksize / 2;
 
-            (0..num_down_sample).fold(nn::seq_t(), |seq, index| {
-                let path = &path / format!("block_{}", index + 1);
+        //     (0..num_down_sample).fold(nn::seq_t(), |seq, index| {
+        //         let path = &path / format!("block_{}", index + 1);
 
-                seq.add(nn::conv2d(
-                    &path / "conv",
-                    inner_c as i64,
-                    inner_c as i64,
-                    ksize as i64,
-                    nn::ConvConfig {
-                        stride: 2,
-                        padding: padding as i64,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm", inner_c as i64))
-                .add_fn(|xs| xs.lrelu())
-            })
-        };
+        //         seq.add(nn::conv2d(
+        //             &path / "conv",
+        //             inner_c as i64,
+        //             inner_c as i64,
+        //             ksize as i64,
+        //             nn::ConvConfig {
+        //                 stride: 2,
+        //                 padding: padding as i64,
+        //                 bias,
+        //                 ..Default::default()
+        //             },
+        //         ))
+        //         .add(norm_kind.build(&path / "norm", inner_c as i64))
+        //         .add_fn(|xs| xs.lrelu())
+        //     })
+        // };
 
         let forward_fn = Box::new(
             move |input: &Tensor,
@@ -345,91 +347,113 @@ impl TransformerBlockInit {
                   -> Result<(Tensor, Option<Tensor>)> {
                 // assert!(!input.has_nan());
                 // assert!(!context.has_nan());
+                ensure!(input.size4()?.1 == 1);
+                let device = input.device();
 
                 let (bsize, in_c, in_h, in_w) = input.size4()?;
                 ensure!(
                     matches!(context.size4()?, (bsize_, ctx_c_, ctx_h, ctx_w) if bsize == bsize_ && ctx_c == ctx_c_ as usize && in_h == ctx_h && in_w == ctx_w)
                 );
 
-                let patch_h = in_h / 2i64.pow(num_down_sample as u32);
-                let patch_w = in_w / 2i64.pow(num_down_sample as u32);
+                // let patch_h = in_h / 2i64.pow(num_down_sample as u32);
+                // let patch_w = in_w / 2i64.pow(num_down_sample as u32);
 
-                let context = context_norm.forward_t(context, train);
+                // let context = context_norm.forward_t(context, train);
                 // assert!(!context.has_nan());
-                let key = key_transform.forward_t(&context, train);
+                let motion_potential = motion_transform.forward_t(context, train) * 2.0;
+                let motion_field = {
+                    let (dx, dy) = motion_potential.spatial_gradient();
+                    Tensor::cat(&[-dy, dx], 1).permute(&[0, 2, 3, 1])
+                };
+
+                let ident_grid = {
+                    let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
+                        .expand(&[bsize, 2, 3], false)
+                        .to_device(device);
+                    Tensor::affine_grid_generator(&theta, &input.size(), false)
+                };
+                let grid = &motion_field + ident_grid;
+
+                let output = input.grid_sampler(
+                    &grid, 0, // bilinear
+                    0, // zeros
+                    false,
+                );
+
                 // assert!(!key.has_nan());
-                let query = {
-                    let xs = query_transform.forward_t(&context, train);
-                    query_down_sample.forward_t(&xs, train)
-                };
-                // assert!(!query.has_nan());
+                // let query = {
+                //     let xs = query_transform.forward_t(&context, train);
+                //     query_down_sample.forward_t(&xs, train)
+                // };
+                // // assert!(!query.has_nan());
 
-                let attention = Tensor::einsum(
-                    "bcq,bck->bqk",
-                    &[
-                        query.view([bsize, inner_c as i64, -1]),
-                        key.view([bsize, inner_c as i64, -1]),
-                    ],
-                )
-                .div((inner_c as f64).sqrt())
-                .softmax(1, Kind::Float)
-                .view([bsize, 1, patch_h, patch_w, in_h, in_w]);
-                // assert!(!attention.has_nan());
+                // let attention = Tensor::einsum(
+                //     "bcq,bck->bqk",
+                //     &[
+                //         query.view([bsize, inner_c as i64, -1]),
+                //         key.view([bsize, inner_c as i64, -1]),
+                //     ],
+                // )
+                // .div((inner_c as f64).sqrt())
+                // .softmax(1, Kind::Float)
+                // .view([bsize, 1, patch_h, patch_w, in_h, in_w]);
+                // // assert!(!attention.has_nan());
 
-                let patches = {
-                    let patches = input.view([bsize, -1, in_h, in_w]).unfold2d(
-                        &[patch_h, patch_w],
-                        &[1, 1], // dilation
-                        &[patch_h / 2, patch_w / 2],
-                        &[1, 1], // stride
-                    );
+                // let patches = {
+                //     let patches = input.view([bsize, -1, in_h, in_w]).unfold2d(
+                //         &[patch_h, patch_w],
+                //         &[1, 1], // dilation
+                //         &[patch_h / 2, patch_w / 2],
+                //         &[1, 1], // stride
+                //     );
 
-                    match (patch_h & 1 == 1, patch_w & 1 == 1) {
-                        (true, true) => patches.view([bsize, -1, patch_h, patch_w, in_h, in_w]),
-                        (true, false) => patches
-                            .view([bsize, -1, patch_h, patch_w, in_h, in_w + 1])
-                            .i((.., .., .., .., .., 0..in_w)),
-                        (false, true) => patches
-                            .view([bsize, -1, patch_h, patch_w, in_h + 1, in_w])
-                            .i((.., .., .., .., 0..in_h, ..)),
-                        (false, false) => patches
-                            .view([bsize, -1, patch_h, patch_w, in_h + 1, in_w + 1])
-                            .i((.., .., .., .., 0..in_h, 0..in_w)),
-                    }
-                };
-                let attention_image = with_artifacts.then(|| attention.shallow_clone());
-                let convolution = attention * patches;
+                //     match (patch_h & 1 == 1, patch_w & 1 == 1) {
+                //         (true, true) => patches.view([bsize, -1, patch_h, patch_w, in_h, in_w]),
+                //         (true, false) => patches
+                //             .view([bsize, -1, patch_h, patch_w, in_h, in_w + 1])
+                //             .i((.., .., .., .., .., 0..in_w)),
+                //         (false, true) => patches
+                //             .view([bsize, -1, patch_h, patch_w, in_h + 1, in_w])
+                //             .i((.., .., .., .., 0..in_h, ..)),
+                //         (false, false) => patches
+                //             .view([bsize, -1, patch_h, patch_w, in_h + 1, in_w + 1])
+                //             .i((.., .., .., .., 0..in_h, 0..in_w)),
+                //     }
+                // };
+                // let attention_image = with_artifacts.then(|| attention.shallow_clone());
+                // let convolution = attention * patches;
 
-                // // pad patch sizes to odd numbers
-                let (convolution, patch_h) = if patch_h & 1 == 1 {
-                    (convolution, patch_h)
-                } else {
-                    (
-                        convolution.constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1]),
-                        patch_h + 1,
-                    )
-                };
-                let (convolution, patch_w) = if patch_w & 1 == 1 {
-                    (convolution, patch_w)
-                } else {
-                    (
-                        convolution.constant_pad_nd(&[0, 0, 0, 0, 0, 1, 0, 0]),
-                        patch_w + 1,
-                    )
-                };
+                // // // pad patch sizes to odd numbers
+                // let (convolution, patch_h) = if patch_h & 1 == 1 {
+                //     (convolution, patch_h)
+                // } else {
+                //     (
+                //         convolution.constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1]),
+                //         patch_h + 1,
+                //     )
+                // };
+                // let (convolution, patch_w) = if patch_w & 1 == 1 {
+                //     (convolution, patch_w)
+                // } else {
+                //     (
+                //         convolution.constant_pad_nd(&[0, 0, 0, 0, 0, 1, 0, 0]),
+                //         patch_w + 1,
+                //     )
+                // };
 
-                // // merge patches
-                let output = convolution
-                    .view([bsize, in_c * patch_h * patch_w, in_h * in_w])
-                    .col2im(
-                        &[in_h, in_w],
-                        &[patch_h, patch_w],
-                        &[1, 1], // dilation
-                        &[patch_h / 2, patch_w / 2],
-                        &[1, 1], // stride
-                    );
+                // // // merge patches
+                // let output = convolution
+                //     .view([bsize, in_c * patch_h * patch_w, in_h * in_w])
+                //     .col2im(
+                //         &[in_h, in_w],
+                //         &[patch_h, patch_w],
+                //         &[1, 1], // dilation
+                //         &[patch_h / 2, patch_w / 2],
+                //         &[1, 1], // stride
+                //     );
 
-                Ok((output, attention_image))
+                // Ok((output, attention_image))
+                Ok((output, with_artifacts.then(|| motion_field)))
             },
         );
 
