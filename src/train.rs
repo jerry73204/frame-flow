@@ -833,7 +833,7 @@ pub fn training_worker(
             num_down_sample,
             ..Default::default()
         }
-        .build(&root / "transformer", num_input_detections, num_classes, 1)?;
+        .build(&root / "transformer", num_input_detections, num_classes, 64)?;
 
         if let Some(weights_file) = weights_file {
             vs.load_partial(weights_file)?;
