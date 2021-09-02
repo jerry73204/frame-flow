@@ -404,16 +404,30 @@ pub async fn logging_worker(
                         .map(|image| {
                             let (bsize, _one, field_h, field_w, image_h, image_w) =
                                 image.size6().unwrap();
-                            image
+
+                            // add border
+                            let image = image
                                 .constant_pad_nd(&[0, 0, 0, 0, 0, 1])
                                 .constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1])
-                                .permute(&[0, 1, 4, 2, 5, 3])
-                                .reshape(&[
-                                    bsize,
-                                    1,
-                                    (field_h + 1) * image_h,
-                                    (field_w + 1) * image_w,
-                                ])
+                                .expand(
+                                    &[bsize, 3, field_h + 1, field_w + 1, image_h, image_w],
+                                    false,
+                                );
+
+                            // fill border with green color
+                            // let _ = image
+                            //     .i((.., 1..2, field_h..(field_h + 1), .., .., ..))
+                            //     .fill_(0.1);
+                            // let _ = image
+                            //     .i((.., 1..2, .., field_w..(field_w + 1), .., ..))
+                            //     .fill_(0.1);
+
+                            image.permute(&[0, 1, 4, 2, 5, 3]).reshape(&[
+                                bsize,
+                                3,
+                                (field_h + 1) * image_h,
+                                (field_w + 1) * image_w,
+                            ])
                         })
                         .collect();
 
