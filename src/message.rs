@@ -22,6 +22,7 @@ pub struct Loss {
     pub triangular_identity_loss: Option<f64>,
     pub triangular_identity_similarity: Option<DetectionSimilarity>,
     pub forward_consistency_loss: Option<f64>,
+    pub forward_consistency_similarity: Option<DetectionSimilarity>,
     pub backward_consistency_gen_loss: Option<f64>,
     pub backward_consistency_disc_loss: Option<f64>,
 
