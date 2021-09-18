@@ -303,6 +303,7 @@ impl TransformerBlockInit {
             padding_kind,
             num_scale_blocks: num_scaling_blocks,
             num_blocks: num_resnet_blocks,
+            ..Default::default()
         };
 
         let context_norm =
