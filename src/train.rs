@@ -359,6 +359,7 @@ impl TrainWorker {
         ensure!(input_len < seq_len);
 
         let (loss, similarity) = (0..steps).try_fold((None, None), |_, _| -> Result<_> {
+            clamp_running_var(transformer_vs);
             let real_det_seq: Vec<_> = gt_image_seq
                 .iter()
                 .map(|image| detector_model.forward_t(image, false))
@@ -437,6 +438,8 @@ impl TrainWorker {
         let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
+            clamp_running_var(transformer_vs);
+
             let total_consistency_loss: AddVal<_> = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
@@ -506,6 +509,8 @@ impl TrainWorker {
         let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
+            clamp_running_var(image_seq_discriminator_vs);
+
             let total_consistency_loss: AddVal<_> = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
