@@ -188,9 +188,9 @@ mod attention {
             let key = key.view([bsize, n_heads, key_c, -1]);
             let value = value.view([bsize, n_heads, value_c, -1]);
 
-            debug_assert!(!query.has_nan(), "NaN detected");
-            debug_assert!(!key.has_nan(), "NaN detected");
-            debug_assert!(!value.has_nan(), "NaN detected");
+            debug_assert!(!query.is_all_finite(), "NaN detected");
+            debug_assert!(!key.is_all_finite(), "NaN detected");
+            debug_assert!(!value.is_all_finite(), "NaN detected");
 
             // sum over attention
             let attn = Tensor::einsum("bhkx,bhky->bhxy", &[query, key]).softmax(3, Kind::Float);
@@ -200,11 +200,11 @@ mod attention {
                     chain!(vec![bsize, n_heads * value_c], input_shape.iter().cloned()).collect();
                 sum.reshape(&*new_shape)
             };
-            debug_assert!(!sum.has_nan(), "NaN detected");
+            debug_assert!(!sum.is_all_finite(), "NaN detected");
 
             // merge head outputs
             let output = output_conv.forward(&sum);
-            debug_assert!(!output.has_nan(), "NaN detected");
+            debug_assert!(!output.is_all_finite(), "NaN detected");
 
             Ok(output)
         }

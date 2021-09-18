@@ -102,7 +102,7 @@ impl TransformerInit {
                         .all(|tensor| tensor.num_anchors() == 1
                             && tensor.num_classes() == num_classes)
                 );
-                assert!(!input.iter().any(|&list| list.has_nan()));
+                debug_assert!(input.iter().any(|&list| list.is_all_finite()));
 
                 let in_h = input[0].tensors[0].height() as i64;
                 let in_w = input[0].tensors[0].width() as i64;
@@ -125,7 +125,7 @@ impl TransformerInit {
                         .try_collect()?;
                     Tensor::cat(&in_context_vec, 1)
                 };
-                assert!(!in_context.has_nan());
+                debug_assert!(in_context.is_all_finite());
 
                 let (last_context, anchors) = unpack_detection(&input.last().unwrap().tensors[0])?;
 
@@ -192,8 +192,8 @@ impl TransformerInit {
                 //     .to_device(device)
                 // };
 
-                // assert!(!shifted.has_nan());
-                // assert!(!patch.has_nan());
+                // debug_assert!(shifted.is_all_finite());
+                // debug_assert!(patch.is_all_finite());
 
                 // let out_context = shifted + patch * patch_mask;
 
@@ -303,7 +303,6 @@ impl TransformerBlockInit {
             padding_kind,
             num_scale_blocks: num_scaling_blocks,
             num_blocks: num_resnet_blocks,
-            ..Default::default()
         };
 
         let context_norm =
@@ -487,7 +486,7 @@ impl ChannelWiseAutoencoderInit {
                 nn::seq_t()
                     // .inspect(|xs| {
                     //     // dbg!(xs.min(), xs.max());
-                    //     assert!(!xs.has_nan());
+                    //     debug_assert!(xs.is_all_finite());
                     // })
                     .add(nn::conv2d(
                         &path / "conv",
@@ -502,11 +501,11 @@ impl ChannelWiseAutoencoderInit {
                     ))
                     // .inspect(|xs| {
                     //     // dbg!(xs.min(), xs.max());
-                    //     assert!(!xs.has_nan());
+                    //     debug_assert!(xs.is_all_finite());
                     // })
                     .add(norm_kind.build(&path / "norm", inner_c as i64))
                     // .inspect(|xs| {
-                    //     assert!(!xs.has_nan());
+                    //     debug_assert!(xs.is_all_finite());
                     // })
                     .add_fn(|xs| xs.lrelu())
             };
@@ -649,8 +648,8 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
         // dbg!(input.cy.min());
         // dbg!(wtf.max());
         // dbg!(wtf.min());
-        // assert!(bool::from(input.h.ge(0.0).all()));
-        // assert!(bool::from(input.w.ge(0.0).all()));
+        // debug_assert!(bool::from(input.h.ge(0.0).all()));
+        // debug_assert!(bool::from(input.w.ge(0.0).all()));
 
         let cy_logit = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0)
             .logit(1e-5)
@@ -681,15 +680,15 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
         // dbg!(obj_logit.min(), obj_logit.max());
         // dbg!(class_logit.min(), class_logit.max());
 
-        // assert!(bool::from(input.h.ge(0.0).all()));
-        // assert!(bool::from(input.w.ge(0.0).all()));
+        // debug_assert!(bool::from(input.h.ge(0.0).all()));
+        // debug_assert!(bool::from(input.w.ge(0.0).all()));
 
-        ensure!(!cy_logit.has_nan());
-        ensure!(!cx_logit.has_nan());
-        ensure!(!h_logit.has_nan());
-        ensure!(!w_logit.has_nan());
-        ensure!(!obj_logit.has_nan());
-        ensure!(!class_logit.has_nan());
+        ensure!(cy_logit.is_all_finite());
+        ensure!(cx_logit.is_all_finite());
+        ensure!(h_logit.is_all_finite());
+        ensure!(w_logit.is_all_finite());
+        ensure!(obj_logit.is_all_finite());
+        ensure!(class_logit.is_all_finite());
 
         Tensor::cat(
             &[cy_logit, cx_logit, h_logit, w_logit, obj_logit, class_logit],
@@ -699,13 +698,13 @@ pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
     };
 
     // dbg!(merge.min(), merge.max());
-    // assert!(!merge.has_nan());
+    // debug_assert!(merge.is_all_finite());
 
     Ok((merge, input.anchors.clone()))
 }
 
 pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
-    assert!(!input.has_nan());
+    debug_assert!(input.is_all_finite());
 
     let device = input.device();
     let num_anchors = anchors.len() as i64;
@@ -759,7 +758,7 @@ pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDe
     .build()
     .unwrap();
 
-    assert!(!output.has_nan());
+    debug_assert!(output.is_all_finite());
 
     output
 }
@@ -807,8 +806,8 @@ pub fn unpack_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
         // dbg!(input.cy.min());
         // dbg!(wtf.max());
         // dbg!(wtf.min());
-        // assert!(bool::from(input.h.ge(0.0).all()));
-        // assert!(bool::from(input.w.ge(0.0).all()));
+        // debug_assert!(bool::from(input.h.ge(0.0).all()));
+        // debug_assert!(bool::from(input.w.ge(0.0).all()));
 
         let cy_unbiased = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0).view([
             bsize,
@@ -841,15 +840,15 @@ pub fn unpack_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
         // dbg!(obj_logit.min(), obj_logit.max());
         // dbg!(class_logit.min(), class_logit.max());
 
-        // assert!(bool::from(input.h.ge(0.0).all()));
-        // assert!(bool::from(input.w.ge(0.0).all()));
+        // debug_assert!(bool::from(input.h.ge(0.0).all()));
+        // debug_assert!(bool::from(input.w.ge(0.0).all()));
 
-        ensure!(!cy_unbiased.has_nan());
-        ensure!(!cx_unbiased.has_nan());
-        ensure!(!h_unbiased.has_nan());
-        ensure!(!w_unbiased.has_nan());
-        ensure!(!obj_prob.has_nan());
-        ensure!(!class_prob.has_nan());
+        ensure!(cy_unbiased.is_all_finite());
+        ensure!(cx_unbiased.is_all_finite());
+        ensure!(h_unbiased.is_all_finite());
+        ensure!(w_unbiased.is_all_finite());
+        ensure!(obj_prob.is_all_finite());
+        ensure!(class_prob.is_all_finite());
 
         Tensor::cat(
             &[
@@ -866,13 +865,13 @@ pub fn unpack_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<Rat
     };
 
     // dbg!(merge.min(), merge.max());
-    // assert!(!merge.has_nan());
+    // debug_assert!(merge.is_all_finite());
 
     Ok((merge, input.anchors.clone()))
 }
 
 pub fn pack_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
-    assert!(!input.has_nan());
+    debug_assert!(input.is_all_finite());
 
     let device = input.device();
     let num_anchors = anchors.len() as i64;
@@ -914,6 +913,13 @@ pub fn pack_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDete
     let obj_logit = xs.i((.., 4..5, .., .., ..)).logit(1e-6);
     let class_logit = xs.i((.., 5.., .., .., ..)).logit(1e-6);
 
+    debug_assert!(cy.is_all_finite());
+    debug_assert!(cx.is_all_finite());
+    debug_assert!(h.is_all_finite());
+    debug_assert!(w.is_all_finite());
+    debug_assert!(obj_logit.is_all_finite());
+    debug_assert!(class_logit.is_all_finite());
+
     let output = DenseDetectionTensorUnchecked {
         cy,
         cx,
@@ -925,8 +931,6 @@ pub fn pack_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDete
     }
     .build()
     .unwrap();
-
-    assert!(!output.has_nan());
 
     output
 }

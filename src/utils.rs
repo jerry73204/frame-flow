@@ -90,7 +90,7 @@ where
     where
         R: Borrow<RatioSize<R64>>;
 
-    fn has_nan(&self) -> bool;
+    fn is_all_finite(&self) -> bool;
 }
 
 impl DenseDetectionTensorListExt for DenseDetectionTensorList {
@@ -123,8 +123,8 @@ impl DenseDetectionTensorListExt for DenseDetectionTensorList {
         Ok(list)
     }
 
-    fn has_nan(&self) -> bool {
-        self.tensors.iter().any(|tensor| tensor.has_nan())
+    fn is_all_finite(&self) -> bool {
+        self.tensors.iter().any(|tensor| tensor.is_all_finite())
     }
 }
 
@@ -144,7 +144,7 @@ where
 
     fn detach(&self) -> Self;
     fn copy(&self) -> Self;
-    fn has_nan(&self) -> bool;
+    fn is_all_finite(&self) -> bool;
 }
 
 impl DenseDetectionTensorExt for DenseDetectionTensor {
@@ -168,7 +168,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                 .iter()
                 .map(|anchor| anchor.borrow().to_owned())
                 .collect();
-            let num_anchors = anchors.len();
+            let num_anchors = anchors.len() as i64;
             let image_boundary =
                 PixelTLBR::from_tlbr(0.0, 0.0, height as f64, width as f64).unwrap();
             let image_size = PixelSize::from_hw(height as f64, width as f64).unwrap();
@@ -176,72 +176,73 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             // crop and filter out bad labels
             let mut used_positions = HashSet::new();
 
-            let assignments: Vec<_> =
-                labels
-                    .into_iter()
-                    .filter_map(|ratio_label| {
-                        const MIN_SIZE: f64 = 1.0;
-                        const MAX_HW_RATIO: f64 = 4.0;
+            let assignments: Vec<_> = labels
+                .into_iter()
+                .filter_map(|ratio_label| {
+                    const MIN_SIZE: f64 = 1.0;
+                    const MAX_HW_RATIO: f64 = 4.0;
 
-                        let pixel_label = ratio_label.borrow().to_pixel_label(&image_size);
-                        let bbox = pixel_label.intersect_with(&image_boundary)?;
+                    let pixel_label = ratio_label.borrow().to_pixel_label(&image_size);
+                    let bbox = pixel_label.intersect_with(&image_boundary)?;
 
-                        if bbox.h() < MIN_SIZE && bbox.w() < MIN_SIZE {
-                            return None;
-                        }
+                    if bbox.h() < MIN_SIZE && bbox.w() < MIN_SIZE {
+                        return None;
+                    }
 
-                        if !(MAX_HW_RATIO.recip()..=MAX_HW_RATIO).contains(&(bbox.h() / bbox.w())) {
-                            return None;
-                        }
+                    if !(MAX_HW_RATIO.recip()..=MAX_HW_RATIO).contains(&(bbox.h() / bbox.w())) {
+                        return None;
+                    }
 
-                        let pixel_label = PixelRectLabel {
-                            rect: bbox.into(),
-                            class: pixel_label.class,
-                        };
-                        let ratio_label = pixel_label.to_ratio_label(&image_size);
+                    let pixel_label = PixelRectLabel {
+                        rect: bbox.into(),
+                        class: pixel_label.class,
+                    };
+                    let ratio_label = pixel_label.to_ratio_label(&image_size);
 
-                        Some((ratio_label, pixel_label))
-                    })
-                    .flat_map(|(ratio_label, pixel_label)| {
-                        let cy = pixel_label.cy();
-                        let cx = pixel_label.cx();
-                        let cy_fract = cy.fract();
-                        let cx_fract = cx.fract();
-                        let row = cy.floor() as isize;
-                        let col = cx.floor() as isize;
+                    Some((ratio_label, pixel_label))
+                })
+                .flat_map(|(ratio_label, pixel_label)| {
+                    let cy = pixel_label.cy();
+                    let cx = pixel_label.cx();
+                    let cy_fract = cy.fract();
+                    let cx_fract = cx.fract();
+                    let row = cy.floor() as isize;
+                    let col = cx.floor() as isize;
 
-                        let pos_c = iter::once((row, col));
-                        let pos_t = (cy_fract < SNAP_THRESH).then(|| (row - 1, col));
-                        let pos_b = (cy_fract > 1.0 - SNAP_THRESH).then(|| (row + 1, col));
-                        let pos_l = (cx_fract < SNAP_THRESH).then(|| (row, col - 1));
-                        let pos_r = (cx_fract > 1.0 - SNAP_THRESH).then(|| (row, col + 1));
+                    let pos_c = iter::once((row, col));
+                    let pos_t = (cy_fract < SNAP_THRESH).then(|| (row - 1, col));
+                    let pos_b = (cy_fract > 1.0 - SNAP_THRESH).then(|| (row + 1, col));
+                    let pos_l = (cx_fract < SNAP_THRESH).then(|| (row, col - 1));
+                    let pos_r = (cx_fract > 1.0 - SNAP_THRESH).then(|| (row, col + 1));
 
-                        let ratio_label = Arc::new(ratio_label);
-                        let pixel_label = Arc::new(pixel_label);
+                    let ratio_label = Arc::new(ratio_label);
+                    let pixel_label = Arc::new(pixel_label);
 
-                        chain!(pos_c, pos_t, pos_b, pos_l, pos_r)
-                            .filter(|(row, col)| {
-                                (0..height as isize).contains(&row)
-                                    && (0..width as isize).contains(&col)
-                            })
-                            .map(move |(row, col)| {
-                                (
-                                    ratio_label.clone(),
-                                    pixel_label.clone(),
-                                    row as usize,
-                                    col as usize,
-                                )
-                            })
-                    })
-                    // filter by position constraint
-                    .filter(|&(_, ref pixel_label, row, col)| {
-                        let [cy, cx, _, _] = pixel_label.cycxhw();
-                        (0.0..=1.0).contains(&((cy - row as f64 + 0.5) / 2.0))
-                            && (0.0..=1.0).contains(&((cx - col as f64 + 0.5) / 2.0))
-                    })
-                    .filter_map(|(ratio_label, _, row, col)| {
-                        let position = anchors.iter().enumerate().find_map(
-                            |(anchor_index, anchor_size)| {
+                    chain!(pos_c, pos_t, pos_b, pos_l, pos_r)
+                        .filter(|(row, col)| {
+                            (0..height as isize).contains(row) && (0..width as isize).contains(col)
+                        })
+                        .map(move |(row, col)| {
+                            (
+                                ratio_label.clone(),
+                                pixel_label.clone(),
+                                row as usize,
+                                col as usize,
+                            )
+                        })
+                })
+                // filter by position constraint
+                .filter(|&(_, ref pixel_label, row, col)| {
+                    let [cy, cx, _, _] = pixel_label.cycxhw();
+                    (0.0..=1.0).contains(&((cy - row as f64 + 0.5) / 2.0))
+                        && (0.0..=1.0).contains(&((cx - col as f64 + 0.5) / 2.0))
+                })
+                .filter_map(|(ratio_label, _, row, col)| {
+                    let position =
+                        anchors
+                            .iter()
+                            .enumerate()
+                            .find_map(|(anchor_index, anchor_size)| {
                                 let h_scale = ratio_label.h() / anchor_size.h.raw();
                                 let w_scale = ratio_label.w() / anchor_size.w.raw();
                                 let position = (row, col, anchor_index);
@@ -251,17 +252,16 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                                     && (0.0..=2.0).contains(&h_scale.sqrt())
                                     && (0.0..=2.0).contains(&w_scale.sqrt());
                                 ok.then(|| position)
-                            },
-                        )?;
+                            })?;
 
-                        used_positions.insert(position);
-                        Some((ratio_label, position))
-                    })
-                    .map(|(ratio_label, position)| -> Result<_> {
-                        ensure!((0..num_classes).contains(&ratio_label.class));
-                        Ok((ratio_label, position))
-                    })
-                    .try_collect()?;
+                    used_positions.insert(position);
+                    Some((ratio_label, position))
+                })
+                .map(|(ratio_label, position)| -> Result<_> {
+                    ensure!((0..num_classes).contains(&ratio_label.class));
+                    Ok((ratio_label, position))
+                })
+                .try_collect()?;
 
             let (row_vec, col_vec, anchor_vec, cy_vec, cx_vec, h_vec, w_vec, class_vec) =
                 assignments
@@ -289,6 +289,9 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
                     })
                     .unzip_n_vec();
 
+            let height = height as i64;
+            let width = width as i64;
+            let num_classes = num_classes as i64;
             let num_assignments = row_vec.len() as i64;
             let batch_tensor = Tensor::zeros(&[num_assignments], INT64_CPU);
             let zero_entry_tensor = Tensor::full(&[num_assignments], 0, INT64_CPU);
@@ -306,47 +309,27 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             let h_value_tensor = Tensor::of_slice(&h_vec);
             let w_value_tensor = Tensor::of_slice(&w_vec);
 
-            let mut cy_tensor = Tensor::arange(height as i64, FLOAT_CPU)
+            let mut cy_tensor = Tensor::arange(height, FLOAT_CPU)
                 .to_kind(Kind::Float)
                 .div(height as f64)
-                .view([1, 1, 1, height as i64, 1])
-                .expand(
-                    &[1, 1, num_anchors as i64, height as i64, width as i64],
-                    false,
-                )
+                .view([1, 1, 1, height, 1])
+                .expand(&[1, 1, num_anchors, height, width], false)
                 .copy();
-            let mut cx_tensor = Tensor::arange(width as i64, FLOAT_CPU)
+            let mut cx_tensor = Tensor::arange(width, FLOAT_CPU)
                 .to_kind(Kind::Float)
                 .div(width as f64)
-                .view([1, 1, 1, 1, width as i64])
-                .expand(
-                    &[1, 1, num_anchors as i64, height as i64, width as i64],
-                    false,
-                )
+                .view([1, 1, 1, 1, width])
+                .expand(&[1, 1, num_anchors, height, width], false)
                 .copy();
-            let mut h_tensor = Tensor::full(
-                &[1, 1, num_anchors as i64, height as i64, width as i64],
-                1e-4,
-                FLOAT_CPU,
-            );
-            let mut w_tensor = Tensor::full(
-                &[1, 1, num_anchors as i64, height as i64, width as i64],
-                1e-4,
-                FLOAT_CPU,
-            );
+            let mut h_tensor = Tensor::full(&[1, 1, num_anchors, height, width], 1e-4, FLOAT_CPU);
+            let mut w_tensor = Tensor::full(&[1, 1, num_anchors, height, width], 1e-4, FLOAT_CPU);
             let obj_logit_tensor = Tensor::full(
-                &[1, 1, num_anchors as i64, height as i64, width as i64],
+                &[1, 1, num_anchors, height, width],
                 -10.0, // logit of approx. 0.0001
                 FLOAT_CPU,
             );
             let class_logit_tensor = Tensor::full(
-                &[
-                    1,
-                    num_classes as i64,
-                    num_anchors as i64,
-                    height as i64,
-                    width as i64,
-                ],
+                &[1, num_classes, num_anchors, height, width],
                 -10.0, // logit of approx. 0.0001
                 FLOAT_CPU,
             );
@@ -426,7 +409,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             .build()
             .unwrap();
 
-            assert!(!output.has_nan());
+            debug_assert!(output.is_all_finite());
 
             Ok(output)
         })
@@ -480,7 +463,7 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
         .unwrap()
     }
 
-    fn has_nan(&self) -> bool {
+    fn is_all_finite(&self) -> bool {
         let DenseDetectionTensorUnchecked {
             cy,
             cx,
@@ -491,11 +474,11 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
             ..
         } = &**self;
 
-        cy.has_nan()
-            || cx.has_nan()
-            || h.has_nan()
-            || w.has_nan()
-            || obj_logit.has_nan()
-            || class_logit.has_nan()
+        cy.is_all_finite()
+            || cx.is_all_finite()
+            || h.is_all_finite()
+            || w.is_all_finite()
+            || obj_logit.is_all_finite()
+            || class_logit.is_all_finite()
     }
 }

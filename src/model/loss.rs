@@ -278,7 +278,7 @@ impl WGanGp {
             .pow(2)
             .mean(Kind::Float)
             * λ;
-        debug_assert!(!penalty.has_nan());
+        debug_assert!(penalty.is_all_finite());
 
         Ok(penalty)
     }
