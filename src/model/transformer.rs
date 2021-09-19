@@ -136,7 +136,7 @@ impl TransformerInit {
                         train,
                         with_artifacts,
                     )?;
-                    assert!(!xs.has_nan());
+                    debug_assert!(xs.is_all_finite());
                     let detection = pack_detection(&xs, anchors.clone());
                     (detection, attention_image)
                 };
