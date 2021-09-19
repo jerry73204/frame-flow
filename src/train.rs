@@ -338,7 +338,11 @@ impl TrainWorker {
         gt_image_seq: &[Tensor],
         gt_labels_seq: &[Vec<Vec<RatioRectLabel<R64>>>],
         with_artifacts: bool,
-    ) -> Result<(Option<f64>, Option<msg::WeightsAndGrads>)> {
+    ) -> Result<(
+        Option<f64>,
+        Option<DetectionSimilarity>,
+        Option<msg::WeightsAndGrads>,
+    )> {
         self.freeze_all_vs();
         let Self {
             transformer_vs,
@@ -354,7 +358,8 @@ impl TrainWorker {
         let input_len = transformer_model.input_len();
         ensure!(input_len < seq_len);
 
-        let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
+        let (loss, similarity) = (0..steps).try_fold((None, None), |_, _| -> Result<_> {
+            clamp_running_var(transformer_vs);
             let real_det_seq: Vec<_> = gt_image_seq
                 .iter()
                 .map(|image| detector_model.forward_t(image, false))
@@ -365,41 +370,48 @@ impl TrainWorker {
                 .map(|det| det.shallow_clone())
                 .collect();
 
-            let total_consistency_loss: AddVal<_> = (0..=(seq_len - input_len - 1))
-                .map(|index| -> Result<_> {
-                    let fake_det_window = &fake_det_seq[index..(index + input_len)];
-                    let last_gt_labels = &gt_labels_seq[index + input_len];
-                    let (last_fake_det, _artifacts) =
-                        transformer_model.forward_t(fake_det_window, true, false)?;
+            let (total_consistency_loss, similarity): (AddVal<_>, First<_>) =
+                (0..=(seq_len - input_len - 1))
+                    .map(|index| -> Result<_> {
+                        let fake_det_window = &fake_det_seq[index..(index + input_len)];
+                        let last_gt_labels = &gt_labels_seq[index + input_len];
+                        let (last_fake_det, _artifacts) =
+                            transformer_model.forward_t(fake_det_window, true, false)?;
 
-                    let last_real_det = &real_det_seq[index + input_len];
+                        let last_real_det = &real_det_seq[index + input_len];
 
-                    let (real_det_loss, _) = detector_loss_fn
-                        .forward(&last_real_det.shallow_clone().try_into()?, last_gt_labels);
-                    let (fake_det_loss, _) = detector_loss_fn
-                        .forward(&last_fake_det.shallow_clone().try_into()?, last_gt_labels);
-                    let consitency_loss =
-                        (real_det_loss.total_loss + fake_det_loss.total_loss) / 2.0;
+                        let (real_det_loss, _) = detector_loss_fn
+                            .forward(&last_real_det.shallow_clone().try_into()?, last_gt_labels);
+                        let (fake_det_loss, _) = detector_loss_fn
+                            .forward(&last_fake_det.shallow_clone().try_into()?, last_gt_labels);
+                        let consitency_loss =
+                            (real_det_loss.total_loss + fake_det_loss.total_loss) / 2.0;
+                        let similarity = crate::model::dense_detection_list_similarity(
+                            last_real_det,
+                            &last_fake_det,
+                        )?;
 
-                    // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
-                    fake_det_seq.push(last_fake_det);
+                        // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
+                        fake_det_seq.push(last_fake_det);
 
-                    Ok(consitency_loss)
-                })
-                .try_collect()?;
+                        Ok((consitency_loss, similarity))
+                    })
+                    .try_collect::<_, Vec<_>, _>()?
+                    .into_iter()
+                    .unzip();
 
             let total_loss = total_consistency_loss.unwrap();
 
             // optimize
             transformer_opt.backward_step(&total_loss);
 
-            Ok(Some(f64::from(total_loss)))
+            Ok((Some(f64::from(total_loss)), similarity.into_inner()))
         })?;
 
         let weights_and_grads =
             (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(transformer_vs));
 
-        Ok((loss, weights_and_grads))
+        Ok((loss, similarity, weights_and_grads))
     }
 
     pub fn train_backward_consistency_gen(
@@ -426,6 +438,8 @@ impl TrainWorker {
         let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
+            clamp_running_var(transformer_vs);
+
             let total_consistency_loss: AddVal<_> = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
@@ -495,6 +509,8 @@ impl TrainWorker {
         let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
+            clamp_running_var(image_seq_discriminator_vs);
+
             let total_consistency_loss: AddVal<_> = izip!(
                 gt_image_seq.windows(input_len + 1),
                 gt_det_seq.windows(input_len)
@@ -1199,12 +1215,13 @@ pub fn training_worker(
             generator_generated_image_seq.into_iter().collect();
 
         // train forward time consistency
-        let (forward_consistency_loss, transformer_weights_1) = worker.train_forward_consistency(
-            config.train.train_forward_consistency_steps,
-            &gt_image_seq,
-            &gt_labels_seq,
-            true,
-        )?;
+        let (forward_consistency_loss, forward_consistency_similarity, transformer_weights_1) =
+            worker.train_forward_consistency(
+                config.train.train_forward_consistency_steps,
+                &gt_image_seq,
+                &gt_labels_seq,
+                true,
+            )?;
 
         // train backward time consistency (adversarial step)
         let (backward_consistency_disc_loss, image_seq_discriminator_weights) = worker
@@ -1307,6 +1324,7 @@ pub fn training_worker(
                     .into_inner()
                     .unwrap(),
                 forward_consistency_loss,
+                forward_consistency_similarity,
                 backward_consistency_gen_loss,
                 backward_consistency_disc_loss,
 

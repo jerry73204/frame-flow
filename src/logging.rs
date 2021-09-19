@@ -40,6 +40,7 @@ pub async fn logging_worker(
                 triangular_identity_loss,
                 triangular_identity_similarity,
                 forward_consistency_loss,
+                forward_consistency_similarity,
                 backward_consistency_gen_loss,
                 backward_consistency_disc_loss,
 
@@ -193,6 +194,49 @@ pub async fn logging_worker(
                     event_writer
                         .write_scalar_async(
                             "triangular_identity_similarity/class_loss",
+                            step,
+                            f32::from(class_loss),
+                        )
+                        .await?;
+                }
+
+                if let Some(similarity) = forward_consistency_similarity {
+                    let DetectionSimilarity {
+                        cy_loss,
+                        cx_loss,
+                        h_loss,
+                        w_loss,
+                        obj_loss,
+                        class_loss,
+                    } = similarity;
+
+                    let position_loss = cy_loss + cx_loss;
+                    let size_loss = h_loss + w_loss;
+
+                    event_writer
+                        .write_scalar_async(
+                            "forward_consistency_similarity/position_loss",
+                            step,
+                            f32::from(position_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "forward_consistency_similarity/size_loss",
+                            step,
+                            f32::from(size_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "forward_consistency_similarity/obj_loss",
+                            step,
+                            f32::from(obj_loss),
+                        )
+                        .await?;
+                    event_writer
+                        .write_scalar_async(
+                            "forward_consistency_similarity/class_loss",
                             step,
                             f32::from(class_loss),
                         )
