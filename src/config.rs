@@ -158,9 +158,6 @@ pub struct TransformerModel {
     pub weights_file: Option<PathBuf>,
     pub norm: NormKind,
     pub num_input_detections: usize,
-    pub num_resnet_blocks: usize,
-    pub num_scaling_blocks: usize,
-    pub num_down_sample: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

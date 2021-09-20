@@ -3,8 +3,8 @@ use crate::{
     config, message as msg,
     model::{
         CustomGeneratorInit, DetectionEmbedding, DetectionEmbeddingInit, DetectionSimilarity,
-        Discriminator, Generator, NLayerDiscriminatorInit, ResnetGeneratorInit, Transformer,
-        TransformerInit, UnetGeneratorInit, WGanGp, WGanGpInit,
+        Discriminator, Generator, MotionBasedTransformer, MotionBasedTransformerInit,
+        NLayerDiscriminatorInit, ResnetGeneratorInit, UnetGeneratorInit, WGanGp, WGanGpInit,
     },
     utils::DenseDetectionTensorListExt,
     FILE_STRFTIME,
@@ -30,7 +30,7 @@ struct TrainWorker {
     detector_model: DetectorWrapper,
     generator_model: GeneratorWrapper,
     discriminator_model: Discriminator,
-    transformer_model: Transformer,
+    transformer_model: MotionBasedTransformer,
     image_seq_discriminator_model: ImageSequenceDiscriminatorWrapper,
 
     save_detector_checkpoint: bool,
@@ -683,10 +683,38 @@ pub fn training_worker(
     ensure!((0.0..=1.0).contains(&critic_noise_prob));
 
     // variables
-    let mut train_step = 0;
+    // let mut train_step = 0;
     let mut lr_scheduler = train::utils::LrScheduler::new(&config.train.lr_schedule, 0)?;
     let mut rate_counter = train::utils::RateCounter::with_second_intertal();
-    let mut lr = lr_scheduler.next();
+    let init_lr = lr_scheduler.next();
+
+    let train_step_iter = 0..;
+    let lr_iter = chain!(
+        iter::once(init_lr),
+        iter::from_fn(move || Some(lr_scheduler.next()))
+    );
+    let save_checkpoint_iter: Box<dyn Iterator<Item = bool>> =
+        match config.logging.save_checkpoint_steps {
+            Some(steps) => {
+                let steps = steps.get();
+                Box::new(chain!(iter::repeat(false).take(steps - 1), iter::once(true)).cycle())
+            }
+            None => Box::new(iter::repeat(false)),
+        };
+    let save_image_iter: Box<dyn Iterator<Item = bool>> = match config.logging.save_image_steps {
+        Some(steps) => {
+            let steps = steps.get();
+            Box::new(chain!(iter::repeat(false).take(steps - 1), iter::once(true)).cycle())
+        }
+        None => Box::new(iter::repeat(false)),
+    };
+    let mut train_param_iter = izip!(
+        train_step_iter,
+        lr_iter,
+        save_checkpoint_iter,
+        save_image_iter
+    );
+
     let gp = WGanGpInit::default().build()?;
     let gp_transformer = WGanGpInit::default().build()?;
 
@@ -712,7 +740,7 @@ pub fn training_worker(
             beta2: 0.999,
             wd: 5e-4,
         }
-        .build(&vs, lr)?;
+        .build(&vs, init_lr)?;
 
         (vs, model, opt)
     };
@@ -789,7 +817,7 @@ pub fn training_worker(
             vs.load_partial(weights_file)?;
         }
 
-        let opt = nn::adam(0.5, 0.999, 0.0).build(&vs, lr)?;
+        let opt = nn::adam(0.5, 0.999, 0.0).build(&vs, init_lr)?;
 
         (vs, model, opt)
     };
@@ -822,7 +850,7 @@ pub fn training_worker(
             vs.load_partial(weights_file)?;
         }
 
-        let opt = nn::adam(0.5, 0.999, 0.0).build(&vs, lr)?;
+        let opt = nn::adam(0.5, 0.999, 0.0).build(&vs, init_lr)?;
 
         (vs, disc_model, opt)
     };
@@ -843,11 +871,8 @@ pub fn training_worker(
         let mut vs = nn::VarStore::new(device);
         let root = vs.root();
 
-        let model = TransformerInit {
+        let model = MotionBasedTransformerInit {
             norm_kind: norm,
-            // num_resnet_blocks,
-            // num_scaling_blocks,
-            // num_down_sample,
             ..Default::default()
         }
         .build(&root / "transformer", num_input_detections, num_classes, 64)?;
@@ -856,7 +881,7 @@ pub fn training_worker(
             vs.load_partial(weights_file)?;
         }
 
-        let opt = nn::adam(0.5, 0.999, 0.0).build(&vs, lr)?;
+        let opt = nn::adam(0.5, 0.999, 0.0).build(&vs, init_lr)?;
 
         (vs, model, opt)
     };
@@ -897,7 +922,7 @@ pub fn training_worker(
             vs.load_partial(weights_file)?;
         }
 
-        let opt = nn::adam(0.5, 0.999, 0.0).build(&vs, lr)?;
+        let opt = nn::adam(0.5, 0.999, 0.0).build(&vs, init_lr)?;
 
         (vs, model, opt)
     };
@@ -954,7 +979,7 @@ pub fn training_worker(
         let mut rate_counter = train::utils::RateCounter::with_second_intertal();
         info!("run warm-up for {} steps", warm_up_steps);
 
-        for _ in 0..warm_up_steps {
+        for warm_up_step in 0..warm_up_steps {
             let msg = match train_rx.blocking_recv() {
                 Some(msg) => msg,
                 None => break,
@@ -1073,10 +1098,10 @@ pub fn training_worker(
                 let record_rate = batch_rate * batch_size as f64;
                 info!(
                     "warm-up step: {}\t{:.2} batch/s\t{:.2} sample/s",
-                    train_step, batch_rate, record_rate
+                    warm_up_step, batch_rate, record_rate
                 );
             } else {
-                info!("warm-up step: {}", train_step,);
+                info!("warm-up step: {}", warm_up_step);
             }
         }
 
@@ -1086,6 +1111,9 @@ pub fn training_worker(
     info!("start training");
 
     while let Some(msg) = train_rx.blocking_recv() {
+        let (train_step, lr, save_checkpoint, save_image) = train_param_iter.next().unwrap();
+        worker.set_lr(lr);
+
         let msg::TrainingMessage {
             batch_index: _,
             image_batch_seq: gt_image_seq,
@@ -1128,7 +1156,7 @@ pub fn training_worker(
             retraction_identity_similarity,
             triangular_identity_loss,
             triangular_identity_similarity,
-            generator_generated_image_seq,
+            _generator_generated_image_seq,
         ): (
             Last<_>,
             Last<_>,
@@ -1212,8 +1240,8 @@ pub fn training_worker(
             .into_iter()
             .unzip_n();
 
-        let generator_generated_image_seq: Option<Vec<_>> =
-            generator_generated_image_seq.into_iter().collect();
+        // let generator_generated_image_seq: Option<Vec<_>> =
+        //     generator_generated_image_seq.into_iter().collect();
 
         // train forward time consistency
         let (forward_consistency_loss, forward_consistency_similarity, transformer_weights_1) =
@@ -1244,13 +1272,7 @@ pub fn training_worker(
 
         let transformer_weights = transformer_weights_1.or(transformer_weights_2);
 
-        let save_images = config
-            .logging
-            .save_image_steps
-            .into_iter()
-            .all(|steps| train_step % steps.get() == 0);
-
-        let transformer_images = (train_transformer && save_images)
+        let tuple = (train_transformer && save_image)
             .then(|| {
                 tch::no_grad(|| -> Result<_> {
                     let TrainWorker {
@@ -1263,52 +1285,91 @@ pub fn training_worker(
                     let input_len = transformer_model.input_len();
                     let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
-                    let mut generated_det_seq: Vec<_> = gt_image_seq[0..input_len]
+                    let detector_det_seq: Vec<_> = gt_image_seq
                         .iter()
                         .map(|gt_image| detector_model.forward_t(gt_image, false))
                         .try_collect()?;
-                    let mut generated_image_seq: Vec<_> = generated_det_seq
+                    let generator_image_seq: Vec<_> = detector_det_seq
                         .iter()
                         .map(|det| generator_model.forward_t(det, Some(&noise), false))
                         .try_collect()?;
-                    let mut transformer_artifacts_seq = vec![];
 
-                    for index in 0..=(seq_len - input_len - 1) {
-                        let input_seq_seq = &generated_det_seq[index..(index + input_len)];
-                        let (generated_det, artifacts) =
-                            transformer_model.forward_t(input_seq_seq, false, true)?;
-                        let generated_image =
-                            generator_model.forward_t(&generated_det, Some(&noise), false)?;
+                    let mut input_det_buffer = detector_det_seq.shallow_clone();
 
-                        generated_det_seq.push(generated_det);
-                        generated_image_seq.push(generated_image);
-                        transformer_artifacts_seq.push(artifacts.unwrap());
-                    }
+                    let (transformer_det_seq, transformer_artifacts_seq, transformer_image_seq) =
+                        (0..=(seq_len - input_len - 1))
+                            .map(|index| {
+                                let input_det_window =
+                                    &input_det_buffer[index..(index + input_len)];
+                                let (pred_det, artifacts) = transformer_model
+                                    .forward_t(input_det_window, false, true)
+                                    .unwrap();
+                                let recon_image = generator_model
+                                    .forward_t(&pred_det, Some(&noise), false)
+                                    .unwrap();
+
+                                input_det_buffer.push(pred_det.shallow_clone());
+
+                                (pred_det, artifacts.unwrap(), recon_image)
+                            })
+                            .unzip_n_vec();
 
                     Ok((
-                        generated_image_seq.to_device(Device::Cpu),
-                        generated_det_seq.to_device(Device::Cpu),
+                        detector_det_seq.to_device(Device::Cpu),
+                        generator_image_seq.to_device(Device::Cpu),
+                        transformer_det_seq.to_device(Device::Cpu),
                         transformer_artifacts_seq.to_device(Device::Cpu),
+                        transformer_image_seq.to_device(Device::Cpu),
                     ))
                 })
             })
             .transpose()?;
 
         let (
-            transformer_generated_image_seq,
-            transformer_generated_det_seq,
+            detector_det_seq,
+            generator_image_seq,
+            transformer_det_seq,
             transformer_artifacts_seq,
-        ) = match transformer_images {
-            Some((generated_image_seq, generated_det_seq, transformer_artifacts_seq)) => (
-                Some(generated_image_seq),
-                Some(generated_det_seq),
+            transformer_image_seq,
+        ) = match tuple {
+            Some((
+                detector_det_seq,
+                generator_image_seq,
+                transformer_det_seq,
+                transformer_artifacts_seq,
+                transformer_image_seq,
+            )) => (
+                Some(detector_det_seq),
+                Some(generator_image_seq),
+                Some(transformer_det_seq),
                 Some(transformer_artifacts_seq),
+                Some(transformer_image_seq),
             ),
-            None => (None, None, None),
+            None => (None, None, None, None, None),
         };
 
         // send to logger
         {
+            let (motion_potential_seq, motion_field_seq) = match transformer_artifacts_seq {
+                Some(seq) => {
+                    let (motion_potential_seq, motion_field_seq) = seq
+                        .into_iter()
+                        .map(|artifacts| {
+                            let msg::TransformerArtifacts {
+                                motion_potential,
+                                motion_field,
+                            } = artifacts;
+                            (motion_potential, motion_field)
+                        })
+                        .unzip_n_vec();
+                    let motion_potential_seq: Option<Vec<_>> =
+                        motion_potential_seq.into_iter().collect();
+                    let motion_field_seq: Option<Vec<_>> = motion_field_seq.into_iter().collect();
+                    (motion_potential_seq, motion_field_seq)
+                }
+                None => (None, None),
+            };
+
             let msg = msg::LogMessage::Loss(msg::Loss {
                 step: train_step,
                 learning_rate: lr,
@@ -1335,12 +1396,14 @@ pub fn training_worker(
                 transformer_weights,
                 image_seq_discriminator_weights,
 
-                ground_truth_image_seq: save_images.then(|| gt_image_seq),
-                generator_generated_image_seq: generator_generated_image_seq
-                    .and_then(|seq| save_images.then(|| seq)),
-                transformer_generated_image_seq,
-                transformer_generated_det_seq,
-                transformer_artifacts_seq,
+                ground_truth_image_seq: save_image.then(|| gt_image_seq),
+                detector_det_seq,
+                generator_image_seq,
+                transformer_det_seq,
+                transformer_image_seq,
+
+                motion_potential_seq,
+                motion_field_seq,
             });
 
             let result = log_tx.blocking_send(msg);
@@ -1349,8 +1412,7 @@ pub fn training_worker(
             }
         }
 
-        if matches!(config.logging.save_checkpoint_steps, Some(steps) if train_step % steps.get() == 0)
-        {
+        if save_checkpoint {
             worker.save_checkpoint_files(train_step)?;
         }
 
@@ -1361,19 +1423,16 @@ pub fn training_worker(
             let record_rate = batch_rate * batch_size as f64;
             info!(
                 "step: {}\tlr: {:.5}\t{:.2} batch/s\t{:.2} sample/s",
-                train_step,
-                lr_scheduler.lr(),
-                batch_rate,
-                record_rate
+                train_step, lr, batch_rate, record_rate
             );
         } else {
-            info!("step: {}\tlr: {:.5}", train_step, lr_scheduler.lr());
+            info!("step: {}\tlr: {:.5}", train_step, lr);
         }
 
         // update state
-        train_step += 1;
-        lr = lr_scheduler.next();
-        worker.set_lr(lr);
+        // train_step += 1;
+        // lr = lr_scheduler.next();
+        // worker.set_lr(lr);
     }
 
     Ok(())

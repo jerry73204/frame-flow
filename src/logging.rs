@@ -51,10 +51,13 @@ pub async fn logging_worker(
                 image_seq_discriminator_weights,
 
                 ground_truth_image_seq,
-                generator_generated_image_seq,
-                transformer_generated_image_seq,
-                transformer_generated_det_seq,
-                transformer_artifacts_seq,
+                detector_det_seq,
+                generator_image_seq,
+                transformer_det_seq,
+                transformer_image_seq,
+
+                motion_potential_seq,
+                motion_field_seq,
             }) => {
                 let step = step as i64;
 
@@ -383,40 +386,22 @@ pub async fn logging_worker(
                         .await?;
                 }
 
-                if let Some(seq) = generator_generated_image_seq {
-                    let seq = save_image_seq_async(
-                        "generator_generated_image",
-                        sub_image_dir.clone(),
-                        seq,
-                    )
-                    .await?;
-                    save_image_seq_to_tfrecord(
-                        &mut event_writer,
-                        "generator_generated_image",
-                        step,
-                        seq,
-                    )
-                    .await?;
+                if let Some(seq) = generator_image_seq {
+                    let seq =
+                        save_image_seq_async("generator_image", sub_image_dir.clone(), seq).await?;
+                    save_image_seq_to_tfrecord(&mut event_writer, "generator_image", step, seq)
+                        .await?;
                 }
 
-                if let Some(seq) = transformer_generated_image_seq {
-                    let seq = save_image_seq_async(
-                        "transformer_generated_image",
-                        sub_image_dir.clone(),
-                        seq,
-                    )
-                    .await?;
+                if let Some(seq) = transformer_image_seq {
+                    let seq = save_image_seq_async("transformer_image", sub_image_dir.clone(), seq)
+                        .await?;
 
-                    save_image_seq_to_tfrecord(
-                        &mut event_writer,
-                        "transformer_generated_image",
-                        step,
-                        seq,
-                    )
-                    .await?;
+                    save_image_seq_to_tfrecord(&mut event_writer, "transformer_image", step, seq)
+                        .await?;
                 }
 
-                if let Some(seq) = transformer_generated_det_seq {
+                if let Some(seq) = detector_det_seq {
                     let objectness_seq: Vec<_> = seq
                         .into_iter()
                         .map(|det| {
@@ -427,7 +412,7 @@ pub async fn logging_worker(
                         .collect();
 
                     let objectness_seq = save_image_seq_async(
-                        "transformer_generated_objectness",
+                        "detector_objectness",
                         sub_image_dir.clone(),
                         objectness_seq,
                     )
@@ -435,26 +420,54 @@ pub async fn logging_worker(
 
                     save_image_seq_to_tfrecord(
                         &mut event_writer,
-                        "transformer_detection_objectness",
+                        "detector_objectness",
                         step,
                         objectness_seq,
                     )
                     .await?;
                 }
 
-                if let Some(seq) = transformer_artifacts_seq {
-                    let (motion_dx_seq, motion_dy_seq, motion_potential_seq) = seq
+                if let Some(seq) = transformer_det_seq {
+                    let objectness_seq: Vec<_> = seq
                         .into_iter()
-                        .map(
-                            |msg::TransformerArtifacts {
-                                 motion_field,
-                                 motion_potential,
-                             }| {
-                                let motion_dx = motion_field.i((.., 0..1, .., ..));
-                                let motion_dy = motion_field.i((.., 1..2, .., ..));
-                                (motion_dx, motion_dy, motion_potential)
-                            },
-                        )
+                        .map(|det| {
+                            assert!(det.tensors.len() == 1);
+                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
+                            max
+                        })
+                        .collect();
+
+                    let objectness_seq = save_image_seq_async(
+                        "transformer_objectness",
+                        sub_image_dir.clone(),
+                        objectness_seq,
+                    )
+                    .await?;
+
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "transformer_objectness",
+                        step,
+                        objectness_seq,
+                    )
+                    .await?;
+                }
+
+                if let Some(seq) = motion_potential_seq {
+                    let seq = save_image_seq_async("motion_potential", sub_image_dir.clone(), seq)
+                        .await?;
+                    save_image_seq_to_tfrecord(&mut event_writer, "motion_potential", step, seq)
+                        .await?;
+                }
+
+                if let Some(seq) = motion_field_seq {
+                    let (motion_dx_seq, motion_dy_seq) = seq
+                        .into_iter()
+                        .map(|motion_field| {
+                            let motion_dx = motion_field.i((.., 0..1, .., ..));
+                            let motion_dy = motion_field.i((.., 1..2, .., ..));
+                            (motion_dx, motion_dy)
+                        })
                         .unzip_n_vec();
 
                     let motion_dx_seq =
@@ -463,26 +476,12 @@ pub async fn logging_worker(
                     let motion_dy_seq =
                         save_image_seq_async("motion_dy", sub_image_dir.clone(), motion_dy_seq)
                             .await?;
-                    let motion_potential_seq = save_image_seq_async(
-                        "motion_potential",
-                        sub_image_dir.clone(),
-                        motion_potential_seq,
-                    )
-                    .await?;
 
                     save_image_seq_to_tfrecord(&mut event_writer, "motion_dx", step, motion_dx_seq)
                         .await?;
 
                     save_image_seq_to_tfrecord(&mut event_writer, "motion_dy", step, motion_dy_seq)
                         .await?;
-
-                    save_image_seq_to_tfrecord(
-                        &mut event_writer,
-                        "motion_potential",
-                        step,
-                        motion_potential_seq,
-                    )
-                    .await?;
                 }
             }
             msg::LogMessage::Image { step, sequence } => {

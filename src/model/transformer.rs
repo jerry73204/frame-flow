@@ -5,244 +5,696 @@ use crate::{common::*, message as msg, utils::*};
 use denormed_detection::*;
 use detection_encode::*;
 
-#[derive(Debug, Clone)]
-pub struct TransformerInit {
-    pub ksize: usize,
-    pub norm_kind: NormKind,
-    pub padding_kind: PaddingKind,
-}
+pub use motion_based::*;
+pub use potential_based::*;
 
-impl Default for TransformerInit {
-    fn default() -> Self {
-        Self {
-            padding_kind: PaddingKind::Reflect,
-            norm_kind: NormKind::InstanceNorm,
-            ksize: 3,
+mod potential_based {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct PotentialBasedTransformerInit {
+        pub ksize: usize,
+        pub norm_kind: NormKind,
+        pub padding_kind: PaddingKind,
+    }
+
+    impl Default for PotentialBasedTransformerInit {
+        fn default() -> Self {
+            Self {
+                padding_kind: PaddingKind::Reflect,
+                norm_kind: NormKind::InstanceNorm,
+                ksize: 3,
+            }
+        }
+    }
+
+    impl PotentialBasedTransformerInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            input_len: usize,
+            num_classes: usize,
+            inner_c: usize,
+        ) -> Result<PotentialBasedTransformer> {
+            // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
+
+            let path = path.borrow();
+            let Self {
+                ksize,
+                norm_kind,
+                padding_kind,
+            } = self;
+            // let device = path.device();
+            let in_c = 5 + num_classes;
+            ensure!(input_len > 0);
+
+            let ctx_c = in_c * input_len;
+
+            let feature_maps: Vec<_> = array::IntoIter::new([
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 4,
+                    num_mid: 1,
+                    num_up: 4,
+                }
+                .build(path / "feature_0", ctx_c, inner_c, inner_c), // 64 -> 64
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 4,
+                    num_mid: 1,
+                    num_up: 3,
+                }
+                .build(path / "feature_1", inner_c, inner_c, inner_c), // 64 -> 32
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 3,
+                    num_mid: 1,
+                    num_up: 2,
+                }
+                .build(path / "feature_2", inner_c, inner_c, inner_c), // 32 -> 16
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 2,
+                    num_mid: 1,
+                    num_up: 1,
+                }
+                .build(path / "feature_3", inner_c, inner_c, inner_c), // 16 -> 8
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 1,
+                    num_mid: 1,
+                    num_up: 0,
+                }
+                .build(path / "feature_4", inner_c, inner_c, inner_c), // 8 -> 4
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 1,
+                    num_mid: 1,
+                    num_up: 0,
+                }
+                .build(path / "feature_5", inner_c, inner_c, inner_c), // 4 -> 2
+            ])
+            .try_collect()
+            .unwrap();
+
+            let motion_maps: Vec<_> = array::IntoIter::new([
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 4,
+                    num_mid: 1,
+                    num_up: 4,
+                }
+                .build(path / "motion_0", inner_c + 2, 1, inner_c), // 64
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 3,
+                    num_mid: 1,
+                    num_up: 3,
+                }
+                .build(path / "motion_1", inner_c + 2, 1, inner_c), // 32
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 3,
+                    num_mid: 1,
+                    num_up: 3,
+                }
+                .build(path / "motion_2", inner_c + 2, 1, inner_c), // 16
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 2,
+                    num_mid: 1,
+                    num_up: 2,
+                }
+                .build(path / "motion_3", inner_c + 2, 1, inner_c), // 8
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 0,
+                    num_mid: 1,
+                    num_up: 0,
+                }
+                .build(path / "motion_4", inner_c + 2, 1, inner_c), // 4
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 0,
+                    num_mid: 1,
+                    num_up: 0,
+                }
+                .build(path / "motion_5", inner_c, 1, inner_c), // 2
+            ])
+            .try_collect()
+            .unwrap();
+
+            let forward_fn = Box::new(
+                move |input: &[&DenseDetectionTensorList],
+                      train: bool,
+                      with_artifacts: bool|
+                      -> Result<_> {
+                    // sanity checks
+                    ensure!(input.len() == input_len);
+                    ensure!(input.iter().all(|list| list.tensors.len() == 1));
+                    ensure!(input
+                        .iter()
+                        .map(|list| &list.tensors)
+                        .flatten()
+                        .all(|tensor| tensor.num_classes() == num_classes));
+                    debug_assert!(input.iter().any(|&list| list.is_all_finite()));
+
+                    let device = input[0].device();
+                    let bsize = input[0].batch_size() as i64;
+                    let in_h = input[0].tensors[0].height() as i64;
+                    let in_w = input[0].tensors[0].width() as i64;
+                    let anchors = &input[0].tensors[0].anchors;
+                    let num_anchors = anchors.len() as i64;
+                    let num_classes = num_classes as i64;
+
+                    ensure!(input
+                        .iter()
+                        .flat_map(|list| &list.tensors)
+                        .all(|det| det.height() == in_h as usize
+                            && det.width() == in_w as usize
+                            && &det.anchors == anchors));
+
+                    // merge input sequence into a context tensor
+                    let context = {
+                        let context_vec: Vec<_> = input
+                            .iter()
+                            .flat_map(|list| &list.tensors)
+                            .map(|det| -> Result<_> {
+                                let (context, _) = det.encode_detection()?;
+                                // let (bsize, num_entires, num_anchors, height, width) = context.size5().unwrap();
+
+                                // scale batch_size to bsize * num_anchors
+                                let context = context.repeat_interleave_self_int(num_anchors, 0);
+
+                                // merge entry and anchor dimensions
+                                let context = context.view([bsize * num_anchors, -1, in_h, in_w]);
+
+                                Ok(context)
+                            })
+                            .try_collect()?;
+                        Tensor::cat(&context_vec, 1)
+                    };
+                    debug_assert!(context.is_all_finite());
+
+                    // generate features
+                    let features: Vec<_> = {
+                        feature_maps
+                            .iter()
+                            .scan(context, |prev, map| {
+                                let next = map.forward_t(prev, train).lrelu();
+                                *prev = next.shallow_clone();
+                                Some(next)
+                            })
+                            .collect()
+                    };
+
+                    // generate motion potentials
+                    const SCALE: f64 = 0.125;
+
+                    let cograd = |xs: &Tensor| -> Tensor {
+                        let (dx, dy) = xs.spatial_gradient();
+                        Tensor::cat(&[-dy, dx], 1)
+                    };
+
+                    let (motion_potential, motion_field) = {
+                        let mut pairs = izip!(features.iter().rev(), motion_maps.iter().rev());
+                        let (feature, map) = pairs.next().unwrap();
+                        let init_potential =
+                            map.forward_t(feature, train).div(SCALE).tanh().mul(SCALE);
+                        let init_motion = cograd(&init_potential);
+
+                        pairs.fold(
+                            (init_potential, init_motion),
+                            |(prev_potential, prev_field), (feature, map)| {
+                                let (_, _, prev_h, prev_w) = prev_field.size4().unwrap();
+                                let next_h = prev_h * 2;
+                                let next_w = prev_w * 2;
+
+                                // upsample motion from prev step
+                                let prev_field =
+                                    prev_field.upsample_nearest2d(&[next_h, next_w], None, None);
+                                let prev_potential = prev_potential.upsample_nearest2d(
+                                    &[next_h, next_w],
+                                    None,
+                                    None,
+                                );
+
+                                // cat prev motion to curr feature
+                                let xs = Tensor::cat(&[feature, &prev_field], 1);
+
+                                // predict potential
+                                let next_potential = prev_potential
+                                    + map.forward_t(&xs, train).div(SCALE).tanh().mul(SCALE);
+                                let next_field = cograd(&next_potential);
+
+                                (next_potential, next_field)
+                            },
+                        )
+                    };
+                    debug_assert!(motion_field.is_all_finite());
+
+                    // motion vector in ratio unit
+                    let motion_dx = motion_field.i((.., 0..1, .., ..));
+                    let motion_dy = motion_field.i((.., 1..2, .., ..));
+                    // let motion_field_ratio = Tensor::cat(
+                    //     &[
+                    //         &motion_dx_pixel * 2.0 / in_w as f64,
+                    //         &motion_dy_pixel * 2.0 / in_h as f64,
+                    //     ],
+                    //     1,
+                    // );
+
+                    dbg!((motion_potential.max(), motion_potential.min()));
+                    dbg!((motion_field.max(), motion_field.min()));
+
+                    // compute grid, where each value range in [-1, 1]
+                    let grid = {
+                        let ident_grid = {
+                            let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
+                                .expand(&[bsize, 2, 3], false)
+                                .to_device(device);
+                            Tensor::affine_grid_generator(&theta, &[bsize, 1, in_h, in_w], false)
+                        };
+
+                        // sample_grid defines boundaries in [-1, 1], while our motion
+                        // vector defines boundaries in [0, 1].
+                        &motion_field.permute(&[0, 2, 3, 1]) * 2.0 + ident_grid
+                    };
+
+                    // unpack last input detection
+                    let last_det = &input.last().unwrap().tensors[0];
+                    let cy_ratio = &last_det.cy;
+                    let cx_ratio = &last_det.cx;
+                    let h_ratio = &last_det.h;
+                    let w_ratio = &last_det.w;
+                    let obj_logit = &last_det.obj_logit;
+                    let class_logit = &last_det.class_logit;
+
+                    // let DenormedDetection {
+                    //     cy: cy_denorm,
+                    //     cx: cx_denorm,
+                    //     h: h_denorm,
+                    //     w: w_denorm,
+                    //     obj_prob,
+                    //     class_prob,
+                    //     anchors,
+                    // } = (&input.last().unwrap().tensors[0]).into();
+
+                    // merge batch and anchor dimensions
+                    let cy_ratio = cy_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                    let cx_ratio = cx_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                    let h_ratio = h_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                    let w_ratio = w_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                    let obj_logit = obj_logit
+                        .permute(&[0, 2, 1, 3, 4])
+                        .view([-1, 1, in_h, in_w]);
+                    let class_logit =
+                        class_logit
+                            .permute(&[0, 2, 1, 3, 4])
+                            .view([-1, num_classes, in_h, in_w]);
+
+                    // warp values
+                    let cy_ratio = (&cy_ratio + &motion_dy).grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let cx_ratio = (&cx_ratio + &motion_dx).grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let h_ratio = h_ratio.grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let w_ratio = w_ratio.grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let obj_logit = obj_logit.grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let class_logit = class_logit.grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+
+                    // split batch and anchor dimensions
+                    let cy_ratio = cy_ratio
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let cx_ratio = cx_ratio
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let h_ratio = h_ratio
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let w_ratio = w_ratio
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let obj_logit = obj_logit
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let class_logit = class_logit
+                        .view([bsize, num_anchors, num_classes, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+
+                    let warped_det = DenseDetectionTensorUnchecked {
+                        cy: cy_ratio,
+                        cx: cx_ratio,
+                        h: h_ratio,
+                        w: w_ratio,
+                        obj_logit,
+                        class_logit,
+                        anchors: anchors.clone(),
+                    }
+                    .build()
+                    .unwrap();
+
+                    let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
+                        motion_potential: Some(motion_potential),
+                        motion_field: Some(motion_field),
+                    });
+
+                    let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
+                        tensors: vec![warped_det],
+                    }
+                    .try_into()
+                    .unwrap();
+
+                    Ok((output, artifacts))
+                },
+            );
+
+            Ok(PotentialBasedTransformer {
+                input_len,
+                forward_fn,
+            })
+        }
+    }
+
+    #[derive(Derivative)]
+    #[derivative(Debug)]
+    pub struct PotentialBasedTransformer {
+        input_len: usize,
+        #[derivative(Debug = "ignore")]
+        forward_fn: Box<
+            dyn Fn(
+                    &[&DenseDetectionTensorList],
+                    bool,
+                    bool,
+                )
+                    -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)>
+                + Send,
+        >,
+    }
+
+    impl PotentialBasedTransformer {
+        pub fn input_len(&self) -> usize {
+            self.input_len
+        }
+
+        pub fn forward_t(
+            &self,
+            input: &[impl Borrow<DenseDetectionTensorList>],
+            train: bool,
+            with_artifacts: bool,
+        ) -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)> {
+            let input: Vec<_> = input.iter().map(|list| list.borrow()).collect();
+            (self.forward_fn)(&input, train, with_artifacts)
         }
     }
 }
 
-impl TransformerInit {
-    pub fn build<'a>(
-        self,
-        path: impl Borrow<nn::Path<'a>>,
-        input_len: usize,
-        num_classes: usize,
-        inner_c: usize,
-    ) -> Result<Transformer> {
-        // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
+mod motion_based {
+    use super::*;
 
-        let path = path.borrow();
-        let Self {
-            ksize,
-            norm_kind,
-            padding_kind,
-        } = self;
-        // let device = path.device();
-        let in_c = 5 + num_classes;
-        ensure!(input_len > 0);
+    #[derive(Debug, Clone)]
+    pub struct MotionBasedTransformerInit {
+        pub ksize: usize,
+        pub norm_kind: NormKind,
+        pub padding_kind: PaddingKind,
+    }
 
-        let ctx_c = in_c * input_len;
+    impl Default for MotionBasedTransformerInit {
+        fn default() -> Self {
+            Self {
+                padding_kind: PaddingKind::Reflect,
+                norm_kind: NormKind::InstanceNorm,
+                ksize: 3,
+            }
+        }
+    }
 
-        let feature_maps: Vec<_> = array::IntoIter::new([
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 4,
-                num_mid: 1,
-                num_up: 4,
-            }
-            .build(path / "feature_0", ctx_c, inner_c, inner_c), // 64 -> 64
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 4,
-                num_mid: 1,
-                num_up: 3,
-            }
-            .build(path / "feature_1", inner_c, inner_c, inner_c), // 64 -> 32
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 3,
-                num_mid: 1,
-                num_up: 2,
-            }
-            .build(path / "feature_2", inner_c, inner_c, inner_c), // 32 -> 16
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 2,
-                num_mid: 1,
-                num_up: 1,
-            }
-            .build(path / "feature_3", inner_c, inner_c, inner_c), // 16 -> 8
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 1,
-                num_mid: 1,
-                num_up: 0,
-            }
-            .build(path / "feature_4", inner_c, inner_c, inner_c), // 8 -> 4
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 1,
-                num_mid: 1,
-                num_up: 0,
-            }
-            .build(path / "feature_5", inner_c, inner_c, inner_c), // 4 -> 2
-        ])
-        .try_collect()
-        .unwrap();
+    impl MotionBasedTransformerInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            input_len: usize,
+            num_classes: usize,
+            inner_c: usize,
+        ) -> Result<MotionBasedTransformer> {
+            // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
 
-        let motion_maps: Vec<_> = array::IntoIter::new([
-            resnet::ResnetInit {
+            let path = path.borrow();
+            let Self {
                 ksize,
                 norm_kind,
                 padding_kind,
-                num_down: 4,
-                num_mid: 1,
-                num_up: 4,
-            }
-            .build(path / "motion_0", inner_c + 2, 1, inner_c), // 64
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 3,
-                num_mid: 1,
-                num_up: 3,
-            }
-            .build(path / "motion_1", inner_c + 2, 1, inner_c), // 32
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 3,
-                num_mid: 1,
-                num_up: 3,
-            }
-            .build(path / "motion_2", inner_c + 2, 1, inner_c), // 16
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 2,
-                num_mid: 1,
-                num_up: 2,
-            }
-            .build(path / "motion_3", inner_c + 2, 1, inner_c), // 8
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 0,
-                num_mid: 1,
-                num_up: 0,
-            }
-            .build(path / "motion_4", inner_c + 2, 1, inner_c), // 4
-            resnet::ResnetInit {
-                ksize,
-                norm_kind,
-                padding_kind,
-                num_down: 0,
-                num_mid: 1,
-                num_up: 0,
-            }
-            .build(path / "motion_5", inner_c, 1, inner_c), // 2
-        ])
-        .try_collect()
-        .unwrap();
+            } = self;
+            // let device = path.device();
+            let in_c = 5 + num_classes;
+            ensure!(input_len > 0);
 
-        let forward_fn = Box::new(
-            move |input: &[&DenseDetectionTensorList],
-                  train: bool,
-                  with_artifacts: bool|
-                  -> Result<_> {
-                // sanity checks
-                ensure!(input.len() == input_len);
-                ensure!(input.iter().all(|list| list.tensors.len() == 1));
-                ensure!(input
-                    .iter()
-                    .map(|list| &list.tensors)
-                    .flatten()
-                    .all(|tensor| tensor.num_classes() == num_classes));
-                debug_assert!(input.iter().any(|&list| list.is_all_finite()));
+            let ctx_c = in_c * input_len;
 
-                let device = input[0].device();
-                let bsize = input[0].batch_size() as i64;
-                let in_h = input[0].tensors[0].height() as i64;
-                let in_w = input[0].tensors[0].width() as i64;
-                let anchors = &input[0].tensors[0].anchors;
-                let num_anchors = anchors.len() as i64;
-                let num_classes = num_classes as i64;
+            let feature_maps: Vec<_> = array::IntoIter::new([
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 4,
+                    num_mid: 1,
+                    num_up: 4,
+                }
+                .build(path / "feature_0", ctx_c, inner_c, inner_c), // 64 -> 64
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 4,
+                    num_mid: 1,
+                    num_up: 3,
+                }
+                .build(path / "feature_1", inner_c, inner_c, inner_c), // 64 -> 32
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 3,
+                    num_mid: 1,
+                    num_up: 2,
+                }
+                .build(path / "feature_2", inner_c, inner_c, inner_c), // 32 -> 16
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 2,
+                    num_mid: 1,
+                    num_up: 1,
+                }
+                .build(path / "feature_3", inner_c, inner_c, inner_c), // 16 -> 8
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 1,
+                    num_mid: 1,
+                    num_up: 0,
+                }
+                .build(path / "feature_4", inner_c, inner_c, inner_c), // 8 -> 4
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 1,
+                    num_mid: 1,
+                    num_up: 0,
+                }
+                .build(path / "feature_5", inner_c, inner_c, inner_c), // 4 -> 2
+            ])
+            .try_collect()
+            .unwrap();
 
-                ensure!(input
-                    .iter()
-                    .flat_map(|list| &list.tensors)
-                    .all(|det| det.height() == in_h as usize
-                        && det.width() == in_w as usize
-                        && &det.anchors == anchors));
+            let motion_maps: Vec<_> = array::IntoIter::new([
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 4,
+                    num_mid: 1,
+                    num_up: 4,
+                }
+                .build(path / "motion_0", inner_c + 2, 2, inner_c), // 64
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 3,
+                    num_mid: 1,
+                    num_up: 3,
+                }
+                .build(path / "motion_1", inner_c + 2, 2, inner_c), // 32
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 3,
+                    num_mid: 1,
+                    num_up: 3,
+                }
+                .build(path / "motion_2", inner_c + 2, 2, inner_c), // 16
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 2,
+                    num_mid: 1,
+                    num_up: 2,
+                }
+                .build(path / "motion_3", inner_c + 2, 2, inner_c), // 8
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 0,
+                    num_mid: 1,
+                    num_up: 0,
+                }
+                .build(path / "motion_4", inner_c + 2, 2, inner_c), // 4
+                resnet::ResnetInit {
+                    ksize,
+                    norm_kind,
+                    padding_kind,
+                    num_down: 0,
+                    num_mid: 1,
+                    num_up: 0,
+                }
+                .build(path / "motion_5", inner_c, 2, inner_c), // 2
+            ])
+            .try_collect()
+            .unwrap();
 
-                // merge input sequence into a context tensor
-                let context = {
-                    let context_vec: Vec<_> = input
+            let forward_fn = Box::new(
+                move |input: &[&DenseDetectionTensorList],
+                      train: bool,
+                      with_artifacts: bool|
+                      -> Result<_> {
+                    // sanity checks
+                    ensure!(input.len() == input_len);
+                    ensure!(input.iter().all(|list| list.tensors.len() == 1));
+                    ensure!(input
+                        .iter()
+                        .map(|list| &list.tensors)
+                        .flatten()
+                        .all(|tensor| tensor.num_classes() == num_classes));
+                    debug_assert!(input.iter().any(|&list| list.is_all_finite()));
+
+                    let device = input[0].device();
+                    let bsize = input[0].batch_size() as i64;
+                    let in_h = input[0].tensors[0].height() as i64;
+                    let in_w = input[0].tensors[0].width() as i64;
+                    let anchors = &input[0].tensors[0].anchors;
+                    let num_anchors = anchors.len() as i64;
+                    let num_classes = num_classes as i64;
+
+                    ensure!(input
                         .iter()
                         .flat_map(|list| &list.tensors)
-                        .map(|det| -> Result<_> {
-                            let (context, _) = det.encode_detection()?;
-                            // let (bsize, num_entires, num_anchors, height, width) = context.size5().unwrap();
+                        .all(|det| det.height() == in_h as usize
+                            && det.width() == in_w as usize
+                            && &det.anchors == anchors));
 
-                            // scale batch_size to bsize * num_anchors
-                            let context = context.repeat_interleave_self_int(num_anchors, 0);
+                    // merge input sequence into a context tensor
+                    let context = {
+                        let context_vec: Vec<_> = input
+                            .iter()
+                            .flat_map(|list| &list.tensors)
+                            .map(|det| -> Result<_> {
+                                let (context, _) = det.encode_detection()?;
+                                // let (bsize, num_entires, num_anchors, height, width) = context.size5().unwrap();
 
-                            // merge entry and anchor dimensions
-                            let context = context.view([bsize * num_anchors, -1, in_h, in_w]);
+                                // scale batch_size to bsize * num_anchors
+                                let context = context.repeat_interleave_self_int(num_anchors, 0);
 
-                            Ok(context)
-                        })
-                        .try_collect()?;
-                    Tensor::cat(&context_vec, 1)
-                };
-                debug_assert!(context.is_all_finite());
+                                // merge entry and anchor dimensions
+                                let context = context.view([bsize * num_anchors, -1, in_h, in_w]);
 
-                // generate features
-                let features: Vec<_> = {
-                    feature_maps
-                        .iter()
-                        .scan(context, |prev, map| {
-                            let next = map.forward_t(prev, train).lrelu();
-                            *prev = next.shallow_clone();
-                            Some(next)
-                        })
-                        .collect()
-                };
+                                Ok(context)
+                            })
+                            .try_collect()?;
+                        Tensor::cat(&context_vec, 1)
+                    };
+                    debug_assert!(context.is_all_finite());
 
-                // generate motion potentials
-                const SCALE: f64 = 0.125;
+                    // generate features
+                    let features: Vec<_> = {
+                        feature_maps
+                            .iter()
+                            .scan(context, |prev, map| {
+                                let next = map.forward_t(prev, train).lrelu();
+                                *prev = next.shallow_clone();
+                                Some(next)
+                            })
+                            .collect()
+                    };
 
-                let cograd = |xs: &Tensor| -> Tensor {
-                    let (dx, dy) = xs.spatial_gradient();
-                    Tensor::cat(&[-dy, dx], 1)
-                };
+                    // generate motion potentials
+                    const SCALE: f64 = 0.01;
 
-                let (motion_potential, motion_field_pixel) = {
-                    let mut pairs = izip!(features.iter().rev(), motion_maps.iter().rev());
-                    let (feature, map) = pairs.next().unwrap();
-                    let init_potential = map.forward_t(feature, train).div(SCALE).tanh().mul(SCALE);
-                    let init_motion = cograd(&init_potential);
+                    let motion_field = {
+                        let mut pairs = izip!(features.iter().rev(), motion_maps.iter().rev());
+                        let (feature, map) = pairs.next().unwrap();
+                        let init_field = map.forward_t(feature, train).div(SCALE).tanh().mul(SCALE);
 
-                    pairs.fold(
-                        (init_potential, init_motion),
-                        |(prev_potential, prev_field), (feature, map)| {
+                        pairs.fold(init_field, |prev_field, (feature, map)| {
                             let (_, _, prev_h, prev_w) = prev_field.size4().unwrap();
                             let next_h = prev_h * 2;
                             let next_w = prev_w * 2;
@@ -250,354 +702,327 @@ impl TransformerInit {
                             // upsample motion from prev step
                             let prev_field =
                                 prev_field.upsample_nearest2d(&[next_h, next_w], None, None);
-                            let prev_potential =
-                                prev_potential.upsample_nearest2d(&[next_h, next_w], None, None);
 
                             // cat prev motion to curr feature
                             let xs = Tensor::cat(&[feature, &prev_field], 1);
 
                             // predict potential
-                            let next_potential = prev_potential
-                                + map.forward_t(&xs, train).div(SCALE).tanh().mul(SCALE);
-                            let next_field = cograd(&next_potential);
+                            let next_field =
+                                prev_field + map.forward_t(&xs, train).div(SCALE).tanh().mul(SCALE);
 
-                            (next_potential, next_field)
-                        },
-                    )
-                };
-                debug_assert!(motion_field_pixel.is_all_finite());
-                let motion_dx_pixel = motion_field_pixel.i((.., 0..1, .., ..));
-                let motion_dy_pixel = motion_field_pixel.i((.., 1..2, .., ..));
-                let motion_field_ratio = Tensor::cat(
-                    &[
-                        &motion_dx_pixel * 2.0 / in_w as f64,
-                        &motion_dy_pixel * 2.0 / in_h as f64,
-                    ],
-                    1,
-                );
-
-                // compute grid, where each value range in [-1, 1]
-                let grid = {
-                    let ident_grid = {
-                        let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
-                            .expand(&[bsize, 2, 3], false)
-                            .to_device(device);
-                        Tensor::affine_grid_generator(&theta, &[bsize, 1, in_h, in_w], false)
+                            next_field
+                        })
                     };
-                    &motion_field_ratio.permute(&[0, 2, 3, 1]) + ident_grid
-                };
+                    debug_assert!(motion_field.is_all_finite());
 
-                // denormalize last detection
-                let DenormedDetection {
-                    cy: cy_denorm,
-                    cx: cx_denorm,
-                    h: h_denorm,
-                    w: w_denorm,
-                    obj_prob,
-                    class_prob,
-                    anchors,
-                } = (&input.last().unwrap().tensors[0]).into();
+                    // motion vector in ratio unit
+                    let motion_dx = motion_field.i((.., 0..1, .., ..));
+                    let motion_dy = motion_field.i((.., 1..2, .., ..));
 
-                // merge batch and anchor dimensions
-                let cy_denorm = cy_denorm
-                    .permute(&[0, 2, 1, 3, 4])
-                    .view([-1, 1, in_h, in_w]);
-                let cx_denorm = cx_denorm
-                    .permute(&[0, 2, 1, 3, 4])
-                    .view([-1, 1, in_h, in_w]);
-                let h_denorm = h_denorm.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
-                let w_denorm = w_denorm.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
-                let obj_prob = obj_prob.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
-                let class_prob =
-                    class_prob
+                    dbg!((motion_field.max(), motion_field.min()));
+
+                    // compute grid, where each value range in [-1, 1]
+                    let grid = {
+                        let ident_grid = {
+                            let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
+                                .expand(&[bsize, 2, 3], false)
+                                .to_device(device);
+                            Tensor::affine_grid_generator(&theta, &[bsize, 1, in_h, in_w], false)
+                        };
+
+                        // sample_grid defines boundaries in [-1, 1], while our motion
+                        // vector defines boundaries in [0, 1].
+                        &motion_field.permute(&[0, 2, 3, 1]) * 2.0 + ident_grid
+                    };
+
+                    // unpack last input detection
+                    let last_det = &input.last().unwrap().tensors[0];
+                    let cy_ratio = &last_det.cy;
+                    let cx_ratio = &last_det.cx;
+                    let h_ratio = &last_det.h;
+                    let w_ratio = &last_det.w;
+                    let obj_logit = &last_det.obj_logit;
+                    let class_logit = &last_det.class_logit;
+
+                    // merge batch and anchor dimensions
+                    let cy_ratio = cy_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                    let cx_ratio = cx_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                    let h_ratio = h_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                    let w_ratio = w_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                    let obj_logit = obj_logit
                         .permute(&[0, 2, 1, 3, 4])
-                        .view([-1, num_classes, in_h, in_w]);
+                        .view([-1, 1, in_h, in_w]);
+                    let class_logit =
+                        class_logit
+                            .permute(&[0, 2, 1, 3, 4])
+                            .view([-1, num_classes, in_h, in_w]);
 
-                // warp values
-                let cy_denorm = (&cy_denorm + &motion_dy_pixel).grid_sampler(
-                    &grid, // grid
-                    1,     // nearest interpolation
-                    0,     // pad zeros
-                    false,
-                );
-                let cx_denorm = (&cx_denorm + &motion_dx_pixel).grid_sampler(
-                    &grid, // grid
-                    1,     // nearest interpolation
-                    0,     // pad zeros
-                    false,
-                );
-                let h_denorm = h_denorm.grid_sampler(
-                    &grid, // grid
-                    1,     // nearest interpolation
-                    0,     // pad zeros
-                    false,
-                );
-                let w_denorm = w_denorm.grid_sampler(
-                    &grid, // grid
-                    1,     // nearest interpolation
-                    0,     // pad zeros
-                    false,
-                );
-                let obj_prob = obj_prob.grid_sampler(
-                    &grid, // grid
-                    1,     // nearest interpolation
-                    0,     // pad zeros
-                    false,
-                );
-                let class_prob = class_prob.grid_sampler(
-                    &grid, // grid
-                    1,     // nearest interpolation
-                    0,     // pad zeros
-                    false,
-                );
+                    // warp values
+                    let cy_ratio = (&cy_ratio + &motion_dy).grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let cx_ratio = (&cx_ratio + &motion_dx).grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let h_ratio = h_ratio.grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let w_ratio = w_ratio.grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let obj_logit = obj_logit.grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
+                    let class_logit = class_logit.grid_sampler(
+                        &grid, // grid
+                        1,     // nearest interpolation
+                        0,     // pad zeros
+                        false,
+                    );
 
-                // split batch and anchor dimensions
-                let cy_denorm = cy_denorm
-                    .view([bsize, num_anchors, 1, in_h, in_w])
-                    .permute(&[0, 2, 1, 3, 4]);
-                let cx_denorm = cx_denorm
-                    .view([bsize, num_anchors, 1, in_h, in_w])
-                    .permute(&[0, 2, 1, 3, 4]);
-                let h_denorm = h_denorm
-                    .view([bsize, num_anchors, 1, in_h, in_w])
-                    .permute(&[0, 2, 1, 3, 4]);
-                let w_denorm = w_denorm
-                    .view([bsize, num_anchors, 1, in_h, in_w])
-                    .permute(&[0, 2, 1, 3, 4]);
-                let obj_prob = obj_prob
-                    .view([bsize, num_anchors, 1, in_h, in_w])
-                    .permute(&[0, 2, 1, 3, 4]);
-                let class_prob = class_prob
-                    .view([bsize, num_anchors, num_classes, in_h, in_w])
-                    .permute(&[0, 2, 1, 3, 4]);
+                    // split batch and anchor dimensions
+                    let cy_ratio = cy_ratio
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let cx_ratio = cx_ratio
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let h_ratio = h_ratio
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let w_ratio = w_ratio
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let obj_logit = obj_logit
+                        .view([bsize, num_anchors, 1, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
+                    let class_logit = class_logit
+                        .view([bsize, num_anchors, num_classes, in_h, in_w])
+                        .permute(&[0, 2, 1, 3, 4]);
 
-                let warped_det: DenseDetectionTensor = DenormedDetection {
-                    cy: cy_denorm,
-                    cx: cx_denorm,
-                    h: h_denorm,
-                    w: w_denorm,
-                    obj_prob,
-                    class_prob,
-                    anchors,
-                }
-                .into();
+                    let warped_det = DenseDetectionTensorUnchecked {
+                        cy: cy_ratio,
+                        cx: cx_ratio,
+                        h: h_ratio,
+                        w: w_ratio,
+                        obj_logit,
+                        class_logit,
+                        anchors: anchors.clone(),
+                    }
+                    .build()
+                    .unwrap();
 
-                let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
-                    motion_potential,
-                    motion_field: motion_field_pixel,
-                });
+                    let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
+                        motion_potential: None,
+                        motion_field: Some(motion_field),
+                    });
 
-                let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
-                    tensors: vec![warped_det],
-                }
-                .try_into()
-                .unwrap();
+                    let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
+                        tensors: vec![warped_det],
+                    }
+                    .try_into()
+                    .unwrap();
 
-                Ok((output, artifacts))
-            },
-        );
+                    Ok((output, artifacts))
+                },
+            );
 
-        Ok(Transformer {
-            input_len,
-            forward_fn,
-        })
-    }
-}
-
-#[derive(Derivative)]
-#[derivative(Debug)]
-pub struct Transformer {
-    input_len: usize,
-    #[derivative(Debug = "ignore")]
-    forward_fn: Box<
-        dyn Fn(
-                &[&DenseDetectionTensorList],
-                bool,
-                bool,
-            ) -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)>
-            + Send,
-    >,
-}
-
-impl Transformer {
-    pub fn input_len(&self) -> usize {
-        self.input_len
-    }
-
-    pub fn forward_t(
-        &self,
-        input: &[impl Borrow<DenseDetectionTensorList>],
-        train: bool,
-        with_artifacts: bool,
-    ) -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)> {
-        let input: Vec<_> = input.iter().map(|list| list.borrow()).collect();
-        (self.forward_fn)(&input, train, with_artifacts)
-    }
-}
-
-#[derive(Derivative)]
-#[derivative(Debug)]
-pub struct TransformerBlock {
-    #[derivative(Debug = "ignore")]
-    forward_fn: Box<
-        dyn Fn(&Tensor, &Tensor, bool, bool) -> Result<(Tensor, Option<msg::TransformerArtifacts>)>
-            + Send,
-    >,
-}
-
-impl TransformerBlock {
-    pub fn forward_t(
-        &self,
-        input: &Tensor,
-        context: &Tensor,
-        train: bool,
-        with_artifacts: bool,
-    ) -> Result<(Tensor, Option<msg::TransformerArtifacts>)> {
-        (self.forward_fn)(input, context, train, with_artifacts)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ChannelWiseAutoencoderInit {
-    pub norm_kind: NormKind,
-}
-
-impl ChannelWiseAutoencoderInit {
-    pub fn build<'a>(
-        self,
-        path: impl Borrow<nn::Path<'a>>,
-        in_c: usize,
-        inner_c: usize,
-    ) -> (ChannelWiseEncoder, ChannelWiseDecoder) {
-        let path = path.borrow();
-        let Self { norm_kind } = self;
-        let bias = norm_kind == NormKind::InstanceNorm;
-
-        let encoder = {
-            let path = path / "encoder";
-
-            let seq = {
-                let path = &path / "block_0";
-                nn::seq_t()
-                    // .inspect(|xs| {
-                    //     // dbg!(xs.min(), xs.max());
-                    //     debug_assert!(xs.is_all_finite());
-                    // })
-                    .add(nn::conv2d(
-                        &path / "conv",
-                        in_c as i64,
-                        inner_c as i64,
-                        1,
-                        nn::ConvConfig {
-                            padding: 0,
-                            bias,
-                            ..Default::default()
-                        },
-                    ))
-                    // .inspect(|xs| {
-                    //     // dbg!(xs.min(), xs.max());
-                    //     debug_assert!(xs.is_all_finite());
-                    // })
-                    .add(norm_kind.build(&path / "norm", inner_c as i64))
-                    // .inspect(|xs| {
-                    //     debug_assert!(xs.is_all_finite());
-                    // })
-                    .add_fn(|xs| xs.lrelu())
-            };
-
-            (1..3).fold(seq, |seq, index| {
-                let path = &path / format!("block_{}", index);
-
-                seq.add(nn::conv2d(
-                    &path / "conv",
-                    inner_c as i64,
-                    inner_c as i64,
-                    1,
-                    nn::ConvConfig {
-                        padding: 0,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm", inner_c as i64))
-                .add_fn(|xs| xs.lrelu())
+            Ok(MotionBasedTransformer {
+                input_len,
+                forward_fn,
             })
-        };
+        }
+    }
 
-        let decoder = {
-            let path = path / "decoder";
-            let num_blocks = 3;
+    #[derive(Derivative)]
+    #[derivative(Debug)]
+    pub struct MotionBasedTransformer {
+        input_len: usize,
+        #[derivative(Debug = "ignore")]
+        forward_fn: Box<
+            dyn Fn(
+                    &[&DenseDetectionTensorList],
+                    bool,
+                    bool,
+                )
+                    -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)>
+                + Send,
+        >,
+    }
 
-            let seq = (0..(num_blocks - 1)).fold(nn::seq_t(), |seq, index| {
-                let path = &path / format!("block_{}", index);
+    impl MotionBasedTransformer {
+        pub fn input_len(&self) -> usize {
+            self.input_len
+        }
 
-                seq.add(nn::conv2d(
-                    &path / "conv",
-                    inner_c as i64,
-                    inner_c as i64,
-                    1,
-                    nn::ConvConfig {
-                        padding: 0,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm", inner_c as i64))
-                .add_fn(|xs| xs.lrelu())
-            });
-
-            let seq = {
-                let path = &path / format!("block_{}", num_blocks - 1);
-                seq.add(nn::conv2d(
-                    &path / "conv",
-                    inner_c as i64,
-                    in_c as i64,
-                    1,
-                    nn::ConvConfig {
-                        padding: 0,
-                        bias,
-                        ..Default::default()
-                    },
-                ))
-                .add(norm_kind.build(&path / "norm", in_c as i64))
-                .add_fn(|xs| xs.lrelu())
-            };
-
-            seq
-        };
-
-        (
-            ChannelWiseEncoder {
-                forward_fn: encoder,
-            },
-            ChannelWiseDecoder {
-                forward_fn: decoder,
-            },
-        )
+        pub fn forward_t(
+            &self,
+            input: &[impl Borrow<DenseDetectionTensorList>],
+            train: bool,
+            with_artifacts: bool,
+        ) -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)> {
+            let input: Vec<_> = input.iter().map(|list| list.borrow()).collect();
+            (self.forward_fn)(&input, train, with_artifacts)
+        }
     }
 }
 
-#[derive(Debug)]
-pub struct ChannelWiseEncoder {
-    forward_fn: nn::SequentialT,
-}
+// #[derive(Debug, Clone)]
+// pub struct ChannelWiseAutoencoderInit {
+//     pub norm_kind: NormKind,
+// }
 
-#[derive(Debug)]
-pub struct ChannelWiseDecoder {
-    forward_fn: nn::SequentialT,
-}
+// impl ChannelWiseAutoencoderInit {
+//     pub fn build<'a>(
+//         self,
+//         path: impl Borrow<nn::Path<'a>>,
+//         in_c: usize,
+//         inner_c: usize,
+//     ) -> (ChannelWiseEncoder, ChannelWiseDecoder) {
+//         let path = path.borrow();
+//         let Self { norm_kind } = self;
+//         let bias = norm_kind == NormKind::InstanceNorm;
 
-impl nn::ModuleT for ChannelWiseEncoder {
-    fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
-        self.forward_fn.forward_t(input, train)
-    }
-}
+//         let encoder = {
+//             let path = path / "encoder";
 
-impl nn::ModuleT for ChannelWiseDecoder {
-    fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
-        self.forward_fn.forward_t(input, train)
-    }
-}
+//             let seq = {
+//                 let path = &path / "block_0";
+//                 nn::seq_t()
+//                     // .inspect(|xs| {
+//                     //     // dbg!(xs.min(), xs.max());
+//                     //     debug_assert!(xs.is_all_finite());
+//                     // })
+//                     .add(nn::conv2d(
+//                         &path / "conv",
+//                         in_c as i64,
+//                         inner_c as i64,
+//                         1,
+//                         nn::ConvConfig {
+//                             padding: 0,
+//                             bias,
+//                             ..Default::default()
+//                         },
+//                     ))
+//                     // .inspect(|xs| {
+//                     //     // dbg!(xs.min(), xs.max());
+//                     //     debug_assert!(xs.is_all_finite());
+//                     // })
+//                     .add(norm_kind.build(&path / "norm", inner_c as i64))
+//                     // .inspect(|xs| {
+//                     //     debug_assert!(xs.is_all_finite());
+//                     // })
+//                     .add_fn(|xs| xs.lrelu())
+//             };
+
+//             (1..3).fold(seq, |seq, index| {
+//                 let path = &path / format!("block_{}", index);
+
+//                 seq.add(nn::conv2d(
+//                     &path / "conv",
+//                     inner_c as i64,
+//                     inner_c as i64,
+//                     1,
+//                     nn::ConvConfig {
+//                         padding: 0,
+//                         bias,
+//                         ..Default::default()
+//                     },
+//                 ))
+//                 .add(norm_kind.build(&path / "norm", inner_c as i64))
+//                 .add_fn(|xs| xs.lrelu())
+//             })
+//         };
+
+//         let decoder = {
+//             let path = path / "decoder";
+//             let num_blocks = 3;
+
+//             let seq = (0..(num_blocks - 1)).fold(nn::seq_t(), |seq, index| {
+//                 let path = &path / format!("block_{}", index);
+
+//                 seq.add(nn::conv2d(
+//                     &path / "conv",
+//                     inner_c as i64,
+//                     inner_c as i64,
+//                     1,
+//                     nn::ConvConfig {
+//                         padding: 0,
+//                         bias,
+//                         ..Default::default()
+//                     },
+//                 ))
+//                 .add(norm_kind.build(&path / "norm", inner_c as i64))
+//                 .add_fn(|xs| xs.lrelu())
+//             });
+
+//             let seq = {
+//                 let path = &path / format!("block_{}", num_blocks - 1);
+//                 seq.add(nn::conv2d(
+//                     &path / "conv",
+//                     inner_c as i64,
+//                     in_c as i64,
+//                     1,
+//                     nn::ConvConfig {
+//                         padding: 0,
+//                         bias,
+//                         ..Default::default()
+//                     },
+//                 ))
+//                 .add(norm_kind.build(&path / "norm", in_c as i64))
+//                 .add_fn(|xs| xs.lrelu())
+//             };
+
+//             seq
+//         };
+
+//         (
+//             ChannelWiseEncoder {
+//                 forward_fn: encoder,
+//             },
+//             ChannelWiseDecoder {
+//                 forward_fn: decoder,
+//             },
+//         )
+//     }
+// }
+
+// #[derive(Debug)]
+// pub struct ChannelWiseEncoder {
+//     forward_fn: nn::SequentialT,
+// }
+
+// #[derive(Debug)]
+// pub struct ChannelWiseDecoder {
+//     forward_fn: nn::SequentialT,
+// }
+
+// impl nn::ModuleT for ChannelWiseEncoder {
+//     fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
+//         self.forward_fn.forward_t(input, train)
+//     }
+// }
+
+// impl nn::ModuleT for ChannelWiseDecoder {
+//     fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
+//         self.forward_fn.forward_t(input, train)
+//     }
+// }
 
 mod resnet {
     use super::*;

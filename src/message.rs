@@ -33,11 +33,15 @@ pub struct Loss {
     pub image_seq_discriminator_weights: Option<WeightsAndGrads>,
 
     pub ground_truth_image_seq: Option<Vec<Tensor>>,
-    pub generator_generated_image_seq: Option<Vec<Tensor>>,
 
-    pub transformer_generated_image_seq: Option<Vec<Tensor>>,
-    pub transformer_generated_det_seq: Option<Vec<DenseDetectionTensorList>>,
-    pub transformer_artifacts_seq: Option<Vec<TransformerArtifacts>>,
+    pub generator_image_seq: Option<Vec<Tensor>>,
+    pub detector_det_seq: Option<Vec<DenseDetectionTensorList>>,
+    pub transformer_det_seq: Option<Vec<DenseDetectionTensorList>>,
+    pub transformer_image_seq: Option<Vec<Tensor>>,
+
+    pub motion_potential_seq: Option<Vec<Tensor>>,
+    pub motion_field_seq: Option<Vec<Tensor>>,
+    // pub transformer_artifacts_seq: Option<Vec<TransformerArtifacts>>,
 }
 
 #[derive(Debug)]
@@ -68,6 +72,6 @@ pub struct WeightsAndGrads {
 pub struct TransformerArtifacts {
     // pub autoencoder_recon_loss: Tensor,
     // pub attention_image: Tensor,
-    pub motion_potential: Tensor,
-    pub motion_field: Tensor,
+    pub motion_potential: Option<Tensor>,
+    pub motion_field: Option<Tensor>,
 }
