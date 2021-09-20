@@ -484,25 +484,48 @@ impl DenseDetectionTensorExt for DenseDetectionTensor {
 }
 
 pub trait CustomTensorExt {
+    fn dx(&self) -> Self
+    where
+        Self: Sized;
+
+    fn dy(&self) -> Self
+    where
+        Self: Sized;
+
     fn spatial_gradient(&self) -> (Self, Self)
     where
         Self: Sized;
 }
 
 impl CustomTensorExt for Tensor {
+    fn dx(&self) -> Self
+    where
+        Self: Sized,
+    {
+        assert!(self.dim() == 4);
+
+        let left = self;
+        let right = self.replication_pad2d(&[0, 1, 0, 0]).i((.., .., .., 1..));
+
+        right - left
+    }
+
+    fn dy(&self) -> Self
+    where
+        Self: Sized,
+    {
+        assert!(self.dim() == 4);
+        let top = self;
+        let bottom = self.replication_pad2d(&[0, 0, 0, 1]).i((.., .., 1.., ..));
+
+        bottom - top
+    }
+
     fn spatial_gradient(&self) -> (Self, Self)
     where
         Self: Sized,
     {
-        let left = self;
-        let right = self.constant_pad_nd(&[0, 1, 0, 0]).i((.., .., .., 1..));
-
-        let top = self;
-        let bottom = self.constant_pad_nd(&[0, 0, 0, 1]).i((.., .., 1.., ..));
-
-        let dx = right - left;
-        let dy = bottom - top;
-
-        (dx, dy)
+        assert!(self.dim() == 4);
+        (self.dx(), self.dy())
     }
 }

@@ -1,18 +1,15 @@
-use super::{
-    generator::ResnetGeneratorInit,
-    misc::{NormKind, PaddingKind},
-};
+use super::misc::{NormKind, PaddingKind};
 use crate::{common::*, message as msg, utils::*};
-use tch_modules::GroupNormInit;
+// use tch_modules::GroupNormInit;
+
+use denormed_detection::*;
+use detection_encode::*;
 
 #[derive(Debug, Clone)]
 pub struct TransformerInit {
     pub ksize: usize,
     pub norm_kind: NormKind,
     pub padding_kind: PaddingKind,
-    pub num_resnet_blocks: usize,
-    pub num_scaling_blocks: usize,
-    pub num_down_sample: usize,
 }
 
 impl Default for TransformerInit {
@@ -21,9 +18,6 @@ impl Default for TransformerInit {
             padding_kind: PaddingKind::Reflect,
             norm_kind: NormKind::InstanceNorm,
             ksize: 3,
-            num_resnet_blocks: 2,
-            num_scaling_blocks: 2,
-            num_down_sample: 3,
         }
     }
 }
@@ -43,67 +37,154 @@ impl TransformerInit {
             ksize,
             norm_kind,
             padding_kind,
-            num_resnet_blocks,
-            num_scaling_blocks,
-            num_down_sample,
         } = self;
         // let device = path.device();
         let in_c = 5 + num_classes;
         ensure!(input_len > 0);
 
-        // let (ctx_encoder, ctx_decoder) =
-        //     ChannelWiseAutoencoderInit { norm_kind }.build(path / "autoencoder", in_c, inner_c);
+        let ctx_c = in_c * input_len;
 
-        // let det_encoder = move |det: &DenseDetectionTensor, train: bool| -> Result<_> {
-        //     let (xs, anchors) = encode_detection(det)?;
-        //     let xs = ctx_encoder.forward_t(&xs, train);
-        //     Ok((xs, anchors))
-        // };
-        // let det_decoder = move |xs: &Tensor, anchors, train: bool| {
-        //     let xs = ctx_decoder.forward_t(xs, train);
-        //     decode_detection(&xs, anchors)
-        // };
+        let feature_maps: Vec<_> = array::IntoIter::new([
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 4,
+                num_mid: 1,
+                num_up: 4,
+            }
+            .build(path / "feature_0", ctx_c, inner_c, inner_c), // 64 -> 64
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 4,
+                num_mid: 1,
+                num_up: 3,
+            }
+            .build(path / "feature_1", inner_c, inner_c, inner_c), // 64 -> 32
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 3,
+                num_mid: 1,
+                num_up: 2,
+            }
+            .build(path / "feature_2", inner_c, inner_c, inner_c), // 32 -> 16
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 2,
+                num_mid: 1,
+                num_up: 1,
+            }
+            .build(path / "feature_3", inner_c, inner_c, inner_c), // 16 -> 8
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 1,
+                num_mid: 1,
+                num_up: 0,
+            }
+            .build(path / "feature_4", inner_c, inner_c, inner_c), // 8 -> 4
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 1,
+                num_mid: 1,
+                num_up: 0,
+            }
+            .build(path / "feature_5", inner_c, inner_c, inner_c), // 4 -> 2
+        ])
+        .try_collect()
+        .unwrap();
 
-        let attention_block = TransformerBlockInit {
-            ksize,
-            norm_kind,
-            padding_kind,
-            num_resnet_blocks,
-            num_scaling_blocks,
-            num_down_sample,
-        }
-        .build(path / "attention_block", in_c * input_len, inner_c)?;
-
-        // let param_block = ResnetGeneratorInit {
-        //     ksize,
-        //     norm_kind,
-        //     padding_kind,
-        //     num_scale_blocks: num_scaling_blocks,
-        //     num_blocks: num_resnet_blocks,
-        //     ..Default::default()
-        // }
-        // .build(path / "param_block", in_c * input_len, in_c, inner_c);
+        let motion_maps: Vec<_> = array::IntoIter::new([
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 4,
+                num_mid: 1,
+                num_up: 4,
+            }
+            .build(path / "motion_0", inner_c + 2, 1, inner_c), // 64
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 3,
+                num_mid: 1,
+                num_up: 3,
+            }
+            .build(path / "motion_1", inner_c + 2, 1, inner_c), // 32
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 3,
+                num_mid: 1,
+                num_up: 3,
+            }
+            .build(path / "motion_2", inner_c + 2, 1, inner_c), // 16
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 2,
+                num_mid: 1,
+                num_up: 2,
+            }
+            .build(path / "motion_3", inner_c + 2, 1, inner_c), // 8
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 0,
+                num_mid: 1,
+                num_up: 0,
+            }
+            .build(path / "motion_4", inner_c + 2, 1, inner_c), // 4
+            resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 0,
+                num_mid: 1,
+                num_up: 0,
+            }
+            .build(path / "motion_5", inner_c, 1, inner_c), // 2
+        ])
+        .try_collect()
+        .unwrap();
 
         let forward_fn = Box::new(
             move |input: &[&DenseDetectionTensorList],
                   train: bool,
                   with_artifacts: bool|
                   -> Result<_> {
+                // sanity checks
                 ensure!(input.len() == input_len);
                 ensure!(input.iter().all(|list| list.tensors.len() == 1));
-                ensure!(
-                    input
-                        .iter()
-                        .map(|list| &list.tensors)
-                        .flatten()
-                        .all(|tensor| tensor.num_anchors() == 1
-                            && tensor.num_classes() == num_classes)
-                );
+                ensure!(input
+                    .iter()
+                    .map(|list| &list.tensors)
+                    .flatten()
+                    .all(|tensor| tensor.num_classes() == num_classes));
                 debug_assert!(input.iter().any(|&list| list.is_all_finite()));
 
+                let device = input[0].device();
+                let bsize = input[0].batch_size() as i64;
                 let in_h = input[0].tensors[0].height() as i64;
                 let in_w = input[0].tensors[0].width() as i64;
                 let anchors = &input[0].tensors[0].anchors;
+                let num_anchors = anchors.len() as i64;
+                let num_classes = num_classes as i64;
+
                 ensure!(input
                     .iter()
                     .flat_map(|list| &list.tensors)
@@ -111,96 +192,203 @@ impl TransformerInit {
                         && det.width() == in_w as usize
                         && &det.anchors == anchors));
 
-                let in_context = {
-                    let in_context_vec: Vec<_> = input
+                // merge input sequence into a context tensor
+                let context = {
+                    let context_vec: Vec<_> = input
                         .iter()
                         .flat_map(|list| &list.tensors)
                         .map(|det| -> Result<_> {
-                            let (context, _) = encode_detection(det)?;
+                            let (context, _) = det.encode_detection()?;
+                            // let (bsize, num_entires, num_anchors, height, width) = context.size5().unwrap();
+
+                            // scale batch_size to bsize * num_anchors
+                            let context = context.repeat_interleave_self_int(num_anchors, 0);
+
+                            // merge entry and anchor dimensions
+                            let context = context.view([bsize * num_anchors, -1, in_h, in_w]);
+
                             Ok(context)
                         })
                         .try_collect()?;
-                    Tensor::cat(&in_context_vec, 1)
+                    Tensor::cat(&context_vec, 1)
                 };
-                debug_assert!(in_context.is_all_finite());
+                debug_assert!(context.is_all_finite());
 
-                let (last_context, anchors) = unpack_detection(&input.last().unwrap().tensors[0])?;
-
-                let (out_detection, artifacts) = {
-                    // let obj_prob = input.last().unwrap().tensors[0].obj_prob();
-                    // let (b, _, _, h, w) = obj_prob.size5().unwrap();
-                    // let obj_prob = obj_prob.view([b, 1, h, w]);
-
-                    let (xs, artifacts) = attention_block.forward_t(
-                        &last_context,
-                        &in_context,
-                        train,
-                        with_artifacts,
-                    )?;
-                    assert!(!xs.has_nan());
-                    let xs = pack_detection(&xs, anchors);
-                    (xs, artifacts)
+                // generate features
+                let features: Vec<_> = {
+                    feature_maps
+                        .iter()
+                        .scan(context, |prev, map| {
+                            let next = map.forward_t(prev, train).lrelu();
+                            *prev = next.shallow_clone();
+                            Some(next)
+                        })
+                        .collect()
                 };
 
-                // let param_detection = {
-                //     let xs = param_block.forward_t(&in_context, train);
-                //     decode_detection(&xs, anchors)
-                // };
+                // generate motion potentials
+                const SCALE: f64 = 0.125;
 
-                // let combined_detection = {
-                //     // let DenseDetectionTensorUnchecked {
-                //     //     obj_logit, anchors, ..
-                //     // } = obj_detection.into();
-                //     let DenseDetectionTensorUnchecked {
-                //         cy,
-                //         cx,
-                //         h,
-                //         w,
-                //         class_logit,
-                //         anchors,
-                //         ..
-                //     } = param_detection.into();
-                //     DenseDetectionTensorUnchecked {
-                //         cy,
-                //         cx,
-                //         h,
-                //         w,
-                //         obj_logit,
-                //         class_logit,
-                //         anchors,
-                //     }
-                //     .build()
-                //     .unwrap()
-                // };
+                let cograd = |xs: &Tensor| -> Tensor {
+                    let (dx, dy) = xs.spatial_gradient();
+                    Tensor::cat(&[-dy, dx], 1)
+                };
 
-                // let patch_mask = {
-                //     let border_h = (in_h as f64 * BORDER_SIZE_RATIO).floor() as usize;
-                //     let border_w = (in_w as f64 * BORDER_SIZE_RATIO).floor() as usize;
-                //     Tensor::from_cv(nd::Array2::from_shape_fn(
-                //         [in_h as usize, in_w as usize],
-                //         |(row, col)| {
-                //             let ok = row < border_h
-                //                 || row >= (in_h as usize - border_h)
-                //                 || col < border_w
-                //                 || col >= (in_w as usize - border_w);
-                //             if ok {
-                //                 1f32
-                //             } else {
-                //                 0f32
-                //             }
-                //         },
-                //     ))
-                //     .set_requires_grad(false)
-                //     .to_device(device)
-                // };
+                let (motion_potential, motion_field_pixel) = {
+                    let mut pairs = izip!(features.iter().rev(), motion_maps.iter().rev());
+                    let (feature, map) = pairs.next().unwrap();
+                    let init_potential = map.forward_t(feature, train).div(SCALE).tanh().mul(SCALE);
+                    let init_motion = cograd(&init_potential);
 
-                // debug_assert!(shifted.is_all_finite());
-                // debug_assert!(patch.is_all_finite());
+                    pairs.fold(
+                        (init_potential, init_motion),
+                        |(prev_potential, prev_field), (feature, map)| {
+                            let (_, _, prev_h, prev_w) = prev_field.size4().unwrap();
+                            let next_h = prev_h * 2;
+                            let next_w = prev_w * 2;
 
-                // let out_context = shifted + patch * patch_mask;
+                            // upsample motion from prev step
+                            let prev_field =
+                                prev_field.upsample_nearest2d(&[next_h, next_w], None, None);
+                            let prev_potential =
+                                prev_potential.upsample_nearest2d(&[next_h, next_w], None, None);
+
+                            // cat prev motion to curr feature
+                            let xs = Tensor::cat(&[feature, &prev_field], 1);
+
+                            // predict potential
+                            let next_potential = prev_potential
+                                + map.forward_t(&xs, train).div(SCALE).tanh().mul(SCALE);
+                            let next_field = cograd(&next_potential);
+
+                            (next_potential, next_field)
+                        },
+                    )
+                };
+                debug_assert!(motion_field_pixel.is_all_finite());
+                let motion_dx_pixel = motion_field_pixel.i((.., 0..1, .., ..));
+                let motion_dy_pixel = motion_field_pixel.i((.., 1..2, .., ..));
+                let motion_field_ratio = Tensor::cat(
+                    &[
+                        &motion_dx_pixel * 2.0 / in_w as f64,
+                        &motion_dy_pixel * 2.0 / in_h as f64,
+                    ],
+                    1,
+                );
+
+                // compute grid, where each value range in [-1, 1]
+                let grid = {
+                    let ident_grid = {
+                        let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
+                            .expand(&[bsize, 2, 3], false)
+                            .to_device(device);
+                        Tensor::affine_grid_generator(&theta, &[bsize, 1, in_h, in_w], false)
+                    };
+                    &motion_field_ratio.permute(&[0, 2, 3, 1]) + ident_grid
+                };
+
+                // denormalize last detection
+                let DenormedDetection {
+                    cy: cy_denorm,
+                    cx: cx_denorm,
+                    h: h_denorm,
+                    w: w_denorm,
+                    obj_prob,
+                    class_prob,
+                    anchors,
+                } = (&input.last().unwrap().tensors[0]).into();
+
+                // merge batch and anchor dimensions
+                let cy_denorm = cy_denorm
+                    .permute(&[0, 2, 1, 3, 4])
+                    .view([-1, 1, in_h, in_w]);
+                let cx_denorm = cx_denorm
+                    .permute(&[0, 2, 1, 3, 4])
+                    .view([-1, 1, in_h, in_w]);
+                let h_denorm = h_denorm.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                let w_denorm = w_denorm.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                let obj_prob = obj_prob.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
+                let class_prob =
+                    class_prob
+                        .permute(&[0, 2, 1, 3, 4])
+                        .view([-1, num_classes, in_h, in_w]);
+
+                // warp values
+                let cy_denorm = (&cy_denorm + &motion_dy_pixel).grid_sampler(
+                    &grid, // grid
+                    1,     // nearest interpolation
+                    0,     // pad zeros
+                    false,
+                );
+                let cx_denorm = (&cx_denorm + &motion_dx_pixel).grid_sampler(
+                    &grid, // grid
+                    1,     // nearest interpolation
+                    0,     // pad zeros
+                    false,
+                );
+                let h_denorm = h_denorm.grid_sampler(
+                    &grid, // grid
+                    1,     // nearest interpolation
+                    0,     // pad zeros
+                    false,
+                );
+                let w_denorm = w_denorm.grid_sampler(
+                    &grid, // grid
+                    1,     // nearest interpolation
+                    0,     // pad zeros
+                    false,
+                );
+                let obj_prob = obj_prob.grid_sampler(
+                    &grid, // grid
+                    1,     // nearest interpolation
+                    0,     // pad zeros
+                    false,
+                );
+                let class_prob = class_prob.grid_sampler(
+                    &grid, // grid
+                    1,     // nearest interpolation
+                    0,     // pad zeros
+                    false,
+                );
+
+                // split batch and anchor dimensions
+                let cy_denorm = cy_denorm
+                    .view([bsize, num_anchors, 1, in_h, in_w])
+                    .permute(&[0, 2, 1, 3, 4]);
+                let cx_denorm = cx_denorm
+                    .view([bsize, num_anchors, 1, in_h, in_w])
+                    .permute(&[0, 2, 1, 3, 4]);
+                let h_denorm = h_denorm
+                    .view([bsize, num_anchors, 1, in_h, in_w])
+                    .permute(&[0, 2, 1, 3, 4]);
+                let w_denorm = w_denorm
+                    .view([bsize, num_anchors, 1, in_h, in_w])
+                    .permute(&[0, 2, 1, 3, 4]);
+                let obj_prob = obj_prob
+                    .view([bsize, num_anchors, 1, in_h, in_w])
+                    .permute(&[0, 2, 1, 3, 4]);
+                let class_prob = class_prob
+                    .view([bsize, num_anchors, num_classes, in_h, in_w])
+                    .permute(&[0, 2, 1, 3, 4]);
+
+                let warped_det: DenseDetectionTensor = DenormedDetection {
+                    cy: cy_denorm,
+                    cx: cx_denorm,
+                    h: h_denorm,
+                    w: w_denorm,
+                    obj_prob,
+                    class_prob,
+                    anchors,
+                }
+                .into();
+
+                let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
+                    motion_potential,
+                    motion_field: motion_field_pixel,
+                });
 
                 let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
-                    tensors: vec![out_detection],
+                    tensors: vec![warped_det],
                 }
                 .try_into()
                 .unwrap();
@@ -244,216 +432,6 @@ impl Transformer {
     ) -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)> {
         let input: Vec<_> = input.iter().map(|list| list.borrow()).collect();
         (self.forward_fn)(&input, train, with_artifacts)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TransformerBlockInit {
-    pub ksize: usize,
-    pub norm_kind: NormKind,
-    pub padding_kind: PaddingKind,
-    pub num_resnet_blocks: usize,
-    pub num_scaling_blocks: usize,
-    pub num_down_sample: usize,
-}
-
-impl TransformerBlockInit {
-    pub fn build<'a>(
-        self,
-        path: impl Borrow<nn::Path<'a>>,
-        ctx_c: usize,
-        inner_c: usize,
-    ) -> Result<TransformerBlock> {
-        let path = path.borrow();
-        let Self {
-            ksize,
-            norm_kind,
-            padding_kind,
-            num_resnet_blocks,
-            num_scaling_blocks,
-            num_down_sample,
-        } = self;
-        // let bias = norm_kind == NormKind::InstanceNorm;
-
-        let resnet_init = resnet::ResnetInit {
-            ksize,
-            norm_kind: NormKind::BatchNorm,
-            padding_kind,
-            num_scale_blocks: num_scaling_blocks,
-            num_blocks: num_resnet_blocks,
-            ..Default::default()
-        };
-
-        // let context_norm =
-        //     GroupNormInit::default().build(path / "context_norm", ctx_c as i64, ctx_c as i64);
-        let context_norm = norm_kind.build(path / "context_norm", ctx_c as i64);
-        let motion_transform = resnet_init.build(path / "motion_transform", ctx_c, 1, inner_c);
-        // let query_transform =
-        //     resnet_init
-        //         .clone()
-        //         .build(path / "query_transform", ctx_c, inner_c, inner_c);
-        // let key_transform = resnet_init.build(path / "key_transform", ctx_c, inner_c, inner_c);
-        // let query_down_sample = {
-        //     let path = path / "query_down_sample";
-        //     let padding = ksize / 2;
-
-        //     (0..num_down_sample).fold(nn::seq_t(), |seq, index| {
-        //         let path = &path / format!("block_{}", index + 1);
-
-        //         seq.add(nn::conv2d(
-        //             &path / "conv",
-        //             inner_c as i64,
-        //             inner_c as i64,
-        //             ksize as i64,
-        //             nn::ConvConfig {
-        //                 stride: 2,
-        //                 padding: padding as i64,
-        //                 bias,
-        //                 ..Default::default()
-        //             },
-        //         ))
-        //         .add(norm_kind.build(&path / "norm", inner_c as i64))
-        //         .add_fn(|xs| xs.lrelu())
-        //     })
-        // };
-
-        let forward_fn = Box::new(
-            move |input: &Tensor,
-                  context: &Tensor,
-                  train: bool,
-                  with_artifacts: bool|
-                  -> Result<(Tensor, Option<msg::TransformerArtifacts>)> {
-                assert!(!input.has_nan());
-                assert!(!context.has_nan());
-                let device = input.device();
-
-                let (bsize, _in_c, in_h, in_w) = input.size4()?;
-                ensure!(
-                    matches!(context.size4()?, (bsize_, ctx_c_, ctx_h, ctx_w) if bsize == bsize_ && ctx_c == ctx_c_ as usize && in_h == ctx_h && in_w == ctx_w)
-                );
-
-                // let patch_h = in_h / 2i64.pow(num_down_sample as u32);
-                // let patch_w = in_w / 2i64.pow(num_down_sample as u32);
-
-                dbg!(context.mean(Kind::Float), context.var(true));
-                let context = context_norm.forward_t(context, train);
-                dbg!(context.mean(Kind::Float), context.var(true));
-                // assert!(!context.has_nan());
-
-                let motion_potential = motion_transform.forward_t(&context, train);
-                assert!(!motion_potential.has_nan());
-
-                let motion_potential = motion_potential.sigmoid() * 8.0;
-                assert!(!motion_potential.has_nan());
-
-                let motion_field = {
-                    let (dx, dy) = motion_potential.spatial_gradient();
-                    assert!(!dx.has_nan());
-                    assert!(!dy.has_nan());
-                    let dx = (dx * 8.0).tanh() / 8.0;
-                    let dy = (dy * 8.0).tanh() / 8.0;
-                    assert!(!dx.has_nan());
-                    assert!(!dy.has_nan());
-                    Tensor::cat(&[-dy, dx], 1)
-                };
-
-                let ident_grid = {
-                    let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
-                        .expand(&[bsize, 2, 3], false)
-                        .to_device(device);
-                    Tensor::affine_grid_generator(&theta, &input.size(), false)
-                };
-                let grid = &motion_field.permute(&[0, 2, 3, 1]) + ident_grid;
-
-                let output = input.grid_sampler(
-                    &grid, 0, // bilinear
-                    0, // zeros
-                    false,
-                );
-
-                // assert!(!key.has_nan());
-                // let query = {
-                //     let xs = query_transform.forward_t(&context, train);
-                //     query_down_sample.forward_t(&xs, train)
-                // };
-                // // assert!(!query.has_nan());
-
-                // let attention = Tensor::einsum(
-                //     "bcq,bck->bqk",
-                //     &[
-                //         query.view([bsize, inner_c as i64, -1]),
-                //         key.view([bsize, inner_c as i64, -1]),
-                //     ],
-                // )
-                // .div((inner_c as f64).sqrt())
-                // .softmax(1, Kind::Float)
-                // .view([bsize, 1, patch_h, patch_w, in_h, in_w]);
-                // // assert!(!attention.has_nan());
-
-                // let patches = {
-                //     let patches = input.view([bsize, -1, in_h, in_w]).unfold2d(
-                //         &[patch_h, patch_w],
-                //         &[1, 1], // dilation
-                //         &[patch_h / 2, patch_w / 2],
-                //         &[1, 1], // stride
-                //     );
-
-                //     match (patch_h & 1 == 1, patch_w & 1 == 1) {
-                //         (true, true) => patches.view([bsize, -1, patch_h, patch_w, in_h, in_w]),
-                //         (true, false) => patches
-                //             .view([bsize, -1, patch_h, patch_w, in_h, in_w + 1])
-                //             .i((.., .., .., .., .., 0..in_w)),
-                //         (false, true) => patches
-                //             .view([bsize, -1, patch_h, patch_w, in_h + 1, in_w])
-                //             .i((.., .., .., .., 0..in_h, ..)),
-                //         (false, false) => patches
-                //             .view([bsize, -1, patch_h, patch_w, in_h + 1, in_w + 1])
-                //             .i((.., .., .., .., 0..in_h, 0..in_w)),
-                //     }
-                // };
-                // let attention_image = with_artifacts.then(|| attention.shallow_clone());
-                // let convolution = attention * patches;
-
-                // // // pad patch sizes to odd numbers
-                // let (convolution, patch_h) = if patch_h & 1 == 1 {
-                //     (convolution, patch_h)
-                // } else {
-                //     (
-                //         convolution.constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1]),
-                //         patch_h + 1,
-                //     )
-                // };
-                // let (convolution, patch_w) = if patch_w & 1 == 1 {
-                //     (convolution, patch_w)
-                // } else {
-                //     (
-                //         convolution.constant_pad_nd(&[0, 0, 0, 0, 0, 1, 0, 0]),
-                //         patch_w + 1,
-                //     )
-                // };
-
-                // // // merge patches
-                // let output = convolution
-                //     .view([bsize, in_c * patch_h * patch_w, in_h * in_w])
-                //     .col2im(
-                //         &[in_h, in_w],
-                //         &[patch_h, patch_w],
-                //         &[1, 1], // dilation
-                //         &[patch_h / 2, patch_w / 2],
-                //         &[1, 1], // stride
-                //     );
-
-                // Ok((output, attention_image))
-                let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
-                    motion_field,
-                    motion_potential,
-                });
-
-                Ok((output, artifacts))
-            },
-        );
-
-        Ok(TransformerBlock { forward_fn })
     }
 }
 
@@ -629,8 +607,9 @@ mod resnet {
         pub padding_kind: PaddingKind,
         pub norm_kind: NormKind,
         pub ksize: usize,
-        pub num_scale_blocks: usize,
-        pub num_blocks: usize,
+        pub num_down: usize,
+        pub num_mid: usize,
+        pub num_up: usize,
     }
 
     impl Default for ResnetInit {
@@ -639,8 +618,9 @@ mod resnet {
                 padding_kind: PaddingKind::Reflect,
                 norm_kind: NormKind::InstanceNorm,
                 ksize: 5,
-                num_scale_blocks: 2,
-                num_blocks: 2,
+                num_down: 0,
+                num_mid: 3,
+                num_up: 0,
             }
         }
     }
@@ -652,14 +632,15 @@ mod resnet {
             in_c: usize,
             out_c: usize,
             inner_c: usize,
-        ) -> Resnet {
+        ) -> Result<Resnet> {
             let path = path.borrow();
             let Self {
                 padding_kind,
                 norm_kind,
                 ksize,
-                num_scale_blocks,
-                num_blocks,
+                num_down,
+                num_mid,
+                num_up,
             } = self;
             let in_c = in_c as i64;
             let out_c = out_c as i64;
@@ -667,51 +648,41 @@ mod resnet {
             let bias = norm_kind == NormKind::InstanceNorm;
             let padding = ksize / 2;
             let ksize = ksize as i64;
+            let total_blocks = num_down + num_mid + num_up;
+
+            ensure!(in_c > 0);
+            ensure!(out_c > 0);
+            ensure!(inner_c > 0);
+            ensure!(total_blocks > 0);
 
             // first block
             let seq = {
-                let path = path / "block_0";
+                let path = path / "initial_block";
+
                 nn::seq_t()
-                    .inspect(|xs| {
-                        dbg!(xs.mean(Kind::Float));
-                        dbg!(xs.var(true));
-                        assert!(!xs.has_nan());
-                    })
-                    .add(padding_kind.build([padding, padding, padding, padding]))
-                    .inspect(|xs| {
-                        dbg!(xs.mean(Kind::Float));
-                        dbg!(xs.var(true));
-                        assert!(!xs.has_nan());
-                    })
                     .add(nn::conv2d(
                         &path / "conv",
                         in_c,
                         inner_c,
-                        ksize,
+                        1,
                         nn::ConvConfig {
+                            stride: 1,
                             padding: 0,
                             bias,
                             ..Default::default()
                         },
                     ))
-                    .inspect(|xs| {
-                        dbg!(xs.mean(Kind::Float));
-                        dbg!(xs.var(true));
-                        assert!(!xs.has_nan());
-                    })
                     .add(norm_kind.build(&path / "norm", inner_c))
-                    .inspect(|xs| {
-                        assert!(!xs.has_nan());
-                    })
                     .add_fn(|xs| xs.lrelu())
                     .inspect(|xs| {
-                        assert!(!xs.has_nan());
+                        debug_assert!(xs.is_all_finite());
                     })
             };
 
-            // down sampling
-            let seq = (0..num_scale_blocks).fold(seq, |seq, index| {
-                let path = path / format!("block_{}", index + 1);
+            // down sampling blocks
+            let seq = (0..num_down).fold(seq, |seq, index| {
+                let path = path / format!("block_{}", index);
+
                 seq.add(nn::conv2d(
                     &path / "conv",
                     inner_c,
@@ -727,74 +698,76 @@ mod resnet {
                 .add(norm_kind.build(&path / "norm", inner_c))
                 .add_fn(|xs| xs.lrelu())
                 .inspect(|xs| {
-                    assert!(!xs.has_nan());
+                    debug_assert!(xs.is_all_finite());
                 })
             });
 
             // resnet blocks
-            let seq = {
-                (0..num_blocks).fold(seq, |seq, index| {
-                    let path = path / format!("block_{}", index + num_scale_blocks + 1);
+            let seq = (0..num_mid).fold(seq, |seq, index| {
+                let path = path / format!("block_{}", index + num_down);
 
-                    let branch = {
-                        let branch = nn::seq_t()
-                            .add(padding_kind.build([padding, padding, padding, padding]))
-                            .add(nn::conv2d(
-                                &path / "conv1",
-                                inner_c,
-                                inner_c,
-                                ksize,
-                                nn::ConvConfig {
-                                    padding: 0,
-                                    bias,
-                                    ..Default::default()
-                                },
-                            ))
-                            .add(norm_kind.build(&path / "norm1", inner_c))
-                            .add_fn(|xs| xs.lrelu())
-                            .inspect(|xs| {
-                                assert!(!xs.has_nan());
-                            });
+                let branch = nn::seq_t()
+                    // first part
+                    .add(padding_kind.build([padding, padding, padding, padding]))
+                    .add(nn::conv2d(
+                        &path / "conv1",
+                        inner_c,
+                        inner_c,
+                        ksize,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm1", inner_c))
+                    .add_fn(|xs| xs.lrelu())
+                    .inspect(|xs| {
+                        debug_assert!(xs.is_all_finite());
+                    })
+                    // second part
+                    .add(padding_kind.build([padding, padding, padding, padding]))
+                    .add(nn::conv2d(
+                        &path / "conv2",
+                        inner_c,
+                        inner_c,
+                        ksize,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm2", inner_c))
+                    .inspect(|xs| {
+                        debug_assert!(xs.is_all_finite());
+                    })
+                    .add_fn(|xs| xs.lrelu())
+                    .inspect(|xs| {
+                        debug_assert!(xs.is_all_finite());
+                    });
 
-                        branch
-                            .add(padding_kind.build([padding, padding, padding, padding]))
-                            .add(nn::conv2d(
-                                &path / "conv2",
-                                inner_c,
-                                inner_c,
-                                ksize,
-                                nn::ConvConfig {
-                                    padding: 0,
-                                    bias,
-                                    ..Default::default()
-                                },
-                            ))
-                            .add(norm_kind.build(&path / "norm2", inner_c))
-                            .inspect(|xs| {
-                                assert!(!xs.has_nan());
-                            })
-                    };
+                // addition
+                seq.add_fn_t(move |xs, train| xs + branch.forward_t(xs, train))
+                    .inspect(|xs| {
+                        debug_assert!(xs.is_all_finite());
+                    })
+            });
 
-                    seq.add_fn_t(move |xs, train| xs + branch.forward_t(xs, train))
-                        .inspect(|xs| {
-                            assert!(!xs.has_nan());
-                        })
-                })
-            };
+            // up sampling blocks
+            let seq = (0..num_up).fold(seq, |seq, index| {
+                let path = path / format!("block_{}", index + num_down + num_mid);
 
-            // up sampling
-            let seq = (0..num_scale_blocks).fold(seq, |seq, index| {
-                let path = path / format!("block_{}", index + num_scale_blocks + num_blocks + 1);
                 seq.add_fn(|xs| {
                     let (_, _, h, w) = xs.size4().unwrap();
                     xs.upsample_nearest2d(&[h * 2, w * 2], None, None)
                 })
                 .inspect(|xs| {
-                    assert!(!xs.has_nan());
+                    debug_assert!(xs.is_all_finite());
                 })
                 .add(padding_kind.build([padding, padding, padding, padding]))
                 .inspect(|xs| {
-                    assert!(!xs.has_nan());
+                    debug_assert!(xs.is_all_finite());
                 })
                 .add(nn::conv2d(
                     &path / "conv",
@@ -808,38 +781,41 @@ mod resnet {
                     },
                 ))
                 .inspect(|xs| {
-                    assert!(!xs.has_nan());
+                    debug_assert!(xs.is_all_finite());
                 })
                 .add(norm_kind.build(&path / "norm", inner_c))
                 .inspect(|xs| {
-                    assert!(!xs.has_nan());
+                    debug_assert!(xs.is_all_finite());
                 })
                 .add_fn(|xs| xs.lrelu())
                 .inspect(|xs| {
-                    assert!(!xs.has_nan());
+                    debug_assert!(xs.is_all_finite());
                 })
             });
 
             // last block
             let seq = {
-                let path = path / format!("block_{}", num_scale_blocks * 2 + num_blocks + 1);
-                seq.add(padding_kind.build([padding, padding, padding, padding]))
-                    .add(nn::conv2d(
-                        &path / "conv",
-                        inner_c,
-                        out_c,
-                        ksize,
-                        nn::ConvConfig {
-                            padding: 0,
-                            ..Default::default()
-                        },
-                    ))
-                    .inspect(|xs| {
-                        assert!(!xs.has_nan());
-                    })
+                let path = path / "last_block";
+
+                seq.add(nn::conv2d(
+                    &path / "conv",
+                    inner_c,
+                    out_c,
+                    1,
+                    nn::ConvConfig {
+                        stride: 1,
+                        padding: 0,
+                        bias,
+                        ..Default::default()
+                    },
+                ))
+                .add(norm_kind.build(&path / "norm", out_c))
+                .inspect(|xs| {
+                    debug_assert!(xs.is_all_finite());
+                })
             };
 
-            Resnet { seq }
+            Ok(Resnet { seq })
         }
     }
 
@@ -855,283 +831,277 @@ mod resnet {
     }
 }
 
-pub fn encode_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<RatioSize<R64>>)> {
-    let device = input.device();
-    let bsize = input.batch_size() as i64;
-    let num_classes = input.num_classes() as i64;
-    let in_h = input.height() as i64;
+mod detection_encode {
+    use super::*;
 
-    let in_w = input.width() as i64;
-    let num_anchors = input.anchors.len() as i64;
-
-    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
-        .set_requires_grad(false)
-        .view([1, 1, 1, in_h, 1]);
-    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
-        .set_requires_grad(false)
-        .view([1, 1, 1, 1, in_w]);
-    let (anchor_heights, anchor_widths) = {
-        let (anchor_h_vec, anchor_w_vec) = input
-            .anchors
-            .iter()
-            .cloned()
-            .map(|anchor_size| {
-                let anchor_size = anchor_size.cast::<f32>().unwrap();
-                (anchor_size.h, anchor_size.w)
-            })
-            .unzip_n_vec();
-
-        let anchor_heights = Tensor::of_slice(&anchor_h_vec)
-            .set_requires_grad(false)
-            .to_device(device)
-            .view([1, 1, num_anchors, 1, 1]);
-        let anchor_widths = Tensor::of_slice(&anchor_w_vec)
-            .set_requires_grad(false)
-            .to_device(device)
-            .view([1, 1, num_anchors, 1, 1]);
-
-        (anchor_heights, anchor_widths)
-    };
-
-    let merge = {
-        // let wtf = (&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0;
-        // dbg!(input.cy.max());
-        // dbg!(input.cy.min());
-        // dbg!(wtf.max());
-        // dbg!(wtf.min());
-        // debug_assert!(bool::from(input.h.ge(0.0).all()));
-        // debug_assert!(bool::from(input.w.ge(0.0).all()));
-
-        let cy_logit = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0)
-            // .logit(1e-5)
-            .view([bsize, 1, num_anchors, in_h, in_w]);
-        let cx_logit = ((&input.cx * in_w as f64 - &x_offsets + 0.5) / 2.0)
-            // .logit(1e-5)
-            .view([bsize, 1, num_anchors, in_h, in_w]);
-        let h_logit = ((&input.h / anchor_heights).sqrt() / 2.0)
-            // .logit(1e-5)
-            .view([bsize, 1, num_anchors, in_h, in_w]);
-        let w_logit = ((&input.w / anchor_widths).sqrt() / 2.0) // .logit(1e-5)
-            .view([bsize, 1, num_anchors, in_h, in_w]);
-        let obj_logit = input.obj_prob().view([bsize, 1, num_anchors, in_h, in_w]);
-        let class_logit =
-            input
-                .class_prob()
-                .view([bsize, num_classes as i64, num_anchors, in_h, in_w]);
-
-        // dbg!(cy_logit.min(), cy_logit.max());
-        // dbg!(cx_logit.min(), cx_logit.max());
-        // dbg!(h_logit.min(), h_logit.max());
-        // dbg!(w_logit.min(), w_logit.max());
-        // dbg!(obj_logit.min(), obj_logit.max());
-        // dbg!(class_logit.min(), class_logit.max());
-
-        // debug_assert!(bool::from(input.h.ge(0.0).all()));
-        // debug_assert!(bool::from(input.w.ge(0.0).all()));
-
-        ensure!(cy_logit.is_all_finite());
-        ensure!(cx_logit.is_all_finite());
-        ensure!(h_logit.is_all_finite());
-        ensure!(w_logit.is_all_finite());
-        ensure!(obj_logit.is_all_finite());
-        ensure!(class_logit.is_all_finite());
-
-        Tensor::cat(
-            &[cy_logit, cx_logit, h_logit, w_logit, obj_logit, class_logit],
-            1,
-        )
-        .view([bsize, -1, in_h, in_w])
-        .clamp(-6.0, 6.0)
-            / 6.0
-    };
-
-    // dbg!(merge.min(), merge.max());
-    // debug_assert!(merge.is_all_finite());
-
-    Ok((merge, input.anchors.clone()))
-}
-
-pub fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
-    debug_assert!(input.is_all_finite());
-
-    let device = input.device();
-    let num_anchors = anchors.len() as i64;
-    let (bsize, _, in_h, in_w) = input.size4().unwrap();
-
-    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
-        .set_requires_grad(false)
-        .view([1, 1, 1, in_h, 1]);
-    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
-        .set_requires_grad(false)
-        .view([1, 1, 1, 1, in_w]);
-    let (anchor_heights, anchor_widths) = {
-        let (anchor_h_vec, anchor_w_vec) = anchors
-            .iter()
-            .cloned()
-            .map(|anchor_size| {
-                let anchor_size = anchor_size.cast::<f32>().unwrap();
-                (anchor_size.h, anchor_size.w)
-            })
-            .unzip_n_vec();
-
-        let anchor_heights = Tensor::of_slice(&anchor_h_vec)
-            .set_requires_grad(false)
-            .to_device(device)
-            .view([1, 1, num_anchors, 1, 1]);
-        let anchor_widths = Tensor::of_slice(&anchor_w_vec)
-            .set_requires_grad(false)
-            .to_device(device)
-            .view([1, 1, num_anchors, 1, 1]);
-
-        (anchor_heights, anchor_widths)
-    };
-
-    let xs = input.view([bsize, -1, num_anchors, in_h, in_w]) * 6.0;
-    let cy = ((xs.i((.., 0..1, .., .., ..)).sigmoid() * 2.0 - 0.5) + y_offsets) / in_h as f64;
-    let cx = ((xs.i((.., 1..2, .., .., ..)).sigmoid() * 2.0 - 0.5) + x_offsets) / in_w as f64;
-    let h = xs.i((.., 2..3, .., .., ..)).sigmoid().mul(2.0).pow(2.0) * anchor_heights;
-    let w = xs.i((.., 3..4, .., .., ..)).sigmoid().mul(2.0).pow(2.0) * anchor_widths;
-    let obj_logit = xs.i((.., 4..5, .., .., ..));
-    let class_logit = xs.i((.., 5.., .., .., ..));
-
-    let output = DenseDetectionTensorUnchecked {
-        cy,
-        cx,
-        h,
-        w,
-        obj_logit,
-        class_logit,
-        anchors,
+    pub trait DetectionEncode {
+        fn encode_detection(&self) -> Result<(Tensor, Vec<RatioSize<R64>>)>;
+        fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> Self;
     }
-    .build()
-    .unwrap();
 
-    debug_assert!(output.is_all_finite());
+    impl DetectionEncode for DenseDetectionTensor {
+        fn encode_detection(&self) -> Result<(Tensor, Vec<RatioSize<R64>>)> {
+            let input = self;
+            let device = input.device();
+            let bsize = input.batch_size() as i64;
+            let num_classes = input.num_classes() as i64;
+            let in_h = input.height() as i64;
 
-    output
+            let in_w = input.width() as i64;
+            let num_anchors = input.anchors.len() as i64;
+
+            let DetectionAdditions {
+                y_offsets,
+                x_offsets,
+                anchor_heights,
+                anchor_widths,
+            } = DetectionAdditions::new(input.height(), input.width(), &input.anchors)
+                .to_device(device);
+
+            let merge = {
+                // let wtf = (&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0;
+                // dbg!(input.cy.max());
+                // dbg!(input.cy.min());
+                // dbg!(wtf.max());
+                // dbg!(wtf.min());
+                // debug_assert!(bool::from(input.h.ge(0.0).all()));
+                // debug_assert!(bool::from(input.w.ge(0.0).all()));
+
+                let cy_logit = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0)
+                    .logit(1e-5)
+                    .view([bsize, 1, num_anchors, in_h, in_w]);
+                let cx_logit = ((&input.cx * in_w as f64 - &x_offsets + 0.5) / 2.0)
+                    .logit(1e-5)
+                    .view([bsize, 1, num_anchors, in_h, in_w]);
+                let h_logit = ((&input.h / anchor_heights).sqrt() / 2.0)
+                    .logit(1e-5)
+                    .view([bsize, 1, num_anchors, in_h, in_w]);
+                let w_logit = ((&input.w / anchor_widths).sqrt() / 2.0).logit(1e-5).view([
+                    bsize,
+                    1,
+                    num_anchors,
+                    in_h,
+                    in_w,
+                ]);
+                let obj_logit = input.obj_logit.view([bsize, 1, num_anchors, in_h, in_w]);
+                let class_logit =
+                    input
+                        .class_logit
+                        .view([bsize, num_classes as i64, num_anchors, in_h, in_w]);
+
+                // dbg!(cy_logit.min(), cy_logit.max());
+                // dbg!(cx_logit.min(), cx_logit.max());
+                // dbg!(h_logit.min(), h_logit.max());
+                // dbg!(w_logit.min(), w_logit.max());
+                // dbg!(obj_logit.min(), obj_logit.max());
+                // dbg!(class_logit.min(), class_logit.max());
+
+                // debug_assert!(bool::from(input.h.ge(0.0).all()));
+                // debug_assert!(bool::from(input.w.ge(0.0).all()));
+
+                ensure!(cy_logit.is_all_finite());
+                ensure!(cx_logit.is_all_finite());
+                ensure!(h_logit.is_all_finite());
+                ensure!(w_logit.is_all_finite());
+                ensure!(obj_logit.is_all_finite());
+                ensure!(class_logit.is_all_finite());
+
+                Tensor::cat(
+                    &[cy_logit, cx_logit, h_logit, w_logit, obj_logit, class_logit],
+                    1,
+                )
+            };
+
+            // dbg!(merge.min(), merge.max());
+            // debug_assert!(merge.is_all_finite());
+
+            Ok((merge, input.anchors.clone()))
+        }
+
+        fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> Self {
+            debug_assert!(input.is_all_finite());
+
+            let device = input.device();
+            // let num_anchors = anchors.len() as i64;
+            let (_, _, _, in_h, in_w) = input.size5().unwrap();
+
+            let DetectionAdditions {
+                y_offsets,
+                x_offsets,
+                anchor_heights,
+                anchor_widths,
+            } = DetectionAdditions::new(in_h as usize, in_w as usize, &anchors).to_device(device);
+
+            let xs = input;
+            let cy =
+                ((xs.i((.., 0..1, .., .., ..)).sigmoid() * 2.0 - 0.5) + y_offsets) / in_h as f64;
+            let cx =
+                ((xs.i((.., 1..2, .., .., ..)).sigmoid() * 2.0 - 0.5) + x_offsets) / in_w as f64;
+            let h = xs.i((.., 2..3, .., .., ..)).sigmoid().mul(2.0).pow(2.0) * anchor_heights;
+            let w = xs.i((.., 3..4, .., .., ..)).sigmoid().mul(2.0).pow(2.0) * anchor_widths;
+            let obj_logit = xs.i((.., 4..5, .., .., ..));
+            let class_logit = xs.i((.., 5.., .., .., ..));
+
+            let output = DenseDetectionTensorUnchecked {
+                cy,
+                cx,
+                h,
+                w,
+                obj_logit,
+                class_logit,
+                anchors,
+            }
+            .build()
+            .unwrap();
+
+            debug_assert!(output.is_all_finite());
+
+            output
+        }
+    }
 }
 
-pub fn unpack_detection(input: &DenseDetectionTensor) -> Result<(Tensor, Vec<RatioSize<R64>>)> {
-    let device = input.device();
-    let bsize = input.batch_size() as i64;
-    let num_classes = input.num_classes() as i64;
-    let in_h = input.height() as i64;
-    let in_w = input.width() as i64;
-    let num_anchors = input.anchors.len() as i64;
+mod denormed_detection {
+    use super::*;
 
-    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
-        .set_requires_grad(false)
-        .view([1, 1, 1, in_h, 1]);
-    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
-        .set_requires_grad(false)
-        .view([1, 1, 1, 1, in_w]);
-    let (anchor_heights, anchor_widths) = {
-        let (anchor_h_vec, anchor_w_vec) = input
-            .anchors
-            .iter()
-            .cloned()
-            .map(|anchor_size| {
-                let anchor_size = anchor_size.cast::<f32>().unwrap();
-                (anchor_size.h, anchor_size.w)
-            })
-            .unzip_n_vec();
+    #[derive(Debug, TensorLike)]
+    pub struct DenormedDetection {
+        pub cy: Tensor,
+        pub cx: Tensor,
+        pub h: Tensor,
+        pub w: Tensor,
+        pub obj_prob: Tensor,
+        pub class_prob: Tensor,
+        #[tensor_like(clone)]
+        pub anchors: Vec<RatioSize<R64>>,
+    }
 
-        let anchor_heights = Tensor::of_slice(&anchor_h_vec)
-            .set_requires_grad(false)
-            .to_device(device)
-            .view([1, 1, num_anchors, 1, 1]);
-        let anchor_widths = Tensor::of_slice(&anchor_w_vec)
-            .set_requires_grad(false)
-            .to_device(device)
-            .view([1, 1, num_anchors, 1, 1]);
+    impl DenormedDetection {
+        pub fn height(&self) -> usize {
+            let (_, _, _, height, _) = self.cy.size5().unwrap();
+            height as usize
+        }
 
-        (anchor_heights, anchor_widths)
-    };
+        pub fn width(&self) -> usize {
+            let (_, _, _, _, width) = self.cy.size5().unwrap();
+            width as usize
+        }
+    }
 
-    let merge = {
-        // let wtf = (&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0;
-        // dbg!(input.cy.max());
-        // dbg!(input.cy.min());
-        // dbg!(wtf.max());
-        // dbg!(wtf.min());
-        // debug_assert!(bool::from(input.h.ge(0.0).all()));
-        // debug_assert!(bool::from(input.w.ge(0.0).all()));
+    impl From<&DenseDetectionTensor> for DenormedDetection {
+        fn from(input: &DenseDetectionTensor) -> Self {
+            let bsize = input.batch_size() as i64;
+            let num_classes = input.num_classes() as i64;
+            let in_h = input.height() as i64;
+            let in_w = input.width() as i64;
+            let num_anchors = input.anchors.len() as i64;
 
-        let cy_unbiased = ((&input.cy * in_h as f64 - &y_offsets + 0.5) / 2.0).view([
-            bsize,
-            1,
-            num_anchors,
-            in_h,
-            in_w,
-        ]);
-        let cx_unbiased = ((&input.cx * in_w as f64 - &x_offsets + 0.5) / 2.0).view([
-            bsize,
-            1,
-            num_anchors,
-            in_h,
-            in_w,
-        ]);
-        let h_unbiased =
-            ((&input.h / anchor_heights).sqrt() / 2.0).view([bsize, 1, num_anchors, in_h, in_w]);
-        let w_unbiased =
-            ((&input.w / anchor_widths).sqrt() / 2.0).view([bsize, 1, num_anchors, in_h, in_w]);
-        let obj_prob = input.obj_prob().view([bsize, 1, num_anchors, in_h, in_w]);
-        let class_prob =
-            input
-                .class_prob()
-                .view([bsize, num_classes as i64, num_anchors, in_h, in_w]);
+            let cy = (&input.cy * in_h as f64).view([bsize, 1, num_anchors, in_h, in_w]);
+            let cx = (&input.cx * in_w as f64).view([bsize, 1, num_anchors, in_h, in_w]);
+            let h = (&input.h * in_h as f64).view([bsize, 1, num_anchors, in_h, in_w]);
+            let w = (&input.w * in_w as f64).view([bsize, 1, num_anchors, in_h, in_w]);
+            let obj_prob = input.obj_prob().view([bsize, 1, num_anchors, in_h, in_w]);
+            let class_prob =
+                input
+                    .class_prob()
+                    .view([bsize, num_classes as i64, num_anchors, in_h, in_w]);
 
-        // dbg!(cy_logit.min(), cy_logit.max());
-        // dbg!(cx_logit.min(), cx_logit.max());
-        // dbg!(h_logit.min(), h_logit.max());
-        // dbg!(w_logit.min(), w_logit.max());
-        // dbg!(obj_logit.min(), obj_logit.max());
-        // dbg!(class_logit.min(), class_logit.max());
+            debug_assert!(cy.is_all_finite());
+            debug_assert!(cx.is_all_finite());
+            debug_assert!(h.is_all_finite());
+            debug_assert!(w.is_all_finite());
+            debug_assert!(obj_prob.is_all_finite());
+            debug_assert!(class_prob.is_all_finite());
 
-        // debug_assert!(bool::from(input.h.ge(0.0).all()));
-        // debug_assert!(bool::from(input.w.ge(0.0).all()));
-
-        ensure!(cy_unbiased.is_all_finite());
-        ensure!(cx_unbiased.is_all_finite());
-        ensure!(h_unbiased.is_all_finite());
-        ensure!(w_unbiased.is_all_finite());
-        ensure!(obj_prob.is_all_finite());
-        ensure!(class_prob.is_all_finite());
-
-        Tensor::cat(
-            &[
-                cy_unbiased,
-                cx_unbiased,
-                h_unbiased,
-                w_unbiased,
+            Self {
+                cy,
+                cx,
+                h,
+                w,
                 obj_prob,
                 class_prob,
-            ],
-            1,
-        )
-        .view([bsize, -1, in_h, in_w])
-    };
+                anchors: input.anchors.clone(),
+            }
+        }
+    }
 
-    // dbg!(merge.min(), merge.max());
-    // debug_assert!(merge.is_all_finite());
+    impl From<DenseDetectionTensor> for DenormedDetection {
+        fn from(input: DenseDetectionTensor) -> Self {
+            (&input).into()
+        }
+    }
 
-    Ok((merge, input.anchors.clone()))
+    impl From<&DenormedDetection> for DenseDetectionTensor {
+        fn from(input: &DenormedDetection) -> Self {
+            let in_h = input.height() as i64;
+            let in_w = input.width() as i64;
+            let DenormedDetection {
+                cy,
+                cx,
+                h,
+                w,
+                obj_prob,
+                class_prob,
+                anchors,
+            } = input;
+
+            let cy = cy / in_h as f64;
+            let cx = cx / in_w as f64;
+            let h = h / in_h as f64;
+            let w = w / in_w as f64;
+            let obj_logit = obj_prob.logit(1e-6);
+            let class_logit = class_prob.logit(1e-6);
+
+            debug_assert!(cy.is_all_finite());
+            debug_assert!(cx.is_all_finite());
+            debug_assert!(h.is_all_finite());
+            debug_assert!(w.is_all_finite());
+            debug_assert!(obj_logit.is_all_finite());
+            debug_assert!(class_logit.is_all_finite());
+
+            let output = DenseDetectionTensorUnchecked {
+                cy,
+                cx,
+                h,
+                w,
+                obj_logit,
+                class_logit,
+                anchors: anchors.clone(),
+            }
+            .build()
+            .unwrap();
+
+            output
+        }
+    }
+
+    impl From<DenormedDetection> for DenseDetectionTensor {
+        fn from(input: DenormedDetection) -> Self {
+            (&input).into()
+        }
+    }
 }
 
-pub fn pack_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDetectionTensor {
-    debug_assert!(input.is_all_finite());
+#[derive(Debug, TensorLike)]
+struct DetectionAdditions {
+    pub y_offsets: Tensor,
+    pub x_offsets: Tensor,
+    pub anchor_heights: Tensor,
+    pub anchor_widths: Tensor,
+}
 
-    let device = input.device();
-    let num_anchors = anchors.len() as i64;
-    let (bsize, _, in_h, in_w) = input.size4().unwrap();
+impl DetectionAdditions {
+    pub fn new(height: usize, width: usize, anchors: &[RatioSize<R64>]) -> Self {
+        let height = height as i64;
+        let width = width as i64;
+        let num_anchors = anchors.len() as i64;
 
-    let y_offsets = Tensor::arange(in_h, (Kind::Float, device))
-        .set_requires_grad(false)
-        .view([1, 1, 1, in_h, 1]);
-    let x_offsets = Tensor::arange(in_w, (Kind::Float, device))
-        .set_requires_grad(false)
-        .view([1, 1, 1, 1, in_w]);
-    let (anchor_heights, anchor_widths) = {
+        let y_offsets = Tensor::arange(height, FLOAT_CPU)
+            .set_requires_grad(false)
+            .view([1, 1, 1, height, 1]);
+        let x_offsets = Tensor::arange(width, FLOAT_CPU)
+            .set_requires_grad(false)
+            .view([1, 1, 1, 1, width]);
         let (anchor_h_vec, anchor_w_vec) = anchors
             .iter()
             .cloned()
@@ -1143,44 +1113,18 @@ pub fn pack_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> DenseDete
 
         let anchor_heights = Tensor::of_slice(&anchor_h_vec)
             .set_requires_grad(false)
-            .to_device(device)
             .view([1, 1, num_anchors, 1, 1]);
         let anchor_widths = Tensor::of_slice(&anchor_w_vec)
             .set_requires_grad(false)
-            .to_device(device)
             .view([1, 1, num_anchors, 1, 1]);
 
-        (anchor_heights, anchor_widths)
-    };
-
-    let xs = input.view([bsize, -1, num_anchors, in_h, in_w]);
-    let cy = ((xs.i((.., 0..1, .., .., ..)) * 2.0 - 0.5) + y_offsets) / in_h as f64;
-    let cx = ((xs.i((.., 1..2, .., .., ..)) * 2.0 - 0.5) + x_offsets) / in_w as f64;
-    let h = xs.i((.., 2..3, .., .., ..)).mul(2.0).pow(2.0) * anchor_heights;
-    let w = xs.i((.., 3..4, .., .., ..)).mul(2.0).pow(2.0) * anchor_widths;
-    let obj_logit = xs.i((.., 4..5, .., .., ..)).logit(1e-6);
-    let class_logit = xs.i((.., 5.., .., .., ..)).logit(1e-6);
-
-    debug_assert!(cy.is_all_finite());
-    debug_assert!(cx.is_all_finite());
-    debug_assert!(h.is_all_finite());
-    debug_assert!(w.is_all_finite());
-    debug_assert!(obj_logit.is_all_finite());
-    debug_assert!(class_logit.is_all_finite());
-
-    let output = DenseDetectionTensorUnchecked {
-        cy,
-        cx,
-        h,
-        w,
-        obj_logit,
-        class_logit,
-        anchors,
+        DetectionAdditions {
+            x_offsets,
+            y_offsets,
+            anchor_heights,
+            anchor_widths,
+        }
     }
-    .build()
-    .unwrap();
-
-    output
 }
 
 #[cfg(test)]
@@ -1249,8 +1193,8 @@ mod tests {
             .try_into()
             .unwrap();
 
-            let (tensor, _anchors) = encode_detection(&orig).unwrap();
-            let recon = decode_detection(&tensor, anchors);
+            let (tensor, _anchors) = orig.encode_detection().unwrap();
+            let recon = DenseDetectionTensor::decode_detection(&tensor, anchors);
 
             let cy_diff: f64 = (&orig.cy - &recon.cy).abs().max().into();
             let cx_diff: f64 = (&orig.cx - &recon.cx).abs().max().into();
@@ -1269,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn detection_pack_unpack() {
+    fn detection_denorm() {
         tch::no_grad(|| {
             let bsize = 4;
             let num_classes = 10;
@@ -1325,13 +1269,13 @@ mod tests {
                 w,
                 obj_logit,
                 class_logit,
-                anchors: anchors.clone(),
+                anchors,
             }
             .try_into()
             .unwrap();
 
-            let (tensor, _anchors) = unpack_detection(&orig).unwrap();
-            let recon = pack_detection(&tensor, anchors);
+            let denormed = DenormedDetection::from(&orig);
+            let recon = DenseDetectionTensor::from(&denormed);
 
             let cy_diff: f64 = (&orig.cy - &recon.cy).abs().max().into();
             let cx_diff: f64 = (&orig.cx - &recon.cx).abs().max().into();

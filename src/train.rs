@@ -833,9 +833,10 @@ pub fn training_worker(
             ref weights_file,
             norm,
             num_input_detections,
-            num_resnet_blocks,
-            num_scaling_blocks,
-            num_down_sample,
+            /* num_resnet_blocks,
+             * num_scaling_blocks,
+             * num_down_sample, */
+            ..
         } = config.model.transformer;
         // ensure!(num_input_detections == config.train.peek_len && config.train.pred_len.get() == 1);
 
@@ -844,9 +845,9 @@ pub fn training_worker(
 
         let model = TransformerInit {
             norm_kind: norm,
-            num_resnet_blocks,
-            num_scaling_blocks,
-            num_down_sample,
+            // num_resnet_blocks,
+            // num_scaling_blocks,
+            // num_down_sample,
             ..Default::default()
         }
         .build(&root / "transformer", num_input_detections, num_classes, 64)?;
