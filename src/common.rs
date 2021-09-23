@@ -22,6 +22,7 @@ pub use par_stream::{ParStreamExt, TryParStreamExt};
 pub use rand::{distributions as dists, prelude::*};
 pub use serde::{Deserialize, Serialize};
 pub use std::{
+    f64,
     array,
     borrow::{Borrow, Cow},
     collections::{self, hash_map, HashMap, HashSet},

@@ -4,7 +4,8 @@ use crate::{
     model::{
         CustomGeneratorInit, DetectionEmbedding, DetectionEmbeddingInit, DetectionSimilarity,
         Discriminator, Generator, MotionBasedTransformer, MotionBasedTransformerInit,
-        NLayerDiscriminatorInit, ResnetGeneratorInit, UnetGeneratorInit, WGanGp, WGanGpInit,
+        NLayerDiscriminatorInit, PotentialBasedTransformer, PotentialBasedTransformerInit,
+        ResnetGeneratorInit, UnetGeneratorInit, WGanGp, WGanGpInit,
     },
     utils::DenseDetectionTensorListExt,
     FILE_STRFTIME,
@@ -30,7 +31,7 @@ struct TrainWorker {
     detector_model: DetectorWrapper,
     generator_model: GeneratorWrapper,
     discriminator_model: Discriminator,
-    transformer_model: MotionBasedTransformer,
+    transformer_model: PotentialBasedTransformer,
     image_seq_discriminator_model: ImageSequenceDiscriminatorWrapper,
 
     save_detector_checkpoint: bool,
@@ -871,7 +872,7 @@ pub fn training_worker(
         let mut vs = nn::VarStore::new(device);
         let root = vs.root();
 
-        let model = MotionBasedTransformerInit {
+        let model = PotentialBasedTransformerInit {
             norm_kind: norm,
             ..Default::default()
         }
