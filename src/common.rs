@@ -4,6 +4,7 @@ pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
 pub use collected::{AddVal, Count, First, GroupHashMap, Last, MaxVal};
 pub use cv_convert::FromCv;
+pub use cv_convert::TryFromCv;
 pub use derivative::Derivative;
 pub use futures::{
     future::FutureExt,
@@ -17,20 +18,20 @@ pub use ndarray as nd;
 pub use noisy_float::types::{r64, R64};
 pub use num_integer::Integer as _;
 pub use num_traits::{Float, Num};
+pub use opencv::{core as core_cv, imgproc, prelude::*};
 pub use owning_ref::{ArcRef, VecRef};
 pub use par_stream::{ParStreamExt, TryParStreamExt};
 pub use rand::{distributions as dists, prelude::*};
 pub use serde::{Deserialize, Serialize};
 pub use std::{
-    f64,
     array,
     borrow::{Borrow, Cow},
     collections::{self, hash_map, HashMap, HashSet},
     convert::TryInto,
-    fs,
+    f64, fs,
     iter::{self, FromIterator, Sum},
     num::NonZeroUsize,
-    ops::{Div, Mul, Sub},
+    ops::{Add, Div, Mul, Sub},
     path::{Path, PathBuf},
     sync::{Arc, Once},
 };
@@ -52,6 +53,10 @@ pub use tokio::sync::mpsc;
 pub use tokio_stream::wrappers::ReadDirStream;
 pub use tracing::{error, info, info_span, instrument, trace, trace_span, warn, Instrument};
 pub use unzip_n::unzip_n;
+pub use palette::Hsv;
+pub use palette::RgbHue;
+pub use palette::Srgb;
+pub use palette::convert::IntoColor;
 
 pub type Fallible<T> = Result<T>;
 

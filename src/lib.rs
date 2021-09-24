@@ -98,8 +98,12 @@ pub async fn start(config: config::Config) -> Result<()> {
     let log_fut = {
         let log_dir = log_dir.clone();
 
-        tokio::task::spawn(logging::logging_worker(log_dir, log_rx))
-            .map(|result| Fallible::Ok(result??))
+        tokio::task::spawn(logging::logging_worker(
+            log_dir,
+            log_rx,
+            config.logging.save_motion_field_image,
+        ))
+        .map(|result| Fallible::Ok(result??))
     };
 
     // run all tasks

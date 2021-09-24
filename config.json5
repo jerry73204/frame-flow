@@ -110,5 +110,6 @@
         "save_discriminator_checkpoint": true,
         "save_transformer_checkpoint": true,
         "save_image_seq_discriminator_checkpoint": true,
+        "save_motion_field_image": true,
     },
 }

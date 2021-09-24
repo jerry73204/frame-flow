@@ -1,8 +1,11 @@
+use cv_convert::TryIntoCv;
+
 use crate::{common::*, message as msg, model::DetectionSimilarity, FILE_STRFTIME};
 
 pub async fn logging_worker(
     log_dir: impl AsRef<Path>,
     mut log_rx: mpsc::Receiver<msg::LogMessage>,
+    save_motion_field_image: bool,
 ) -> Result<()> {
     let log_dir = log_dir.as_ref();
     let event_dir = log_dir.join("events");
@@ -461,27 +464,156 @@ pub async fn logging_worker(
                 }
 
                 if let Some(seq) = motion_field_seq {
-                    let (motion_dx_seq, motion_dy_seq) = seq
-                        .into_iter()
-                        .map(|motion_field| {
-                            let motion_dx = motion_field.i((.., 0..1, .., ..));
-                            let motion_dy = motion_field.i((.., 1..2, .., ..));
-                            (motion_dx, motion_dy)
+                    let (bsize, _, hsize, wsize) = seq[0].size4().unwrap();
+
+                    if save_motion_field_image {
+                        let ident_grid_ratio = {
+                            let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
+                                .expand(&[bsize, 2, 3], false);
+                            Tensor::affine_grid_generator(&theta, &[bsize, 1, hsize, wsize], false)
+                                .add(1.0)
+                                .mul(0.5)
+                        };
+
+                        let field_image_seq: Vec<_> = seq
+                            .iter()
+                            .map(|field| {
+                                let src_grid_ratio =
+                                    &ident_grid_ratio - field.permute(&[0, 2, 3, 1]);
+                                let src_x_pixel = src_grid_ratio.i((.., .., .., 0..1)) * wsize;
+                                let src_y_pixel = src_grid_ratio.i((.., .., .., 1..2)) * hsize;
+
+                                const SCALE: f64 = 8.0;
+
+                                let images: Vec<_> = (0..bsize)
+                                    .map(|bindex| {
+                                        let mut image = core_cv::Mat::zeros(
+                                            (hsize as f64 * SCALE) as i32,
+                                            (wsize as f64 * SCALE) as i32,
+                                            core_cv::CV_32FC3,
+                                        )
+                                        .unwrap()
+                                        .to_mat()
+                                        .unwrap();
+
+                                        iproduct!(0..hsize, 0..wsize).for_each(|(row, col)| {
+                                            let tgt_y = row as f64;
+                                            let tgt_x = col as f64;
+                                            let src_y =
+                                                f64::from(src_y_pixel.i((bindex, row, col, 0)));
+                                            let src_x =
+                                                f64::from(src_x_pixel.i((bindex, row, col, 0)));
+
+                                            let src_pt = core_cv::Point {
+                                                x: (src_x * SCALE) as i32,
+                                                y: (src_y * SCALE) as i32,
+                                            };
+                                            let dst_pt = core_cv::Point {
+                                                x: (tgt_x * SCALE) as i32,
+                                                y: (tgt_y * SCALE) as i32,
+                                            };
+                                            let color = {
+                                                let dx = tgt_x - src_x;
+                                                let dy = tgt_y - src_y;
+
+                                                let angle = dy.atan2(dx);
+                                                let magnitude = (dx.powi(2) + dy.powi(2)).sqrt();
+
+                                                let color: Srgb<_> = Hsv::from_components((
+                                                    RgbHue::from_radians(
+                                                        // 180.0 * row as f64 / hsize as f64
+                                                        //     + 180.0 * col as f64 / wsize as f64,
+                                                        angle,
+                                                    ),
+                                                    1.0,
+                                                    (magnitude / 8.0).max(1.0),
+                                                ))
+                                                .into_color();
+                                                let (r, g, b) = color.into_components();
+                                                core_cv::Scalar::new(r, g, b, 0.0)
+                                            };
+
+                                            imgproc::arrowed_line(
+                                                &mut image, src_pt, dst_pt, color,
+                                                1,   // thickness
+                                                8,   // line type
+                                                0,   // shift
+                                                0.1, // tip_length
+                                            )
+                                            .unwrap();
+                                        });
+
+                                        let image = Tensor::try_from_cv(image)
+                                            .unwrap()
+                                            .permute(&[2, 0, 1])
+                                            .unsqueeze(0);
+                                        image
+                                    })
+                                    .collect();
+                                let field_image = Tensor::cat(&images, 0);
+
+                                field_image
+                            })
+                            .collect();
+
+                        let field_image_seq = save_image_seq_async(
+                            "motion_field",
+                            sub_image_dir.clone(),
+                            field_image_seq,
+                        )
+                        .await?;
+
+                        save_image_seq_to_tfrecord(
+                            &mut event_writer,
+                            "motion_field",
+                            step,
+                            field_image_seq,
+                        )
+                        .await?;
+                    }
+
+                    let max_motion_field_magnitude: R64 = seq
+                        .iter()
+                        .map(|field| {
+                            let max: f64 = field
+                                .pow(2)
+                                .sum_dim_intlist(&[1], true, Kind::Float)
+                                .sqrt()
+                                .max()
+                                .into();
+                            r64(max)
                         })
-                        .unzip_n_vec();
+                        .max()
+                        .unwrap();
 
-                    let motion_dx_seq =
-                        save_image_seq_async("motion_dx", sub_image_dir.clone(), motion_dx_seq)
-                            .await?;
-                    let motion_dy_seq =
-                        save_image_seq_async("motion_dy", sub_image_dir.clone(), motion_dy_seq)
-                            .await?;
-
-                    save_image_seq_to_tfrecord(&mut event_writer, "motion_dx", step, motion_dx_seq)
+                    event_writer
+                        .write_scalar_async(
+                            "max_motion_field_magnitude",
+                            step,
+                            max_motion_field_magnitude.raw() as f32,
+                        )
                         .await?;
 
-                    save_image_seq_to_tfrecord(&mut event_writer, "motion_dy", step, motion_dy_seq)
-                        .await?;
+                    // let (motion_dx_seq, motion_dy_seq) = seq
+                    //     .into_iter()
+                    //     .map(|motion_field| {
+                    //         let motion_dx = motion_field.i((.., 0..1, .., ..));
+                    //         let motion_dy = motion_field.i((.., 1..2, .., ..));
+                    //         (motion_dx, motion_dy)
+                    //     })
+                    //     .unzip_n_vec();
+
+                    // let motion_dx_seq =
+                    //     save_image_seq_async("motion_dx", sub_image_dir.clone(), motion_dx_seq)
+                    //         .await?;
+                    // let motion_dy_seq =
+                    //     save_image_seq_async("motion_dy", sub_image_dir.clone(), motion_dy_seq)
+                    //         .await?;
+
+                    // save_image_seq_to_tfrecord(&mut event_writer, "motion_dx", step, motion_dx_seq)
+                    //     .await?;
+                    // save_image_seq_to_tfrecord(&mut event_writer, "motion_dy", step, motion_dy_seq)
+                    //     .await?;
                 }
             }
             msg::LogMessage::Image { step, sequence } => {

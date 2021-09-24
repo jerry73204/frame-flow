@@ -108,6 +108,7 @@ pub struct Logging {
     pub save_discriminator_checkpoint: bool,
     pub save_transformer_checkpoint: bool,
     pub save_image_seq_discriminator_checkpoint: bool,
+    pub save_motion_field_image: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
