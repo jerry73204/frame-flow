@@ -45,7 +45,7 @@ mod potential_based {
                 norm_kind,
                 padding_kind,
             } = self;
-            let device = path.device();
+            // let device = path.device();
             let in_c = 5 + num_classes;
             ensure!(input_len > 0);
 
@@ -198,7 +198,7 @@ mod potential_based {
             //     ]
             // };
 
-            let scaling_coefs = [4.0, 2.0, 1.0, 1.0, 1.0, 1.0];
+            let scaling_coefs = [2.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 
             let forward_fn = Box::new(
                 move |input: &[&DenseDetectionTensorList],
@@ -310,21 +310,29 @@ mod potential_based {
 
                         tuples.fold(
                             init_potential,
-                            |prev_potential, (feature, map, scaling_coef, obj_prob)| {
-                                let (_, _, prev_h, prev_w) = prev_potential.size4().unwrap();
+                            |prev_potential_pixel, (feature, map, scaling_coef, obj_prob)| {
+                                let (_, _, prev_h, prev_w) = prev_potential_pixel.size4().unwrap();
                                 let next_h = prev_h * 2;
                                 let next_w = prev_w * 2;
 
                                 // upsample motion from prev step
-                                let prev_potential = prev_potential.upsample_bilinear2d(
-                                    &[next_h, next_w],
-                                    false,
-                                    None,
-                                    None,
-                                );
-                                let prev_field = cograd(&prev_potential);
+                                let prev_potential_pixel = prev_potential_pixel
+                                    .upsample_bilinear2d(&[next_h, next_w], false, None, None);
+                                let prev_field_pixel = cograd(&prev_potential_pixel);
+
+                                let prev_field_ratio = {
+                                    // motion vector in ratio unit
+                                    let dx_pixel = prev_field_pixel.i((.., 0..1, .., ..));
+                                    let dy_pixel = prev_field_pixel.i((.., 1..2, .., ..));
+
+                                    // scale [0..in_h, 0..in_w] = [0..1, 0..1]
+                                    let dx_ratio = &dx_pixel / in_w as f64;
+                                    let dy_ratio = &dy_pixel / in_h as f64;
+                                    Tensor::cat(&[&dx_ratio, &dy_ratio], 1)
+                                };
+
                                 let warped_obj_prob = WarpInit::default()
-                                    .build(&prev_field)
+                                    .build(&prev_field_ratio)
                                     .unwrap()
                                     .forward(obj_prob);
                                 let corr =
@@ -341,8 +349,7 @@ mod potential_based {
                                 //     -1.0,
                                 //     1.0,
                                 // );
-                                let next_potential = prev_potential + addition;
-                                let next_field = cograd(&next_potential);
+                                let next_potential = prev_potential_pixel + addition;
 
                                 next_potential
                             },
@@ -362,20 +369,23 @@ mod potential_based {
 
                     // dbg!((motion_potential_pixel.max(), motion_potential_pixel.min()));
                     // dbg!((motion_field_pixel.max(), motion_field_pixel.min()));
+                    // dbg!((motion_field_ratio.max(), motion_field_ratio.min()));
 
                     // compute grid, where each value range in [-1, 1]
-                    let grid = {
-                        let ident_grid = {
-                            let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
-                                .expand(&[bsize, 2, 3], false)
-                                .to_device(device);
-                            Tensor::affine_grid_generator(&theta, &[bsize, 1, in_h, in_w], false)
-                        };
+                    let warp = WarpInit::default().build(&motion_field_ratio).unwrap();
 
-                        // sample_grid defines boundaries in [-1, 1], while our motion
-                        // vector defines boundaries in [0, 1].
-                        &motion_field_ratio.permute(&[0, 2, 3, 1]) * 2.0 + ident_grid
-                    };
+                    // let grid = {
+                    //     let ident_grid = {
+                    //         let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
+                    //             .expand(&[bsize, 2, 3], false)
+                    //             .to_device(device);
+                    //         Tensor::affine_grid_generator(&theta, &[bsize, 1, in_h, in_w], false)
+                    //     };
+
+                    //     // sample_grid defines boundaries in [-1, 1], while our motion
+                    //     // vector defines boundaries in [0, 1].
+                    //     &motion_field_ratio.permute(&[0, 2, 3, 1]) * 2.0 + ident_grid
+                    // };
 
                     // let DenormedDetection {
                     //     cy: cy_denorm,
@@ -401,42 +411,12 @@ mod potential_based {
                             .view([-1, num_classes, in_h, in_w]);
 
                     // warp values
-                    let cy_ratio = (&cy_ratio + &motion_dy_ratio).grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let cx_ratio = (&cx_ratio + &motion_dx_ratio).grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let h_ratio = h_ratio.grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let w_ratio = w_ratio.grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let obj_logit = obj_logit.grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let class_logit = class_logit.grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
+                    let cy_ratio = warp.forward(&(&cy_ratio + &motion_dy_ratio));
+                    let cx_ratio = warp.forward(&(&cx_ratio + &motion_dx_ratio));
+                    let h_ratio = warp.forward(&h_ratio);
+                    let w_ratio = warp.forward(&w_ratio);
+                    let obj_logit = warp.forward(&obj_logit);
+                    let class_logit = warp.forward(&class_logit);
 
                     // split batch and anchor dimensions
                     let cy_ratio = cy_ratio
@@ -782,7 +762,7 @@ mod motion_based {
                     let motion_dx = motion_field.i((.., 0..1, .., ..));
                     let motion_dy = motion_field.i((.., 1..2, .., ..));
 
-                    dbg!((motion_field.max(), motion_field.min()));
+                    // dbg!((motion_field.max(), motion_field.min()));
 
                     // compute grid, where each value range in [-1, 1]
                     let grid = {

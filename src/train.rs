@@ -7,7 +7,7 @@ use crate::{
         NLayerDiscriminatorInit, PotentialBasedTransformer, PotentialBasedTransformerInit,
         ResnetGeneratorInit, UnetGeneratorInit, WGanGp, WGanGpInit,
     },
-    utils::DenseDetectionTensorListExt,
+    utils::{CustomTensorExt, DenseDetectionTensorListExt},
     FILE_STRFTIME,
 };
 use yolo_dl::{loss::YoloLoss, model::YoloModel};
@@ -337,7 +337,8 @@ impl TrainWorker {
         &mut self,
         steps: usize,
         gt_image_seq: &[Tensor],
-        gt_labels_seq: &[Vec<Vec<RatioRectLabel<R64>>>],
+        // gt_labels_seq: &[Vec<Vec<RatioRectLabel<R64>>>],
+        gt_det_seq: &[DenseDetectionTensorList],
         with_artifacts: bool,
     ) -> Result<(
         Option<f64>,
@@ -350,7 +351,7 @@ impl TrainWorker {
             transformer_model,
             detector_model,
             transformer_opt,
-            detector_loss_fn,
+            // detector_loss_fn,
             ..
         } = self;
         transformer_vs.unfreeze();
@@ -371,35 +372,55 @@ impl TrainWorker {
                 .map(|det| det.shallow_clone())
                 .collect();
 
-            let (total_consistency_loss, similarity): (AddVal<_>, First<_>) =
-                (0..=(seq_len - input_len - 1))
-                    .map(|index| -> Result<_> {
-                        let fake_det_window = &fake_det_seq[index..(index + input_len)];
-                        let last_gt_labels = &gt_labels_seq[index + input_len];
-                        let (last_fake_det, _artifacts) =
-                            transformer_model.forward_t(fake_det_window, true, false)?;
+            let (total_consistency_loss, similarity): (AddVal<_>, First<_>) = (0..=(seq_len
+                - input_len
+                - 1))
+                .map(|index| -> Result<_> {
+                    let fake_det_window = &fake_det_seq[index..(index + input_len)];
+                    // let last_gt_labels = &gt_labels_seq[index + input_len];
+                    let last_gt_det = &gt_det_seq[index + input_len];
+                    let (last_fake_det, _artifacts) =
+                        transformer_model.forward_t(fake_det_window, true, false)?;
 
-                        let last_real_det = &real_det_seq[index + input_len];
+                    ensure!(last_gt_det.tensors.len() == last_fake_det.tensors.len());
 
-                        let (real_det_loss, _) = detector_loss_fn
-                            .forward(&last_real_det.shallow_clone().try_into()?, last_gt_labels);
-                        let (fake_det_loss, _) = detector_loss_fn
-                            .forward(&last_fake_det.shallow_clone().try_into()?, last_gt_labels);
-                        let consitency_loss =
-                            (real_det_loss.total_loss + fake_det_loss.total_loss) / 2.0;
-                        let similarity = crate::model::dense_detection_list_similarity(
-                            last_real_det,
-                            &last_fake_det,
-                        )?;
+                    let consistency_loss: AddVal<_> =
+                        izip!(&last_gt_det.tensors, &last_fake_det.tensors)
+                            .map(|(gt_det, fake_det)| {
+                                let gt_obj = gt_det.obj_prob();
+                                let fake_obj = fake_det.obj_prob();
+                                let (nb, na, nc, nh, nw) = fake_obj.size5().unwrap();
 
-                        // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
-                        fake_det_seq.push(last_fake_det);
+                                fake_obj
+                                    .view([nb * na, 1, nh, nw])
+                                    .partial_correlation_2d(
+                                        &gt_obj.view([nb * na, 1, nh, nw]),
+                                        [9, 9],
+                                    )
+                                    .mean(Kind::Float)
+                            })
+                        .collect();
+                    let consistency_loss = -consistency_loss.unwrap();
 
-                        Ok((consitency_loss, similarity))
-                    })
-                    .try_collect::<_, Vec<_>, _>()?
-                    .into_iter()
-                    .unzip();
+                    // let last_real_det = &real_det_seq[index + input_len];
+
+                    // let (real_det_loss, _) = detector_loss_fn
+                    //     .forward(&last_real_det.shallow_clone().try_into()?, last_gt_labels);
+                    // let (fake_det_loss, _) = detector_loss_fn
+                    //     .forward(&last_fake_det.shallow_clone().try_into()?, last_gt_labels);
+                    // let consitency_loss =
+                    //     (real_det_loss.total_loss + fake_det_loss.total_loss) / 2.0;
+                    let similarity =
+                        crate::model::dense_detection_list_similarity(last_gt_det, &last_fake_det)?;
+
+                    // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
+                    fake_det_seq.push(last_fake_det);
+
+                    Ok((consistency_loss, similarity))
+                })
+                .try_collect::<_, Vec<_>, _>()?
+                .into_iter()
+                .unzip();
 
             let total_loss = total_consistency_loss.unwrap();
 
@@ -705,7 +726,7 @@ pub fn training_worker(
     let save_image_iter: Box<dyn Iterator<Item = bool>> = match config.logging.save_image_steps {
         Some(steps) => {
             let steps = steps.get();
-            Box::new(chain!(iter::repeat(false).take(steps - 1), iter::once(true)).cycle())
+            Box::new(chain!(iter::once(true), iter::repeat(false).take(steps - 1)).cycle())
         }
         None => Box::new(iter::repeat(false)),
     };
@@ -1249,7 +1270,7 @@ pub fn training_worker(
             worker.train_forward_consistency(
                 config.train.train_forward_consistency_steps,
                 &gt_image_seq,
-                &gt_labels_seq,
+                &gt_det_seq,
                 true,
             )?;
 

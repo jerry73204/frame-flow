@@ -527,7 +527,7 @@ mod warp {
                 Tensor::affine_grid_generator(&theta, &[in_b, 1, in_h, in_w], false)
             };
 
-            let grid = field.permute(&[0, 2, 3, 1]) * 2.0 + ident_grid.to_device(field.device());
+            let grid = ident_grid.to_device(field.device()) - field.permute(&[0, 2, 3, 1]) * 2.0;
 
             Ok(Warp {
                 grid,
