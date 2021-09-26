@@ -53,6 +53,7 @@ pub async fn logging_worker(
                 transformer_weights,
                 image_seq_discriminator_weights,
 
+                gt_det_seq,
                 ground_truth_image_seq,
                 detector_det_seq,
                 generator_image_seq,
@@ -402,6 +403,32 @@ pub async fn logging_worker(
 
                     save_image_seq_to_tfrecord(&mut event_writer, "transformer_image", step, seq)
                         .await?;
+                }
+
+                if let Some(seq) = gt_det_seq {
+                    let objectness_seq: Vec<_> = seq
+                        .into_iter()
+                        .map(|det| {
+                            assert!(det.tensors.len() == 1);
+                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
+                            max
+                        })
+                        .collect();
+
+                    let objectness_seq = save_image_seq_async(
+                        "ground_truth_objectness",
+                        sub_image_dir.clone(),
+                        objectness_seq,
+                    )
+                    .await?;
+
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "ground_truth_objectness",
+                        step,
+                        objectness_seq,
+                    )
+                    .await?;
                 }
 
                 if let Some(seq) = detector_det_seq {

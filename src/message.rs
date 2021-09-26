@@ -34,6 +34,7 @@ pub struct Loss {
 
     pub ground_truth_image_seq: Option<Vec<Tensor>>,
 
+    pub gt_det_seq: Option<Vec<DenseDetectionTensorList>>,
     pub generator_image_seq: Option<Vec<Tensor>>,
     pub detector_det_seq: Option<Vec<DenseDetectionTensorList>>,
     pub transformer_det_seq: Option<Vec<DenseDetectionTensorList>>,

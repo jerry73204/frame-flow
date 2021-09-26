@@ -634,6 +634,17 @@ mod tensor_ext {
         {
             self.f_partial_correlation_2d(other, ksize).unwrap()
         }
+
+        fn f_area_cross_entropy_2d(&self, other: &Self, ksize: [usize; 2]) -> Result<Self>
+        where
+            Self: Sized;
+
+        fn area_cross_entropy_2d(&self, other: &Self, ksize: [usize; 2]) -> Self
+        where
+            Self: Sized,
+        {
+            self.f_area_cross_entropy_2d(other, ksize).unwrap()
+        }
     }
 
     impl CustomTensorExt for Tensor {
@@ -716,9 +727,9 @@ mod tensor_ext {
             let (in_b, in_c, in_h, in_w) = size;
 
             let self_patch = self
-                .f_reshape(&[in_b, in_c, in_h * in_w, 1])?
-                .f_expand(&[in_b, in_c, in_h * in_w, kh * kw], false)?;
-            // dbg!(self_patch.size());
+                .f_reshape(&[in_b * in_c * in_h * in_w, 1])?
+                .f_expand(&[in_b * in_c * in_h * in_w, kh * kw], false)?
+                .f_view([in_b * in_c * in_h * in_w, 1, kh * kw])?;
             let other_patch = other
                 .f_im2col(
                     &[kh, kw],
@@ -726,16 +737,58 @@ mod tensor_ext {
                     &[kh / 2, kw / 2], // padding
                     &[1, 1],           // stride
                 )?
-                .f_view([in_b, in_c, kh * kw, in_h * in_w])?;
-
-            // dbg!(other_patch.size());
-
-            let corr = Tensor::f_einsum("bcxk,bckx->bcx", &[self_patch, other_patch])?
+                .f_view([in_b * in_c, kh * kw, in_h * in_w])?
+                .f_permute(&[0, 2, 1])?
+                .f_reshape(&[in_b * in_c * in_h * in_w, kh * kw, 1])?;
+            let corr = self_patch
+                .f_bmm(&other_patch)?
                 .div((kh * kw) as f64)
-                .view([in_b, in_c, in_h, in_w]);
-            // dbg!(corr.size());
+                .f_view([in_b, in_c, in_h, in_w])?
+                .f_sum_dim_intlist(&[1], true, Kind::Float)?
+                .div(in_c as f64);
 
             Ok(corr)
+        }
+
+        fn f_area_cross_entropy_2d(&self, other: &Self, ksize: [usize; 2]) -> Result<Self>
+        where
+            Self: Sized,
+        {
+            let [kh, kw] = ksize;
+            ensure!(kh > 0 && kw > 0);
+            ensure!(kh & 1 == 1 && kw & 1 == 1, "kernel size must be odd");
+
+            let kh = kh as i64;
+            let kw = kw as i64;
+
+            let size = self.size4()?;
+            ensure!(size == other.size4()?);
+            let (in_b, in_c, in_h, in_w) = size;
+
+            let self_patch = self
+                .f_reshape(&[in_b, in_c, 1, in_h, in_w])?
+                .f_expand(&[in_b, in_c, kh * kw, in_h, in_w], false)?;
+            let other_patch = other
+                .f_im2col(
+                    &[kh, kw],
+                    &[1, 1],           // dilation
+                    &[kh / 2, kw / 2], // padding
+                    &[1, 1],           // stride
+                )?
+                .f_reshape(&[in_b, in_c, kh * kw, in_h, in_w])?;
+
+            let loss = self_patch
+                .f_binary_cross_entropy_with_logits::<Tensor>(
+                    &other_patch.f_sigmoid()?,
+                    None,
+                    None,
+                    Reduction::None,
+                )?
+                .f_sum_dim_intlist(&[1, 2], true, Kind::Float)?
+                .div((in_c * kh * kw) as f64)
+                .f_view([in_b, 1, in_h, in_w])?;
+
+            Ok(loss)
         }
     }
 }

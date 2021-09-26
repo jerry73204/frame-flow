@@ -338,7 +338,7 @@ impl TrainWorker {
         steps: usize,
         gt_image_seq: &[Tensor],
         // gt_labels_seq: &[Vec<Vec<RatioRectLabel<R64>>>],
-        gt_det_seq: &[DenseDetectionTensorList],
+        _gt_det_seq: &[DenseDetectionTensorList],
         with_artifacts: bool,
     ) -> Result<(
         Option<f64>,
@@ -378,31 +378,30 @@ impl TrainWorker {
                 .map(|index| -> Result<_> {
                     let fake_det_window = &fake_det_seq[index..(index + input_len)];
                     // let last_gt_labels = &gt_labels_seq[index + input_len];
-                    let last_gt_det = &gt_det_seq[index + input_len];
+                    let last_real_det = &real_det_seq[index + input_len];
+                    // let last_gt_det = &gt_det_seq[index + input_len];
                     let (last_fake_det, _artifacts) =
                         transformer_model.forward_t(fake_det_window, true, false)?;
 
-                    ensure!(last_gt_det.tensors.len() == last_fake_det.tensors.len());
+                    ensure!(last_real_det.tensors.len() == last_fake_det.tensors.len());
 
-                    let consistency_loss: AddVal<_> =
-                        izip!(&last_gt_det.tensors, &last_fake_det.tensors)
-                            .map(|(gt_det, fake_det)| {
-                                let gt_obj = gt_det.obj_prob();
-                                let fake_obj = fake_det.obj_prob();
-                                let (nb, na, nc, nh, nw) = fake_obj.size5().unwrap();
+                    let total_loss: AddVal<_> =
+                        izip!(&last_real_det.tensors, &last_fake_det.tensors)
+                            .map(|(real_det, fake_det)| {
+                                let real_obj = &real_det.obj_logit;
+                                let fake_obj = &fake_det.obj_logit;
+                                let (nb, na, _, nh, nw) = fake_obj.size5().unwrap();
 
                                 fake_obj
                                     .view([nb * na, 1, nh, nw])
-                                    .partial_correlation_2d(
-                                        &gt_obj.view([nb * na, 1, nh, nw]),
+                                    .area_cross_entropy_2d(
+                                        &real_obj.view([nb * na, 1, nh, nw]),
                                         [9, 9],
                                     )
                                     .mean(Kind::Float)
                             })
-                        .collect();
-                    let consistency_loss = -consistency_loss.unwrap();
-
-                    // let last_real_det = &real_det_seq[index + input_len];
+                            .collect();
+                    let consistency_loss = total_loss.unwrap() / last_real_det.tensors.len() as f64;
 
                     // let (real_det_loss, _) = detector_loss_fn
                     //     .forward(&last_real_det.shallow_clone().try_into()?, last_gt_labels);
@@ -410,8 +409,10 @@ impl TrainWorker {
                     //     .forward(&last_fake_det.shallow_clone().try_into()?, last_gt_labels);
                     // let consitency_loss =
                     //     (real_det_loss.total_loss + fake_det_loss.total_loss) / 2.0;
-                    let similarity =
-                        crate::model::dense_detection_list_similarity(last_gt_det, &last_fake_det)?;
+                    let similarity = crate::model::dense_detection_list_similarity(
+                        last_real_det,
+                        &last_fake_det,
+                    )?;
 
                     // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
                     fake_det_seq.push(last_fake_det);
@@ -1418,6 +1419,7 @@ pub fn training_worker(
                 transformer_weights,
                 image_seq_discriminator_weights,
 
+                gt_det_seq: save_image.then(|| gt_det_seq),
                 ground_truth_image_seq: save_image.then(|| gt_image_seq),
                 detector_det_seq,
                 generator_image_seq,
