@@ -1,10 +1,11 @@
 use super::misc::{NormKind, PaddingKind};
 use crate::{common::*, message as msg, utils::*};
-// use tch_modules::GroupNormInit;
+use tch_modules::GroupNormInit;
 
 use denormed_detection::*;
 use detection_encode::*;
 
+pub use attention_based::*;
 pub use motion_based::*;
 pub use potential_based::*;
 
@@ -450,6 +451,7 @@ mod potential_based {
                     let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
                         motion_potential: Some(motion_potential_pixel),
                         motion_field: Some(motion_field_pixel),
+                        ..Default::default()
                     });
 
                     let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
@@ -870,6 +872,7 @@ mod motion_based {
                     let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
                         motion_potential: None,
                         motion_field: Some(motion_field),
+                        ..Default::default()
                     });
 
                     let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
@@ -906,6 +909,248 @@ mod motion_based {
     }
 
     impl MotionBasedTransformer {
+        pub fn input_len(&self) -> usize {
+            self.input_len
+        }
+
+        pub fn forward_t(
+            &self,
+            input: &[impl Borrow<DenseDetectionTensorList>],
+            train: bool,
+            with_artifacts: bool,
+        ) -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)> {
+            let input: Vec<_> = input.iter().map(|list| list.borrow()).collect();
+            (self.forward_fn)(&input, train, with_artifacts)
+        }
+    }
+}
+
+mod attention_based {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct AttentionBasedTransformerInit {
+        pub ksize: usize,
+        pub norm_kind: NormKind,
+        pub padding_kind: PaddingKind,
+        pub attention_size: usize,
+    }
+
+    impl Default for AttentionBasedTransformerInit {
+        fn default() -> Self {
+            Self {
+                padding_kind: PaddingKind::Reflect,
+                norm_kind: NormKind::InstanceNorm,
+                ksize: 3,
+                attention_size: 8,
+            }
+        }
+    }
+
+    impl AttentionBasedTransformerInit {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            input_len: usize,
+            num_classes: usize,
+            inner_c: usize,
+        ) -> Result<AttentionBasedTransformer> {
+            // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
+            const NUM_DOWN: i64 = 3;
+
+            let path = path.borrow();
+            let Self {
+                ksize,
+                norm_kind,
+                padding_kind,
+                attention_size,
+            } = self;
+            // let device = path.device();
+            ensure!(input_len > 0);
+
+            ensure!(attention_size > 0);
+            let attention_size = attention_size as i64;
+            let num_attention_up = (attention_size as f64).log2().ceil() as usize;
+
+            let transform = resnet::ResnetInit {
+                ksize,
+                norm_kind,
+                padding_kind,
+                num_down: 3,
+                num_mid: 3,
+                num_up: 3 + num_attention_up,
+            }
+            .build(
+                path / "transform",
+                (5 + num_classes) * input_len,
+                3,
+                inner_c,
+            )?;
+
+            let forward_fn = Box::new(
+                move |input: &[&DenseDetectionTensorList],
+                      train: bool,
+                      with_artifacts: bool|
+                      -> Result<_> {
+                    ensure!(input.len() == input_len);
+                    ensure!(input.iter().all(|list| list.tensors.len() == 1));
+                    ensure!(input
+                        .iter()
+                        .map(|list| &list.tensors)
+                        .flatten()
+                        .all(|tensor| tensor.num_anchors() == 1
+                            && tensor.num_classes() == num_classes));
+                    assert!(input.iter().all(|&list| list.is_all_finite()));
+
+                    let in_b = input[0].batch_size() as i64;
+                    let in_h = input[0].tensors[0].height() as i64;
+                    let in_w = input[0].tensors[0].width() as i64;
+                    let anchors = &input[0].tensors[0].anchors;
+                    ensure!(input
+                        .iter()
+                        .flat_map(|list| &list.tensors)
+                        .all(|det| det.height() == in_h as usize
+                            && det.width() == in_w as usize
+                            && &det.anchors == anchors));
+
+                    let context_vec: Vec<_> = input
+                        .iter()
+                        .flat_map(|list| &list.tensors)
+                        .map(|det| -> Result<_> {
+                            let (context, _) = det.encode_detection()?;
+                            Ok(context)
+                        })
+                        .try_collect()?;
+                    let context = Tensor::cat(&context_vec, 1);
+                    assert!(context.is_all_finite());
+
+                    let last_input_det = &input.last().unwrap().tensors[0];
+
+                    let patch_size = 2i64.pow(num_attention_up as u32);
+                    let attention_h = in_h.min(attention_size);
+                    let attention_w = in_w.min(attention_size);
+
+                    let xs = context.view([in_b, -1, in_h, in_w]);
+                    let xs = transform
+                        .forward_t(&xs, train)
+                        .view([in_b, 3, in_h, patch_size, in_w, patch_size])
+                        .i((.., .., .., 0..attention_h, .., 0..attention_w))
+                        .permute(&[0, 1, 3, 5, 2, 4]);
+                    let attention = xs
+                        .i((.., 0..1, .., .., .., ..))
+                        .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                        .softmax(2, Kind::Float);
+                    let cy_diff = xs.i((.., 1..2, .., .., .., ..)).sigmoid().div(in_h as f64);
+                    let cx_diff = xs.i((.., 2..3, .., .., .., ..)).sigmoid().div(in_w as f64);
+
+                    let make_patches = |xs: &Tensor, patch_h, patch_w| {
+                        let (_, _, in_h, in_w) = xs.size4().unwrap();
+
+                        let xs = xs.unfold2d(
+                            &[patch_h, patch_w],
+                            &[1, 1],                     // dilation
+                            &[patch_h / 2, patch_w / 2], // padding
+                            &[1, 1],                     // stride
+                        );
+                        let unfold_h = if patch_h & 1 == 1 { in_h + 1 } else { in_h };
+                        let unfold_w = if patch_w & 1 == 1 { in_w + 1 } else { in_w };
+
+                        xs.reshape(&[in_b, -1, patch_h, patch_w, unfold_h, unfold_w])
+                            .i((.., .., .., .., 0..in_h, 0..in_w))
+                    };
+
+                    let obj_logit =
+                        make_patches(&last_input_det.obj_logit, attention_h, attention_w)
+                            .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                            .mul(&attention)
+                            .sum_dim_intlist(&[2], false, Kind::Float);
+                    let class_logit =
+                        make_patches(&last_input_det.class_logit, attention_h, attention_w)
+                            .view([
+                                in_b,
+                                num_classes as i64,
+                                attention_h * attention_w,
+                                in_h,
+                                in_w,
+                            ])
+                            .mul(&attention)
+                            .sum_dim_intlist(&[2], false, Kind::Float);
+                    let cy_ratio = (make_patches(&last_input_det.cy, attention_h, attention_w)
+                        + cy_diff)
+                        .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                        .mul(&attention)
+                        .sum_dim_intlist(&[2], false, Kind::Float);
+                    let cx_ratio = (make_patches(&last_input_det.cx, attention_h, attention_w)
+                        + cx_diff)
+                        .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                        .mul(&attention)
+                        .sum_dim_intlist(&[2], false, Kind::Float);
+                    let h_ratio = make_patches(&last_input_det.h, attention_h, attention_w)
+                        .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                        .mul(&attention)
+                        .sum_dim_intlist(&[2], false, Kind::Float);
+                    let w_ratio = make_patches(&last_input_det.w, attention_h, attention_w)
+                        .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                        .mul(&attention)
+                        .sum_dim_intlist(&[2], false, Kind::Float);
+
+                    let output_det = DenseDetectionTensorUnchecked {
+                        cy: cy_ratio,
+                        cx: cx_ratio,
+                        h: h_ratio,
+                        w: w_ratio,
+                        obj_logit,
+                        class_logit,
+                        anchors: anchors.to_vec(),
+                    }
+                    .build()
+                    .unwrap();
+
+                    let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
+                        tensors: vec![output_det],
+                    }
+                    .try_into()
+                    .unwrap();
+
+                    let artifacts = with_artifacts.then(|| {
+                        let attention_image =
+                            attention.view([in_b, -1, attention_h, attention_w, in_h, in_w]);
+
+                        msg::TransformerArtifacts {
+                            motion_potential: None,
+                            motion_field: None,
+                            attention_image: Some(attention_image),
+                        }
+                    });
+
+                    Ok((output, artifacts))
+                },
+            );
+
+            Ok(AttentionBasedTransformer {
+                input_len,
+                forward_fn,
+            })
+        }
+    }
+
+    #[derive(Derivative)]
+    #[derivative(Debug)]
+    pub struct AttentionBasedTransformer {
+        input_len: usize,
+        #[derivative(Debug = "ignore")]
+        forward_fn: Box<
+            dyn Fn(
+                    &[&DenseDetectionTensorList],
+                    bool,
+                    bool,
+                )
+                    -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)>
+                + Send,
+        >,
+    }
+
+    impl AttentionBasedTransformer {
         pub fn input_len(&self) -> usize {
             self.input_len
         }

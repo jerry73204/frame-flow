@@ -1,5 +1,3 @@
-use cv_convert::TryIntoCv;
-
 use crate::{common::*, message as msg, model::DetectionSimilarity, FILE_STRFTIME};
 
 pub async fn logging_worker(
@@ -62,6 +60,7 @@ pub async fn logging_worker(
 
                 motion_potential_seq,
                 motion_field_seq,
+                attention_image_seq,
             }) => {
                 let step = step as i64;
 

@@ -2,8 +2,8 @@ use crate::{
     common::*,
     config, message as msg,
     model::{
-        CustomGeneratorInit, DetectionEmbedding, DetectionEmbeddingInit, DetectionSimilarity,
-        Discriminator, Generator, MotionBasedTransformer, MotionBasedTransformerInit,
+        AttentionBasedTransformer, AttentionBasedTransformerInit, CustomGeneratorInit,
+        DetectionEmbedding, DetectionEmbeddingInit, DetectionSimilarity, Discriminator, Generator,
         NLayerDiscriminatorInit, PotentialBasedTransformer, PotentialBasedTransformerInit,
         ResnetGeneratorInit, UnetGeneratorInit, WGanGp, WGanGpInit,
     },
@@ -31,7 +31,7 @@ struct TrainWorker {
     detector_model: DetectorWrapper,
     generator_model: GeneratorWrapper,
     discriminator_model: Discriminator,
-    transformer_model: PotentialBasedTransformer,
+    transformer_model: AttentionBasedTransformer,
     image_seq_discriminator_model: ImageSequenceDiscriminatorWrapper,
 
     save_detector_checkpoint: bool,
@@ -894,7 +894,7 @@ pub fn training_worker(
         let mut vs = nn::VarStore::new(device);
         let root = vs.root();
 
-        let model = PotentialBasedTransformerInit {
+        let model = AttentionBasedTransformerInit {
             norm_kind: norm,
             ..Default::default()
         }
@@ -1373,25 +1373,30 @@ pub fn training_worker(
 
         // send to logger
         {
-            let (motion_potential_seq, motion_field_seq) = match transformer_artifacts_seq {
-                Some(seq) => {
-                    let (motion_potential_seq, motion_field_seq) = seq
-                        .into_iter()
-                        .map(|artifacts| {
-                            let msg::TransformerArtifacts {
-                                motion_potential,
-                                motion_field,
-                            } = artifacts;
-                            (motion_potential, motion_field)
-                        })
-                        .unzip_n_vec();
-                    let motion_potential_seq: Option<Vec<_>> =
-                        motion_potential_seq.into_iter().collect();
-                    let motion_field_seq: Option<Vec<_>> = motion_field_seq.into_iter().collect();
-                    (motion_potential_seq, motion_field_seq)
-                }
-                None => (None, None),
-            };
+            let (motion_potential_seq, motion_field_seq, attention_image_seq) =
+                match transformer_artifacts_seq {
+                    Some(seq) => {
+                        let (motion_potential_seq, motion_field_seq, attention_image_seq) = seq
+                            .into_iter()
+                            .map(|artifacts| {
+                                let msg::TransformerArtifacts {
+                                    motion_potential,
+                                    motion_field,
+                                    attention_image,
+                                } = artifacts;
+                                (motion_potential, motion_field, attention_image)
+                            })
+                            .unzip_n_vec();
+                        let motion_potential_seq: Option<Vec<_>> =
+                            motion_potential_seq.into_iter().collect();
+                        let motion_field_seq: Option<Vec<_>> =
+                            motion_field_seq.into_iter().collect();
+                        let attention_image_seq: Option<Vec<_>> =
+                            attention_image_seq.into_iter().collect();
+                        (motion_potential_seq, motion_field_seq, attention_image_seq)
+                    }
+                    None => (None, None, None),
+                };
 
             let msg = msg::LogMessage::Loss(msg::Loss {
                 step: train_step,
@@ -1428,6 +1433,7 @@ pub fn training_worker(
 
                 motion_potential_seq,
                 motion_field_seq,
+                attention_image_seq,
             });
 
             let result = log_tx.blocking_send(msg);

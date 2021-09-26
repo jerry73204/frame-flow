@@ -42,7 +42,7 @@ pub struct Loss {
 
     pub motion_potential_seq: Option<Vec<Tensor>>,
     pub motion_field_seq: Option<Vec<Tensor>>,
-    // pub transformer_artifacts_seq: Option<Vec<TransformerArtifacts>>,
+    pub attention_image_seq: Option<Vec<Tensor>>,
 }
 
 #[derive(Debug)]
@@ -72,7 +72,17 @@ pub struct WeightsAndGrads {
 #[derive(Debug, TensorLike)]
 pub struct TransformerArtifacts {
     // pub autoencoder_recon_loss: Tensor,
-    // pub attention_image: Tensor,
     pub motion_potential: Option<Tensor>,
     pub motion_field: Option<Tensor>,
+    pub attention_image: Option<Tensor>,
+}
+
+impl Default for TransformerArtifacts {
+    fn default() -> Self {
+        Self {
+            motion_potential: None,
+            motion_field: None,
+            attention_image: None,
+        }
+    }
 }
