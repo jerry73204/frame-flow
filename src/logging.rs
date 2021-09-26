@@ -641,6 +641,41 @@ pub async fn logging_worker(
                     // save_image_seq_to_tfrecord(&mut event_writer, "motion_dy", step, motion_dy_seq)
                     //     .await?;
                 }
+
+                if let Some(seq) = attention_image_seq {
+                    let seq: Vec<_> = seq
+                        .into_iter()
+                        .map(|attention_image| {
+                            let (bsize, _one, attention_h, attention_w, image_h, image_w) =
+                                attention_image.size6().unwrap();
+                            let attention_image = attention_image
+                                .constant_pad_nd(&[0, 0, 0, 0, 0, 1, 0, 0])
+                                .constant_pad_nd(&[0, 0, 0, 0, 0, 0, 0, 1])
+                                .permute(&[0, 1, 4, 2, 5, 3])
+                                .reshape(&[
+                                    bsize,
+                                    1,
+                                    image_h * (attention_h + 1),
+                                    image_w * (attention_w + 1),
+                                ]);
+
+                            // event_writer
+                            //     .write_image_list_async(
+                            //         format!("attention_image/seq_{}", seq_index),
+                            //         step,
+                            //         attention_image,
+                            //     )
+                            //     .await?;
+                            attention_image
+                        })
+                        .collect();
+
+                    let seq =
+                        save_image_seq_async("attention_image", sub_image_dir.clone(), seq).await?;
+
+                    save_image_seq_to_tfrecord(&mut event_writer, "attention_image", step, seq)
+                        .await?;
+                }
             }
             msg::LogMessage::Image { step, sequence } => {
                 let step = step as i64;
