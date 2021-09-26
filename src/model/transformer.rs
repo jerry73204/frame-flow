@@ -7,7 +7,6 @@ use detection_encode::*;
 
 pub use motion_based::*;
 pub use potential_based::*;
-// pub use spectral_based::*;
 
 mod potential_based {
     use super::*;
@@ -198,7 +197,7 @@ mod potential_based {
             //     ]
             // };
 
-            let scaling_coefs = [2.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+            let scaling_coefs = [0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
 
             let forward_fn = Box::new(
                 move |input: &[&DenseDetectionTensorList],
@@ -215,7 +214,7 @@ mod potential_based {
                         .all(|tensor| tensor.num_classes() == num_classes));
                     debug_assert!(input.iter().any(|&list| list.is_all_finite()));
 
-                    let device = input[0].device();
+                    // let device = input[0].device();
                     let bsize = input[0].batch_size() as i64;
                     let in_h = input[0].tensors[0].height() as i64;
                     let in_w = input[0].tensors[0].width() as i64;
@@ -274,18 +273,16 @@ mod potential_based {
                     };
 
                     // generate down sampled objectness images
-                    let down_sampled_obj_probs = {
-                        let obj_prob = obj_logit
-                            .view([bsize * num_anchors, 1, in_h, in_w])
-                            .sigmoid();
+                    let down_sampled_obj_logits = {
+                        let obj_logit = obj_logit.view([bsize * num_anchors, 1, in_h, in_w]);
 
-                        let latter = (1..6).scan(obj_prob.shallow_clone(), |prev, _| {
+                        let latter = (1..6).scan(obj_logit.shallow_clone(), |prev, _| {
                             let next = prev.slice(2, None, None, 2).slice(3, None, None, 2);
                             *prev = next.shallow_clone();
                             Some(next)
                         });
 
-                        velcro::vec![obj_prob, ..latter]
+                        velcro::vec![obj_logit, ..latter]
                     };
 
                     // generate motion potentials
@@ -299,7 +296,7 @@ mod potential_based {
                             features.iter().rev(),
                             motion_maps.iter().rev(),
                             scaling_coefs.iter().cloned().rev(),
-                            down_sampled_obj_probs.iter().rev(),
+                            down_sampled_obj_logits.iter().rev(),
                         );
                         let (feature, map, scaling_coef, _) = tuples.next().unwrap();
                         let init_potential =
@@ -310,7 +307,7 @@ mod potential_based {
 
                         tuples.fold(
                             init_potential,
-                            |prev_potential_pixel, (feature, map, scaling_coef, obj_prob)| {
+                            |prev_potential_pixel, (feature, map, scaling_coef, obj_logit)| {
                                 let (_, _, prev_h, prev_w) = prev_potential_pixel.size4().unwrap();
                                 let next_h = prev_h * 2;
                                 let next_w = prev_w * 2;
@@ -331,12 +328,12 @@ mod potential_based {
                                     Tensor::cat(&[&dx_ratio, &dy_ratio], 1)
                                 };
 
-                                let warped_obj_prob = WarpInit::default()
+                                let warped_obj_logit = WarpInit::default()
                                     .build(&prev_field_ratio)
                                     .unwrap()
-                                    .forward(obj_prob);
+                                    .forward(obj_logit);
                                 let corr =
-                                    obj_prob.partial_correlation_2d(&warped_obj_prob, [5, 5]);
+                                    obj_logit.partial_correlation_2d(&warped_obj_logit, [5, 5]);
 
                                 // cat prev motion to curr feature
                                 let xs = Tensor::cat(&[feature, &corr], 1);
@@ -924,652 +921,6 @@ mod motion_based {
         }
     }
 }
-
-// mod spectral_based {
-//     use super::*;
-
-//     #[derive(Debug, Clone)]
-//     pub struct SpectralBasedTransformerInit {
-//         pub ksize: usize,
-//         pub norm_kind: NormKind,
-//         pub padding_kind: PaddingKind,
-//     }
-
-//     impl Default for SpectralBasedTransformerInit {
-//         fn default() -> Self {
-//             Self {
-//                 padding_kind: PaddingKind::Reflect,
-//                 norm_kind: NormKind::InstanceNorm,
-//                 ksize: 3,
-//             }
-//         }
-//     }
-
-//     impl SpectralBasedTransformerInit {
-//         pub fn build<'a>(
-//             self,
-//             path: impl Borrow<nn::Path<'a>>,
-//             input_len: usize,
-//             num_classes: usize,
-//             inner_c: usize,
-//         ) -> Result<SpectralBasedTransformer> {
-//             // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
-
-//             let path = path.borrow();
-//             let Self {
-//                 ksize,
-//                 norm_kind,
-//                 padding_kind,
-//             } = self;
-//             let device = path.device();
-//             let in_c = 5 + num_classes;
-//             ensure!(input_len > 0);
-
-//             let ctx_c = in_c * input_len;
-
-//             let feature_maps: Vec<_> = array::IntoIter::new([
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 4,
-//                     num_mid: 2,
-//                     num_up: 4,
-//                 }
-//                 .build(path / "feature_0", ctx_c, inner_c, inner_c), // 64 -> 64
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 4,
-//                     num_mid: 2,
-//                     num_up: 3,
-//                 }
-//                 .build(path / "feature_1", inner_c, inner_c, inner_c), // 64 -> 32
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 3,
-//                     num_mid: 2,
-//                     num_up: 2,
-//                 }
-//                 .build(path / "feature_2", inner_c, inner_c, inner_c), // 32 -> 16
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 2,
-//                     num_mid: 2,
-//                     num_up: 1,
-//                 }
-//                 .build(path / "feature_3", inner_c, inner_c, inner_c), // 16 -> 8
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 1,
-//                     num_mid: 2,
-//                     num_up: 0,
-//                 }
-//                 .build(path / "feature_4", inner_c, inner_c, inner_c), // 8 -> 4
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 1,
-//                     num_mid: 2,
-//                     num_up: 0,
-//                 }
-//                 .build(path / "feature_5", inner_c, inner_c, inner_c), // 4 -> 2
-//             ])
-//             .try_collect()
-//             .unwrap();
-
-//             let motion_maps: Vec<_> = array::IntoIter::new([
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 4,
-//                     num_mid: 1,
-//                     num_up: 4,
-//                 }
-//                 .build(path / "motion_0", inner_c + 2, 1, inner_c), // 64
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 3,
-//                     num_mid: 1,
-//                     num_up: 3,
-//                 }
-//                 .build(path / "motion_1", inner_c + 2, 1, inner_c), // 32
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 3,
-//                     num_mid: 1,
-//                     num_up: 3,
-//                 }
-//                 .build(path / "motion_2", inner_c + 2, 1, inner_c), // 16
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 2,
-//                     num_mid: 1,
-//                     num_up: 2,
-//                 }
-//                 .build(path / "motion_3", inner_c + 2, 1, inner_c), // 8
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 0,
-//                     num_mid: 1,
-//                     num_up: 0,
-//                 }
-//                 .build(path / "motion_4", inner_c + 2, 1, inner_c), // 4
-//                 resnet::ResnetInit {
-//                     ksize,
-//                     norm_kind,
-//                     padding_kind,
-//                     num_down: 0,
-//                     num_mid: 1,
-//                     num_up: 0,
-//                 }
-//                 .build(path / "motion_5", inner_c, 1, inner_c), // 2
-//             ])
-//             .try_collect()
-//             .unwrap();
-
-//             // let spectral_coefs = [
-//             //     1.0, // 64
-//             //     1.0, // 32
-//             //     2.0, // 16
-//             //     4.0, // 8
-//             //     8.0, // 4
-//             //     8.0, // 2
-//             //     8.0, // 1
-//             // ];
-
-//             let spectral_coefs = {
-//                 const SIZE: i64 = 64;;
-
-//                 let coef = (Tensor::arange(SIZE, (Kind::Float, device))
-//                     .view([1, SIZE])
-//                     .expand(&[SIZE, SIZE], false)
-//                     .pow(2)
-//                     + Tensor::arange(SIZE, (Kind::Float, device))
-//                         .view([SIZE, 1])
-//                         .expand(&[SIZE, SIZE], false)
-//                         .pow(2))
-//                 .sqrt()
-//                 .mul(f64::consts::PI * 2.0)
-//                 .clamp_min(1.0)
-//                 .reciprocal()
-//                 .view([1, 1, SIZE, SIZE]);
-
-//                 [
-//                     coef.i((.., .., 0..64, 0..64)) * 8.0,
-//                     coef.i((.., .., 0..32, 0..32)) * 4.0,
-//                     coef.i((.., .., 0..16, 0..16)) * 2.0,
-//                     coef.i((.., .., 0..8, 0..8)) * 1.0,
-//                     coef.i((.., .., 0..4, 0..4)) * 1.0,
-//                     coef.i((.., .., 0..1, 0..1)) * 1.0,
-//                 ]
-//             };
-
-//             let forward_fn = Box::new(
-//                 move |input: &[&DenseDetectionTensorList],
-//                       train: bool,
-//                       with_artifacts: bool|
-//                       -> Result<_> {
-//                     // sanity checks
-//                     ensure!(input.len() == input_len);
-//                     ensure!(input.iter().all(|list| list.tensors.len() == 1));
-//                     ensure!(input
-//                         .iter()
-//                         .map(|list| &list.tensors)
-//                         .flatten()
-//                         .all(|tensor| tensor.num_classes() == num_classes));
-//                     debug_assert!(input.iter().any(|&list| list.is_all_finite()));
-
-//                     let device = input[0].device();
-//                     let bsize = input[0].batch_size() as i64;
-//                     let in_h = input[0].tensors[0].height() as i64;
-//                     let in_w = input[0].tensors[0].width() as i64;
-//                     let anchors = &input[0].tensors[0].anchors;
-//                     let num_anchors = anchors.len() as i64;
-//                     let num_classes = num_classes as i64;
-
-//                     ensure!(input
-//                         .iter()
-//                         .flat_map(|list| &list.tensors)
-//                         .all(|det| det.height() == in_h as usize
-//                             && det.width() == in_w as usize
-//                             && &det.anchors == anchors));
-
-//                     // merge input sequence into a context tensor
-//                     let context = {
-//                         let context_vec: Vec<_> = input
-//                             .iter()
-//                             .flat_map(|list| &list.tensors)
-//                             .map(|det| -> Result<_> {
-//                                 let (context, _) = det.encode_detection()?;
-//                                 // let (bsize, num_entires, num_anchors, height, width) = context.size5().unwrap();
-
-//                                 // scale batch_size to bsize * num_anchors
-//                                 let context = context.repeat_interleave_self_int(num_anchors, 0);
-
-//                                 // merge entry and anchor dimensions
-//                                 let context = context.view([bsize * num_anchors, -1, in_h, in_w]);
-
-//                                 Ok(context)
-//                             })
-//                             .try_collect()?;
-//                         Tensor::cat(&context_vec, 1)
-//                     };
-//                     debug_assert!(context.is_all_finite());
-
-//                     // generate features
-//                     let features: Vec<_> = {
-//                         feature_maps
-//                             .iter()
-//                             .scan(context, |prev, map| {
-//                                 let next = map.forward_t(prev, train).lrelu();
-//                                 *prev = next.shallow_clone();
-//                                 Some(next)
-//                             })
-//                             .collect()
-//                     };
-
-//                     // generate motion potentials
-
-//                     let cograd = |xs: &Tensor| -> Tensor {
-//                         let (dx, dy) = xs.spatial_gradient();
-//                         Tensor::cat(&[-dy, dx], 1)
-//                     };
-
-//                     let (motion_potential, motion_field_pixel) = {
-//                         let mut tuples = izip!(
-//                             features.iter().rev(),
-//                             motion_maps.iter().rev(),
-//                             spectral_coefs.iter().rev()
-//                         );
-//                         let (feature, map, spectral_coef) = tuples.next().unwrap();
-
-//                         let init_spectral = map
-//                             .forward_t(
-//                                 &feature
-//                                     .fft_rfft2(None, &[-2, -1], "forward")
-//                                     .to_kind(Kind::Float),
-//                                 train,
-//                             )
-//                             .tanh()
-//                             .mul(spectral_coef);
-//                         let init_potential = init_spectral
-//                             .to_kind(Kind::ComplexFloat)
-//                             .fft_irfft2(None, &[-2, -1], "backward")
-//                             .to_kind(Kind::Float);
-//                         let init_motion = cograd(&init_potential);
-//                         dbg!((init_motion.max(), init_motion.min()));
-
-//                         tuples.fold(
-//                             (init_potential, init_motion),
-//                             |(prev_potential, prev_field), (feature, map, spectral_coef)| {
-//                                 let (_, _, prev_h, prev_w) = prev_field.size4().unwrap();
-//                                 let next_h = prev_h * 2;
-//                                 let next_w = prev_w * 2;
-
-//                                 // upsample motion from prev step
-//                                 let prev_field =
-//                                     prev_field.upsample_nearest2d(&[next_h, next_w], None, None);
-//                                 let prev_potential = prev_potential.upsample_nearest2d(
-//                                     &[next_h, next_w],
-//                                     None,
-//                                     None,
-//                                 );
-
-//                                 // cat prev motion to curr feature
-//                                 let xs = Tensor::cat(
-//                                     &[
-//                                         &feature
-//                                             .fft_rfft2(None, &[-2, -1], "forward")
-//                                             .to_kind(Kind::Float),
-//                                         &prev_field,
-//                                     ],
-//                                     1,
-//                                 );
-
-//                                 // predict potential
-//                                 let next_spectral =
-//                                     map.forward_t(&xs, train).tanh().mul(spectral_coef);
-//                                 let next_potential = prev_potential
-//                                     + next_spectral
-//                                         .to_kind(Kind::ComplexFloat)
-//                                         .fft_irfft2(None, &[-2, -1], "backward")
-//                                         .to_kind(Kind::Float);
-//                                 let next_field = cograd(&next_potential);
-
-//                                 (next_potential, next_field)
-//                             },
-//                         )
-//                     };
-//                     debug_assert!(motion_field_pixel.is_all_finite());
-
-//                     // motion vector in ratio unit
-//                     let motion_dx_pixel = motion_field_pixel.i((.., 0..1, .., ..));
-//                     let motion_dy_pixel = motion_field_pixel.i((.., 1..2, .., ..));
-//                     let motion_dx_ratio = &motion_dx_pixel * 2.0 / in_w as f64;
-//                     let motion_dy_ratio = &motion_dy_pixel * 2.0 / in_h as f64;
-//                     let motion_field_ratio = Tensor::cat(&[&motion_dx_ratio, &motion_dy_ratio], 1);
-
-//                     dbg!((motion_potential.max(), motion_potential.min()));
-//                     dbg!((motion_field_pixel.max(), motion_field_pixel.min()));
-
-//                     // compute grid, where each value range in [-1, 1]
-//                     let grid = {
-//                         let ident_grid = {
-//                             let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
-//                                 .expand(&[bsize, 2, 3], false)
-//                                 .to_device(device);
-//                             Tensor::affine_grid_generator(&theta, &[bsize, 1, in_h, in_w], false)
-//                         };
-
-//                         &motion_field_ratio.permute(&[0, 2, 3, 1]) + ident_grid
-//                     };
-
-//                     // unpack last input detection
-//                     let last_det = &input.last().unwrap().tensors[0];
-//                     let cy_ratio = &last_det.cy;
-//                     let cx_ratio = &last_det.cx;
-//                     let h_ratio = &last_det.h;
-//                     let w_ratio = &last_det.w;
-//                     let obj_logit = &last_det.obj_logit;
-//                     let class_logit = &last_det.class_logit;
-
-//                     // merge batch and anchor dimensions
-//                     let cy_ratio = cy_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
-//                     let cx_ratio = cx_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
-//                     let h_ratio = h_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
-//                     let w_ratio = w_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
-//                     let obj_logit = obj_logit
-//                         .permute(&[0, 2, 1, 3, 4])
-//                         .view([-1, 1, in_h, in_w]);
-//                     let class_logit =
-//                         class_logit
-//                             .permute(&[0, 2, 1, 3, 4])
-//                             .view([-1, num_classes, in_h, in_w]);
-
-//                     // warp values
-//                     let cy_ratio = (&cy_ratio + &motion_dy_ratio).grid_sampler(
-//                         &grid, // grid
-//                         1,     // nearest interpolation
-//                         0,     // pad zeros
-//                         false,
-//                     );
-//                     let cx_ratio = (&cx_ratio + &motion_dx_ratio).grid_sampler(
-//                         &grid, // grid
-//                         1,     // nearest interpolation
-//                         0,     // pad zeros
-//                         false,
-//                     );
-//                     let h_ratio = h_ratio.grid_sampler(
-//                         &grid, // grid
-//                         1,     // nearest interpolation
-//                         0,     // pad zeros
-//                         false,
-//                     );
-//                     let w_ratio = w_ratio.grid_sampler(
-//                         &grid, // grid
-//                         1,     // nearest interpolation
-//                         0,     // pad zeros
-//                         false,
-//                     );
-//                     let obj_logit = obj_logit.grid_sampler(
-//                         &grid, // grid
-//                         1,     // nearest interpolation
-//                         0,     // pad zeros
-//                         false,
-//                     );
-//                     let class_logit = class_logit.grid_sampler(
-//                         &grid, // grid
-//                         1,     // nearest interpolation
-//                         0,     // pad zeros
-//                         false,
-//                     );
-
-//                     // split batch and anchor dimensions
-//                     let cy_ratio = cy_ratio
-//                         .view([bsize, num_anchors, 1, in_h, in_w])
-//                         .permute(&[0, 2, 1, 3, 4]);
-//                     let cx_ratio = cx_ratio
-//                         .view([bsize, num_anchors, 1, in_h, in_w])
-//                         .permute(&[0, 2, 1, 3, 4]);
-//                     let h_ratio = h_ratio
-//                         .view([bsize, num_anchors, 1, in_h, in_w])
-//                         .permute(&[0, 2, 1, 3, 4]);
-//                     let w_ratio = w_ratio
-//                         .view([bsize, num_anchors, 1, in_h, in_w])
-//                         .permute(&[0, 2, 1, 3, 4]);
-//                     let obj_logit = obj_logit
-//                         .view([bsize, num_anchors, 1, in_h, in_w])
-//                         .permute(&[0, 2, 1, 3, 4]);
-//                     let class_logit = class_logit
-//                         .view([bsize, num_anchors, num_classes, in_h, in_w])
-//                         .permute(&[0, 2, 1, 3, 4]);
-
-//                     let warped_det = DenseDetectionTensorUnchecked {
-//                         cy: cy_ratio,
-//                         cx: cx_ratio,
-//                         h: h_ratio,
-//                         w: w_ratio,
-//                         obj_logit,
-//                         class_logit,
-//                         anchors: anchors.clone(),
-//                     }
-//                     .build()
-//                     .unwrap();
-
-//                     let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
-//                         motion_potential: Some(motion_potential),
-//                         motion_field: Some(motion_field_pixel),
-//                     });
-
-//                     let output: DenseDetectionTensorList = DenseDetectionTensorListUnchecked {
-//                         tensors: vec![warped_det],
-//                     }
-//                     .try_into()
-//                     .unwrap();
-
-//                     Ok((output, artifacts))
-//                 },
-//             );
-
-//             Ok(SpectralBasedTransformer {
-//                 input_len,
-//                 forward_fn,
-//             })
-//         }
-//     }
-
-//     #[derive(Derivative)]
-//     #[derivative(Debug)]
-//     pub struct SpectralBasedTransformer {
-//         input_len: usize,
-//         #[derivative(Debug = "ignore")]
-//         forward_fn: Box<
-//             dyn Fn(
-//                     &[&DenseDetectionTensorList],
-//                     bool,
-//                     bool,
-//                 )
-//                     -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)>
-//                 + Send,
-//         >,
-//     }
-
-//     impl SpectralBasedTransformer {
-//         pub fn input_len(&self) -> usize {
-//             self.input_len
-//         }
-
-//         pub fn forward_t(
-//             &self,
-//             input: &[impl Borrow<DenseDetectionTensorList>],
-//             train: bool,
-//             with_artifacts: bool,
-//         ) -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)> {
-//             let input: Vec<_> = input.iter().map(|list| list.borrow()).collect();
-//             (self.forward_fn)(&input, train, with_artifacts)
-//         }
-//     }
-// }
-
-// #[derive(Debug, Clone)]
-// pub struct ChannelWiseAutoencoderInit {
-//     pub norm_kind: NormKind,
-// }
-
-// impl ChannelWiseAutoencoderInit {
-//     pub fn build<'a>(
-//         self,
-//         path: impl Borrow<nn::Path<'a>>,
-//         in_c: usize,
-//         inner_c: usize,
-//     ) -> (ChannelWiseEncoder, ChannelWiseDecoder) {
-//         let path = path.borrow();
-//         let Self { norm_kind } = self;
-//         let bias = norm_kind == NormKind::InstanceNorm;
-
-//         let encoder = {
-//             let path = path / "encoder";
-
-//             let seq = {
-//                 let path = &path / "block_0";
-//                 nn::seq_t()
-//                     // .inspect(|xs| {
-//                     //     // dbg!(xs.min(), xs.max());
-//                     //     debug_assert!(xs.is_all_finite());
-//                     // })
-//                     .add(nn::conv2d(
-//                         &path / "conv",
-//                         in_c as i64,
-//                         inner_c as i64,
-//                         1,
-//                         nn::ConvConfig {
-//                             padding: 0,
-//                             bias,
-//                             ..Default::default()
-//                         },
-//                     ))
-//                     // .inspect(|xs| {
-//                     //     // dbg!(xs.min(), xs.max());
-//                     //     debug_assert!(xs.is_all_finite());
-//                     // })
-//                     .add(norm_kind.build(&path / "norm", inner_c as i64))
-//                     // .inspect(|xs| {
-//                     //     debug_assert!(xs.is_all_finite());
-//                     // })
-//                     .add_fn(|xs| xs.lrelu())
-//             };
-
-//             (1..3).fold(seq, |seq, index| {
-//                 let path = &path / format!("block_{}", index);
-
-//                 seq.add(nn::conv2d(
-//                     &path / "conv",
-//                     inner_c as i64,
-//                     inner_c as i64,
-//                     1,
-//                     nn::ConvConfig {
-//                         padding: 0,
-//                         bias,
-//                         ..Default::default()
-//                     },
-//                 ))
-//                 .add(norm_kind.build(&path / "norm", inner_c as i64))
-//                 .add_fn(|xs| xs.lrelu())
-//             })
-//         };
-
-//         let decoder = {
-//             let path = path / "decoder";
-//             let num_blocks = 3;
-
-//             let seq = (0..(num_blocks - 1)).fold(nn::seq_t(), |seq, index| {
-//                 let path = &path / format!("block_{}", index);
-
-//                 seq.add(nn::conv2d(
-//                     &path / "conv",
-//                     inner_c as i64,
-//                     inner_c as i64,
-//                     1,
-//                     nn::ConvConfig {
-//                         padding: 0,
-//                         bias,
-//                         ..Default::default()
-//                     },
-//                 ))
-//                 .add(norm_kind.build(&path / "norm", inner_c as i64))
-//                 .add_fn(|xs| xs.lrelu())
-//             });
-
-//             let seq = {
-//                 let path = &path / format!("block_{}", num_blocks - 1);
-//                 seq.add(nn::conv2d(
-//                     &path / "conv",
-//                     inner_c as i64,
-//                     in_c as i64,
-//                     1,
-//                     nn::ConvConfig {
-//                         padding: 0,
-//                         bias,
-//                         ..Default::default()
-//                     },
-//                 ))
-//                 .add(norm_kind.build(&path / "norm", in_c as i64))
-//                 .add_fn(|xs| xs.lrelu())
-//             };
-
-//             seq
-//         };
-
-//         (
-//             ChannelWiseEncoder {
-//                 forward_fn: encoder,
-//             },
-//             ChannelWiseDecoder {
-//                 forward_fn: decoder,
-//             },
-//         )
-//     }
-// }
-
-// #[derive(Debug)]
-// pub struct ChannelWiseEncoder {
-//     forward_fn: nn::SequentialT,
-// }
-
-// #[derive(Debug)]
-// pub struct ChannelWiseDecoder {
-//     forward_fn: nn::SequentialT,
-// }
-
-// impl nn::ModuleT for ChannelWiseEncoder {
-//     fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
-//         self.forward_fn.forward_t(input, train)
-//     }
-// }
-
-// impl nn::ModuleT for ChannelWiseDecoder {
-//     fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
-//         self.forward_fn.forward_t(input, train)
-//     }
-// }
 
 mod resnet {
     use super::*;
