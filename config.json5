@@ -101,8 +101,8 @@
         "train_backward_consistency_gen_steps": 0,
     },
     "logging": {
-        "log_dir": "log-test",
-        // "log_dir": "log-wayside-64x64-2021-09-02",
+        // "log_dir": "log-test",
+        "log_dir": "log-wayside-64x64-2021-09-24",
         "save_image_steps": 10,
         "save_checkpoint_steps": 1000,
         "save_detector_checkpoint": true,
@@ -110,6 +110,6 @@
         "save_discriminator_checkpoint": true,
         "save_transformer_checkpoint": true,
         "save_image_seq_discriminator_checkpoint": true,
-        "save_motion_field_image": true,
+        "save_motion_field_image": false,
     },
 }
