@@ -1,6 +1,6 @@
 use super::misc::{NormKind, PaddingKind};
 use crate::{common::*, message as msg, utils::*};
-use tch_modules::GroupNormInit;
+// use tch_modules::GroupNormInit;
 
 use denormed_detection::*;
 use detection_encode::*;
@@ -953,11 +953,8 @@ mod attention_based {
             path: impl Borrow<nn::Path<'a>>,
             input_len: usize,
             num_classes: usize,
-            inner_c: usize,
+            _inner_c: usize,
         ) -> Result<AttentionBasedTransformer> {
-            // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
-            const NUM_DOWN: i64 = 3;
-
             let path = path.borrow();
             let Self {
                 ksize,
@@ -972,7 +969,7 @@ mod attention_based {
             let attention_size = attention_size as i64;
             let num_attention_up = (attention_size as f64).log2().ceil() as usize;
 
-            let transform = resnet::ResnetInit {
+            let transform = resnet2::Resnet2Init {
                 ksize,
                 norm_kind,
                 padding_kind,
@@ -982,9 +979,23 @@ mod attention_based {
             }
             .build(
                 path / "transform",
-                (5 + num_classes) * input_len,
-                3,
-                inner_c,
+                &velcro::vec![
+                    // input
+                    (5 + num_classes) * input_len,
+                    // down
+                    16,
+                    16,
+                    32,
+                    // mid
+                    32,
+                    32,
+                    32,
+                    // up
+                    16,
+                    8,
+                    ..vec![8; num_attention_up],
+                    3
+                ],
             )?;
 
             let forward_fn = Box::new(
@@ -1038,8 +1049,9 @@ mod attention_based {
                         .permute(&[0, 1, 3, 5, 2, 4]);
                     let attention = xs
                         .i((.., 0..1, .., .., .., ..))
-                        .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                        .reshape(&[in_b, 1, attention_h * attention_w, in_h, in_w])
                         .softmax(2, Kind::Float);
+
                     let cy_diff = xs.i((.., 1..2, .., .., .., ..)).sigmoid().div(in_h as f64);
                     let cx_diff = xs.i((.., 2..3, .., .., .., ..)).sigmoid().div(in_w as f64);
 
@@ -1052,47 +1064,75 @@ mod attention_based {
                             &[patch_h / 2, patch_w / 2], // padding
                             &[1, 1],                     // stride
                         );
-                        let unfold_h = if patch_h & 1 == 1 { in_h + 1 } else { in_h };
-                        let unfold_w = if patch_w & 1 == 1 { in_w + 1 } else { in_w };
+                        let unfold_h = if patch_h & 1 == 1 { in_h } else { in_h + 1 };
+                        let unfold_w = if patch_w & 1 == 1 { in_w } else { in_w + 1 };
 
                         xs.reshape(&[in_b, -1, patch_h, patch_w, unfold_h, unfold_w])
                             .i((.., .., .., .., 0..in_h, 0..in_w))
                     };
 
-                    let obj_logit =
-                        make_patches(&last_input_det.obj_logit, attention_h, attention_w)
-                            .view([in_b, 1, attention_h * attention_w, in_h, in_w])
-                            .mul(&attention)
-                            .sum_dim_intlist(&[2], false, Kind::Float);
-                    let class_logit =
-                        make_patches(&last_input_det.class_logit, attention_h, attention_w)
-                            .view([
-                                in_b,
-                                num_classes as i64,
-                                attention_h * attention_w,
-                                in_h,
-                                in_w,
-                            ])
-                            .mul(&attention)
-                            .sum_dim_intlist(&[2], false, Kind::Float);
-                    let cy_ratio = (make_patches(&last_input_det.cy, attention_h, attention_w)
-                        + cy_diff)
+                    let obj_logit = make_patches(
+                        &last_input_det.obj_logit.view([in_b, 1, in_h, in_w]),
+                        attention_h,
+                        attention_w,
+                    )
+                    .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                    .mul(&attention)
+                    .sum_dim_intlist(&[2], false, Kind::Float)
+                    .view([in_b, 1, 1, in_h, in_w]);
+                    let class_logit = make_patches(
+                        &last_input_det
+                            .class_logit
+                            .view([in_b, num_classes as i64, in_h, in_w]),
+                        attention_h,
+                        attention_w,
+                    )
+                    .view([
+                        in_b,
+                        num_classes as i64,
+                        attention_h * attention_w,
+                        in_h,
+                        in_w,
+                    ])
+                    .mul(&attention)
+                    .sum_dim_intlist(&[2], false, Kind::Float)
+                    .view([in_b, num_classes as i64, 1, in_h, in_w]);
+                    let cy_ratio = (make_patches(
+                        &last_input_det.cy.view([in_b, 1, in_h, in_w]),
+                        attention_h,
+                        attention_w,
+                    ) + cy_diff)
                         .view([in_b, 1, attention_h * attention_w, in_h, in_w])
                         .mul(&attention)
-                        .sum_dim_intlist(&[2], false, Kind::Float);
-                    let cx_ratio = (make_patches(&last_input_det.cx, attention_h, attention_w)
-                        + cx_diff)
+                        .sum_dim_intlist(&[2], false, Kind::Float)
+                        .view([in_b, 1, 1, in_h, in_w]);
+                    let cx_ratio = (make_patches(
+                        &last_input_det.cx.view([in_b, 1, in_h, in_w]),
+                        attention_h,
+                        attention_w,
+                    ) + cx_diff)
                         .view([in_b, 1, attention_h * attention_w, in_h, in_w])
                         .mul(&attention)
-                        .sum_dim_intlist(&[2], false, Kind::Float);
-                    let h_ratio = make_patches(&last_input_det.h, attention_h, attention_w)
-                        .view([in_b, 1, attention_h * attention_w, in_h, in_w])
-                        .mul(&attention)
-                        .sum_dim_intlist(&[2], false, Kind::Float);
-                    let w_ratio = make_patches(&last_input_det.w, attention_h, attention_w)
-                        .view([in_b, 1, attention_h * attention_w, in_h, in_w])
-                        .mul(&attention)
-                        .sum_dim_intlist(&[2], false, Kind::Float);
+                        .sum_dim_intlist(&[2], false, Kind::Float)
+                        .view([in_b, 1, 1, in_h, in_w]);
+                    let h_ratio = make_patches(
+                        &last_input_det.h.view([in_b, 1, in_h, in_w]),
+                        attention_h,
+                        attention_w,
+                    )
+                    .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                    .mul(&attention)
+                    .sum_dim_intlist(&[2], false, Kind::Float)
+                    .view([in_b, 1, 1, in_h, in_w]);
+                    let w_ratio = make_patches(
+                        &last_input_det.w.view([in_b, 1, in_h, in_w]),
+                        attention_h,
+                        attention_w,
+                    )
+                    .view([in_b, 1, attention_h * attention_w, in_h, in_w])
+                    .mul(&attention)
+                    .sum_dim_intlist(&[2], false, Kind::Float)
+                    .view([in_b, 1, 1, in_h, in_w]);
 
                     let output_det = DenseDetectionTensorUnchecked {
                         cy: cy_ratio,
@@ -1393,6 +1433,192 @@ mod resnet {
     }
 
     impl nn::ModuleT for Resnet {
+        fn forward_t(&self, xs: &Tensor, train: bool) -> Tensor {
+            self.seq.forward_t(xs, train)
+        }
+    }
+}
+
+mod resnet2 {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct Resnet2Init {
+        pub padding_kind: PaddingKind,
+        pub norm_kind: NormKind,
+        pub ksize: usize,
+        pub num_down: usize,
+        pub num_mid: usize,
+        pub num_up: usize,
+    }
+
+    impl Default for Resnet2Init {
+        fn default() -> Self {
+            Self {
+                padding_kind: PaddingKind::Reflect,
+                norm_kind: NormKind::InstanceNorm,
+                ksize: 5,
+                num_down: 0,
+                num_mid: 3,
+                num_up: 0,
+            }
+        }
+    }
+
+    impl Resnet2Init {
+        pub fn build<'a>(
+            self,
+            path: impl Borrow<nn::Path<'a>>,
+            channels: &[usize],
+        ) -> Result<Resnet2> {
+            let path = path.borrow();
+            let Self {
+                padding_kind,
+                norm_kind,
+                ksize,
+                num_down,
+                num_mid,
+                num_up,
+            } = self;
+            let bias = norm_kind == NormKind::InstanceNorm;
+            let padding = ksize / 2;
+            let ksize = ksize as i64;
+            let total_blocks = num_down + num_mid + num_up;
+
+            ensure!(total_blocks > 0);
+            ensure!(channels.len() == num_down + num_mid + num_up + 1);
+            let channels = channels.iter().map(|&c| c as i64);
+            let mut channel_pairs = izip!(channels.clone(), channels.skip(1));
+
+            let seq = nn::seq_t();
+
+            // down sampling blocks
+            let seq = (0..num_down).fold(seq, |seq, index| {
+                let path = path / format!("block_{}", index);
+                let (in_c, out_c) = channel_pairs.next().unwrap();
+
+                seq.add(nn::conv2d(
+                    &path / "conv",
+                    in_c,
+                    out_c,
+                    ksize,
+                    nn::ConvConfig {
+                        stride: 2,
+                        padding: padding as i64,
+                        bias,
+                        ..Default::default()
+                    },
+                ))
+                .add(norm_kind.build(&path / "norm", out_c))
+                .add_fn(|xs| xs.lrelu())
+                .inspect(|xs| {
+                    debug_assert!(xs.is_all_finite());
+                })
+            });
+
+            // resnet blocks
+            let seq = (0..num_mid).fold(seq, |seq, index| {
+                let path = path / format!("block_{}", index + num_down);
+                let (in_c, out_c) = channel_pairs.next().unwrap();
+
+                let branch = nn::seq_t()
+                    // first part
+                    .add(padding_kind.build([padding, padding, padding, padding]))
+                    .add(nn::conv2d(
+                        &path / "conv1",
+                        in_c,
+                        out_c,
+                        ksize,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm1", out_c))
+                    .add_fn(|xs| xs.lrelu())
+                    .inspect(|xs| {
+                        debug_assert!(xs.is_all_finite());
+                    })
+                    // second part
+                    .add(padding_kind.build([padding, padding, padding, padding]))
+                    .add(nn::conv2d(
+                        &path / "conv2",
+                        out_c,
+                        out_c,
+                        ksize,
+                        nn::ConvConfig {
+                            padding: 0,
+                            bias,
+                            ..Default::default()
+                        },
+                    ))
+                    .add(norm_kind.build(&path / "norm2", out_c))
+                    .inspect(|xs| {
+                        debug_assert!(xs.is_all_finite());
+                    })
+                    .add_fn(|xs| xs.lrelu())
+                    .inspect(|xs| {
+                        debug_assert!(xs.is_all_finite());
+                    });
+
+                // addition
+                seq.add_fn_t(move |xs, train| xs + branch.forward_t(xs, train))
+                    .inspect(|xs| {
+                        debug_assert!(xs.is_all_finite());
+                    })
+            });
+
+            // up sampling blocks
+            let seq = (0..num_up).fold(seq, |seq, index| {
+                let path = path / format!("block_{}", index + num_down + num_mid);
+                let (in_c, out_c) = channel_pairs.next().unwrap();
+
+                seq.add_fn(|xs| {
+                    let (_, _, h, w) = xs.size4().unwrap();
+                    xs.upsample_nearest2d(&[h * 2, w * 2], None, None)
+                })
+                .inspect(|xs| {
+                    debug_assert!(xs.is_all_finite());
+                })
+                .add(padding_kind.build([padding, padding, padding, padding]))
+                .inspect(|xs| {
+                    debug_assert!(xs.is_all_finite());
+                })
+                .add(nn::conv2d(
+                    &path / "conv",
+                    in_c,
+                    out_c,
+                    ksize,
+                    nn::ConvConfig {
+                        padding: 0,
+                        bias,
+                        ..Default::default()
+                    },
+                ))
+                .inspect(|xs| {
+                    debug_assert!(xs.is_all_finite());
+                })
+                .add(norm_kind.build(&path / "norm", out_c))
+                .inspect(|xs| {
+                    debug_assert!(xs.is_all_finite());
+                })
+                .add_fn(|xs| xs.lrelu())
+                .inspect(|xs| {
+                    debug_assert!(xs.is_all_finite());
+                })
+            });
+
+            Ok(Resnet2 { seq })
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Resnet2 {
+        seq: nn::SequentialT,
+    }
+
+    impl nn::ModuleT for Resnet2 {
         fn forward_t(&self, xs: &Tensor, train: bool) -> Tensor {
             self.seq.forward_t(xs, train)
         }
