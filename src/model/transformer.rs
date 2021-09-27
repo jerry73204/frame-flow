@@ -1072,17 +1072,18 @@ mod attention_based {
                     };
 
                     let obj_logit = make_patches(
-                        &last_input_det.obj_logit.view([in_b, 1, in_h, in_w]),
+                        &last_input_det.obj_prob().view([in_b, 1, in_h, in_w]),
                         attention_h,
                         attention_w,
                     )
                     .view([in_b, 1, attention_h * attention_w, in_h, in_w])
                     .mul(&attention)
                     .sum_dim_intlist(&[2], false, Kind::Float)
-                    .view([in_b, 1, 1, in_h, in_w]);
+                    .view([in_b, 1, 1, in_h, in_w])
+                    .logit(1e-5);
                     let class_logit = make_patches(
                         &last_input_det
-                            .class_logit
+                            .class_prob()
                             .view([in_b, num_classes as i64, in_h, in_w]),
                         attention_h,
                         attention_w,
@@ -1096,7 +1097,8 @@ mod attention_based {
                     ])
                     .mul(&attention)
                     .sum_dim_intlist(&[2], false, Kind::Float)
-                    .view([in_b, num_classes as i64, 1, in_h, in_w]);
+                    .view([in_b, num_classes as i64, 1, in_h, in_w])
+                    .logit(1e-5);
                     let cy_ratio = (make_patches(
                         &last_input_det.cy.view([in_b, 1, in_h, in_w]),
                         attention_h,
@@ -1155,6 +1157,11 @@ mod attention_based {
                     let artifacts = with_artifacts.then(|| {
                         let attention_image =
                             attention.view([in_b, -1, attention_h, attention_w, in_h, in_w]);
+                        // let attention_image = make_patches(
+                        //     &last_input_det.obj_prob().view([in_b, 1, in_h, in_w]),
+                        //     attention_h,
+                        //     attention_w,
+                        // );
 
                         msg::TransformerArtifacts {
                             motion_potential: None,
