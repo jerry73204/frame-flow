@@ -75,7 +75,7 @@
     "train": {
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 80,
+        "batch_size": 60,
         // unet
         // "batch_size": 20,
         "image_size": 64,
@@ -102,7 +102,7 @@
     },
     "logging": {
         // "log_dir": "log-test",
-        "log_dir": "log-wayside-64x64-2021-09-24",
+        "log_dir": "log-wayside-64x64-2021-09-27",
         "save_image_steps": 10,
         "save_checkpoint_steps": 1000,
         "save_detector_checkpoint": true,
