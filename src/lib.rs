@@ -102,6 +102,7 @@ pub async fn start(config: config::Config) -> Result<()> {
             log_dir,
             log_rx,
             config.logging.save_motion_field_image,
+            config.logging.save_files,
         ))
         .map(|result| Fallible::Ok(result??))
     };

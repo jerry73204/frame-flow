@@ -4,6 +4,7 @@ pub async fn logging_worker(
     log_dir: impl AsRef<Path>,
     mut log_rx: mpsc::Receiver<msg::LogMessage>,
     save_motion_field_image: bool,
+    save_files: bool,
 ) -> Result<()> {
     let log_dir = log_dir.as_ref();
     let event_dir = log_dir.join("events");
@@ -374,7 +375,9 @@ pub async fn logging_worker(
                 let save_image_seq_async =
                     |name: &'static str, dir: Arc<PathBuf>, seq: Vec<Tensor>| async move {
                         let seq = tokio::task::spawn_blocking(move || -> Result<_> {
-                            save_image_seq(name, &**dir, &seq)?;
+                            if save_files {
+                                save_image_seq(name, &**dir, &seq)?;
+                            }
                             Ok(seq)
                         })
                         .await??;
