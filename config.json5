@@ -21,7 +21,7 @@
         },
         "detector": {
             "model_file": "cfg/model/yolov4-csp-custom-64x64-2021-08-21.json5",
-            "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-14-27-52.596+0800/checkpoints/detector_2021-09-03-03-45-45.465+0800_005100.ckpt",
+            "weights_file": "log-wayside-64x64-2021-09-29/2021-09-29-15-40-34.758+0800/checkpoints/detector_2021-09-29-17-56-14.503+0800_002999.ckpt",
             // "weights_file": "cfg/weights/yolov4-csp-custom-64x64-2021-08-22-12-41-00.823+0800_194000_02.21592.ckpt",
         },
         "generator": {
@@ -41,7 +41,7 @@
         "transformer": {
             "norm": "BatchNorm",
             "num_input_detections": 5,
-            // "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-04-58-18.338+0800/checkpoints/transformer_2021-09-02-09-13-43.222+0800_002100.ckpt",
+            "weights_file": "log-wayside-64x64-2021-09-29/2021-09-29-15-40-34.758+0800/checkpoints/transformer_2021-09-29-17-56-14.503+0800_002999.ckpt",
         },
         "image_seq_discriminator": {
             "num_detections": 4,
@@ -91,7 +91,7 @@
         "warm_up_steps": 0,
         "label_flip_prob": 0,
         "critic_noise_prob": 0.5,
-        "train_detector_steps": 0,
+        "train_detector_steps": 1,
         "train_discriminator_steps": 0,
         "train_generator_steps": 0,
         "train_retraction_identity_steps": 0,
@@ -102,8 +102,8 @@
     },
     "logging": {
         // "log_dir": "log-test",
-        "log_dir": "log-wayside-64x64-2021-09-27",
-        "save_image_steps": 10,
+        "log_dir": "log-wayside-64x64-2021-09-29",
+        "save_image_steps": 100,
         "save_checkpoint_steps": 1000,
         "save_detector_checkpoint": true,
         "save_generator_checkpoint": true,
