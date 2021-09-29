@@ -8,6 +8,59 @@ use detection_encode::*;
 pub use attention_based::*;
 pub use motion_based::*;
 pub use potential_based::*;
+pub use transformer::*;
+
+mod transformer {
+    use super::*;
+
+    #[derive(Debug)]
+    pub enum Transformer {
+        PotentialBased(PotentialBasedTransformer),
+        MotionBased(MotionBasedTransformer),
+        AttentionBased(AttentionBasedTransformer),
+    }
+
+    impl From<AttentionBasedTransformer> for Transformer {
+        fn from(v: AttentionBasedTransformer) -> Self {
+            Self::AttentionBased(v)
+        }
+    }
+
+    impl From<MotionBasedTransformer> for Transformer {
+        fn from(v: MotionBasedTransformer) -> Self {
+            Self::MotionBased(v)
+        }
+    }
+
+    impl From<PotentialBasedTransformer> for Transformer {
+        fn from(v: PotentialBasedTransformer) -> Self {
+            Self::PotentialBased(v)
+        }
+    }
+
+    impl Transformer {
+        pub fn input_len(&self) -> usize {
+            match self {
+                Transformer::PotentialBased(model) => model.input_len(),
+                Transformer::MotionBased(model) => model.input_len(),
+                Transformer::AttentionBased(model) => model.input_len(),
+            }
+        }
+
+        pub fn forward_t(
+            &self,
+            input: &[impl Borrow<DenseDetectionTensorList>],
+            train: bool,
+            with_artifacts: bool,
+        ) -> Result<(DenseDetectionTensorList, Option<msg::TransformerArtifacts>)> {
+            match self {
+                Transformer::PotentialBased(model) => model.forward_t(input, train, with_artifacts),
+                Transformer::MotionBased(model) => model.forward_t(input, train, with_artifacts),
+                Transformer::AttentionBased(model) => model.forward_t(input, train, with_artifacts),
+            }
+        }
+    }
+}
 
 mod potential_based {
     use super::*;
@@ -449,8 +502,8 @@ mod potential_based {
                     .unwrap();
 
                     let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
-                        motion_potential: Some(motion_potential_pixel),
-                        motion_field: Some(motion_field_pixel),
+                        motion_potential_pixel: Some(motion_potential_pixel),
+                        motion_field_pixel: Some(motion_field_pixel),
                         ..Default::default()
                     });
 
@@ -532,6 +585,7 @@ mod motion_based {
             num_classes: usize,
             inner_c: usize,
         ) -> Result<MotionBasedTransformer> {
+            const OBJ_PROB_THRESHOLD: f64 = 0.5;
             // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
 
             let path = path.borrow();
@@ -664,6 +718,8 @@ mod motion_based {
             .try_collect()
             .unwrap();
 
+            let scaling_coefs = [4.0, 2.0, 1.0, 0.5, 0.5, 0.5];
+
             let forward_fn = Box::new(
                 move |input: &[&DenseDetectionTensorList],
                       train: bool,
@@ -679,7 +735,7 @@ mod motion_based {
                         .all(|tensor| tensor.num_classes() == num_classes));
                     debug_assert!(input.iter().any(|&list| list.is_all_finite()));
 
-                    let device = input[0].device();
+                    // let device = input[0].device();
                     let bsize = input[0].batch_size() as i64;
                     let in_h = input[0].tensors[0].height() as i64;
                     let in_w = input[0].tensors[0].width() as i64;
@@ -693,6 +749,15 @@ mod motion_based {
                         .all(|det| det.height() == in_h as usize
                             && det.width() == in_w as usize
                             && &det.anchors == anchors));
+
+                    // unpack last input detection
+                    let last_det = &input.last().unwrap().tensors[0];
+                    let cy_ratio = &last_det.cy;
+                    let cx_ratio = &last_det.cx;
+                    let h_ratio = &last_det.h;
+                    let w_ratio = &last_det.w;
+                    let obj_logit = &last_det.obj_logit;
+                    let class_logit = &last_det.class_logit;
 
                     // merge input sequence into a context tensor
                     let context = {
@@ -728,63 +793,112 @@ mod motion_based {
                             .collect()
                     };
 
-                    // generate motion potentials
-                    const SCALE: f64 = 0.01;
+                    // generate down sampled objectness images
+                    let down_sampled_obj_probs = {
+                        // merge batch and anchor dimensions
+                        let obj_prob =
+                            obj_logit
+                                .sigmoid()
+                                .view([bsize * num_anchors, 1, in_h, in_w]);
 
-                    let motion_field = {
-                        let mut pairs = izip!(features.iter().rev(), motion_maps.iter().rev());
-                        let (feature, map) = pairs.next().unwrap();
-                        let init_field = map.forward_t(feature, train).div(SCALE).tanh().mul(SCALE);
+                        // thresholding
+                        // let obj_prob = obj_prob.ge(OBJ_PROB_THRESHOLD).to_kind(Kind::Float);
 
-                        pairs.fold(init_field, |prev_field, (feature, map)| {
-                            let (_, _, prev_h, prev_w) = prev_field.size4().unwrap();
-                            let next_h = prev_h * 2;
-                            let next_w = prev_w * 2;
+                        let orig_obj_prob = obj_prob.shallow_clone();
 
-                            // upsample motion from prev step
-                            let prev_field =
-                                prev_field.upsample_nearest2d(&[next_h, next_w], None, None);
+                        let latter = (1..6).map(|power| {
+                            orig_obj_prob.upsample_bilinear2d(
+                                &[in_h / 2i64.pow(power), in_w / 2i64.pow(power)],
+                                false,
+                                None,
+                                None,
+                            )
+                        });
 
-                            // cat prev motion to curr feature
-                            let xs = Tensor::cat(&[feature, &prev_field], 1);
-
-                            // predict potential
-                            let next_field =
-                                prev_field + map.forward_t(&xs, train).div(SCALE).tanh().mul(SCALE);
-
-                            next_field
-                        })
+                        velcro::vec![obj_prob, ..latter]
                     };
-                    debug_assert!(motion_field.is_all_finite());
+
+                    // generate motion potentials
+
+                    let motion_field_pixel = {
+                        let mut tuples = izip!(
+                            features.iter().rev(),
+                            motion_maps.iter().rev(),
+                            scaling_coefs.iter().cloned().rev(),
+                            down_sampled_obj_probs.iter().rev(),
+                        );
+                        let (feature, map, scaling_coef, _) = tuples.next().unwrap();
+                        let init_field = map.forward_t(feature, train) * scaling_coef;
+
+                        tuples.fold(
+                            init_field,
+                            |prev_field_pixel, (feature, map, scaling_coef, obj_prob)| {
+                                let (_, _, prev_h, prev_w) = prev_field_pixel.size4().unwrap();
+                                let next_h = prev_h * 2;
+                                let next_w = prev_w * 2;
+
+                                // upsample motion from prev step
+                                let prev_field_pixel = prev_field_pixel.upsample_nearest2d(
+                                    &[next_h, next_w],
+                                    None,
+                                    None,
+                                );
+
+                                let prev_field_ratio = {
+                                    // motion vector in ratio unit
+                                    let dx_pixel = prev_field_pixel.i((.., 0..1, .., ..));
+                                    let dy_pixel = prev_field_pixel.i((.., 1..2, .., ..));
+
+                                    // scale [0..in_h, 0..in_w] = [0..1, 0..1]
+                                    let dx_ratio = &dx_pixel / in_w as f64;
+                                    let dy_ratio = &dy_pixel / in_h as f64;
+                                    Tensor::cat(&[&dx_ratio, &dy_ratio], 1)
+                                };
+
+                                let warped_obj_prob = WarpInit::default()
+                                    .build(&prev_field_ratio)
+                                    .unwrap()
+                                    .forward(obj_prob);
+
+                                let corr =
+                                    obj_prob.partial_correlation_2d(&warped_obj_prob, [5, 5]);
+
+                                // cat prev motion to curr feature
+                                let xs = Tensor::cat(&[feature, &corr], 1);
+
+                                // predict potential
+                                let addition = map.forward_t(&xs, train) * scaling_coef;
+                                let next_field_pixel = prev_field_pixel + addition;
+
+                                next_field_pixel
+                            },
+                        )
+                    };
+                    debug_assert!(motion_field_pixel.is_all_finite());
+                    // dbg!(motion_field_pixel.abs().max());
+
+                    // let motion_field_pixel_fake = {
+                    //     let dx = Tensor::full(&[bsize, 1, in_h, in_w], 16.0, (Kind::Float, device));
+                    //     let dy = Tensor::full(&[bsize, 1, in_h, in_w], 0.0, (Kind::Float, device));
+                    //     Tensor::cat(&[dx, dy], 1)
+                    // };
+
+                    // let motion_field_pixel = motion_field_pixel_fake + motion_field_pixel * 0.0;
 
                     // motion vector in ratio unit
-                    let motion_dx = motion_field.i((.., 0..1, .., ..));
-                    let motion_dy = motion_field.i((.., 1..2, .., ..));
+                    let motion_dx_pixel = motion_field_pixel.i((.., 0..1, .., ..));
+                    let motion_dy_pixel = motion_field_pixel.i((.., 1..2, .., ..));
+                    let motion_norm_pixel = (motion_dx_pixel.pow(2.0) + motion_dy_pixel.pow(2.0))
+                        .sqrt()
+                        .mean_dim(&[2, 3], false, Kind::Float);
 
-                    // dbg!((motion_field.max(), motion_field.min()));
+                    // scale [0..in_h, 0..in_w] = [0..1, 0..1]
+                    let motion_dx_ratio = &motion_dx_pixel / in_w as f64;
+                    let motion_dy_ratio = &motion_dy_pixel / in_h as f64;
+                    let motion_field_ratio = Tensor::cat(&[&motion_dx_ratio, &motion_dy_ratio], 1);
 
                     // compute grid, where each value range in [-1, 1]
-                    let grid = {
-                        let ident_grid = {
-                            let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
-                                .expand(&[bsize, 2, 3], false)
-                                .to_device(device);
-                            Tensor::affine_grid_generator(&theta, &[bsize, 1, in_h, in_w], false)
-                        };
-
-                        // sample_grid defines boundaries in [-1, 1], while our motion
-                        // vector defines boundaries in [0, 1].
-                        &motion_field.permute(&[0, 2, 3, 1]) * 2.0 + ident_grid
-                    };
-
-                    // unpack last input detection
-                    let last_det = &input.last().unwrap().tensors[0];
-                    let cy_ratio = &last_det.cy;
-                    let cx_ratio = &last_det.cx;
-                    let h_ratio = &last_det.h;
-                    let w_ratio = &last_det.w;
-                    let obj_logit = &last_det.obj_logit;
-                    let class_logit = &last_det.class_logit;
+                    let warp = WarpInit::default().build(&motion_field_ratio).unwrap();
 
                     // merge batch and anchor dimensions
                     let cy_ratio = cy_ratio.permute(&[0, 2, 1, 3, 4]).view([-1, 1, in_h, in_w]);
@@ -799,43 +913,24 @@ mod motion_based {
                             .permute(&[0, 2, 1, 3, 4])
                             .view([-1, num_classes, in_h, in_w]);
 
+                    // threshold objectness
+                    // dbg!(obj_logit.min(), obj_logit.max());
+                    // dbg!(obj_logit.sigmoid().min(), obj_logit.sigmoid().max());
+                    // dbg!(obj_logit.sigmoid().mean(Kind::Float));
+
+                    // let obj_logit = obj_logit
+                    //     .sigmoid()
+                    //     .ge(OBJ_PROB_THRESHOLD)
+                    //     .to_kind(Kind::Float)
+                    //     .logit(1e-5);
+
                     // warp values
-                    let cy_ratio = (&cy_ratio + &motion_dy).grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let cx_ratio = (&cx_ratio + &motion_dx).grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let h_ratio = h_ratio.grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let w_ratio = w_ratio.grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let obj_logit = obj_logit.grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
-                    let class_logit = class_logit.grid_sampler(
-                        &grid, // grid
-                        1,     // nearest interpolation
-                        0,     // pad zeros
-                        false,
-                    );
+                    let cy_ratio = warp.forward(&(&cy_ratio + &motion_dy_ratio));
+                    let cx_ratio = warp.forward(&(&cx_ratio + &motion_dx_ratio));
+                    let h_ratio = warp.forward(&h_ratio);
+                    let w_ratio = warp.forward(&w_ratio);
+                    let obj_logit = warp.forward(&obj_logit);
+                    let class_logit = warp.forward(&class_logit);
 
                     // split batch and anchor dimensions
                     let cy_ratio = cy_ratio
@@ -870,8 +965,8 @@ mod motion_based {
                     .unwrap();
 
                     let artifacts = with_artifacts.then(|| msg::TransformerArtifacts {
-                        motion_potential: None,
-                        motion_field: Some(motion_field),
+                        motion_field_pixel: Some(motion_field_pixel),
+                        motion_norm_pixel: Some(motion_norm_pixel),
                         ..Default::default()
                     });
 
@@ -1052,8 +1147,8 @@ mod attention_based {
                         .reshape(&[in_b, 1, attention_h * attention_w, in_h, in_w])
                         .softmax(2, Kind::Float);
 
-                    let cy_diff = xs.i((.., 1..2, .., .., .., ..)).sigmoid().div(in_h as f64);
-                    let cx_diff = xs.i((.., 2..3, .., .., .., ..)).sigmoid().div(in_w as f64);
+                    let cy_diff = xs.i((.., 1..2, .., .., .., ..)).tanh().div(in_h as f64);
+                    let cx_diff = xs.i((.., 2..3, .., .., .., ..)).tanh().div(in_w as f64);
 
                     let make_patches = |xs: &Tensor, patch_h, patch_w| {
                         let (_, _, in_h, in_w) = xs.size4().unwrap();
@@ -1164,9 +1259,8 @@ mod attention_based {
                         // );
 
                         msg::TransformerArtifacts {
-                            motion_potential: None,
-                            motion_field: None,
                             attention_image: Some(attention_image),
+                            ..Default::default()
                         }
                     });
 

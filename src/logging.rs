@@ -59,8 +59,8 @@ pub async fn logging_worker(
                 transformer_det_seq,
                 transformer_image_seq,
 
-                motion_potential_seq,
-                motion_field_seq,
+                motion_potential_pixel_seq,
+                motion_field_pixel_seq,
                 attention_image_seq,
             }) => {
                 let step = step as i64;
@@ -485,32 +485,41 @@ pub async fn logging_worker(
                     .await?;
                 }
 
-                if let Some(seq) = motion_potential_seq {
+                if let Some(seq) = motion_potential_pixel_seq {
                     let seq = save_image_seq_async("motion_potential", sub_image_dir.clone(), seq)
                         .await?;
                     save_image_seq_to_tfrecord(&mut event_writer, "motion_potential", step, seq)
                         .await?;
                 }
 
-                if let Some(seq) = motion_field_seq {
-                    let (bsize, _, hsize, wsize) = seq[0].size4().unwrap();
+                if let Some(motion_field_pixel_seq) = motion_field_pixel_seq {
+                    let (bsize, _, hsize, wsize) = motion_field_pixel_seq[0].size4().unwrap();
 
                     if save_motion_field_image {
-                        let ident_grid_ratio = {
+                        let ident_grid = {
                             let theta = Tensor::from_cv([[[1f32, 0.0, 0.0], [0.0, 1.0, 0.0]]])
                                 .expand(&[bsize, 2, 3], false);
                             Tensor::affine_grid_generator(&theta, &[bsize, 1, hsize, wsize], false)
-                                .add(1.0)
-                                .mul(0.5)
                         };
 
-                        let field_image_seq: Vec<_> = seq
+                        let field_image_seq: Vec<_> = motion_field_pixel_seq
                             .iter()
-                            .map(|field| {
-                                let src_grid_ratio =
-                                    &ident_grid_ratio - field.permute(&[0, 2, 3, 1]);
-                                let src_x_pixel = src_grid_ratio.i((.., .., .., 0..1)) * wsize;
-                                let src_y_pixel = src_grid_ratio.i((.., .., .., 1..2)) * hsize;
+                            .map(|field_pixel| {
+                                // dbg!(field.abs().max());
+
+                                let dx_pixel = field_pixel.i((.., 0..1, .., ..));
+                                let dy_pixel = field_pixel.i((.., 1..2, .., ..));
+
+                                let dx_grid = dx_pixel * 2.0 / wsize as f64;
+                                let dy_grid = dy_pixel * 2.0 / hsize as f64;
+                                let field_grid = Tensor::cat(&[dx_grid, dy_grid], 1);
+
+                                let src_grid = &ident_grid - field_grid.permute(&[0, 2, 3, 1]);
+                                let src_x_grid = src_grid.i((.., .., .., 0..1));
+                                let src_y_grid = src_grid.i((.., .., .., 1..2));
+
+                                let src_x_pixel = (src_x_grid + 1.0) * wsize as f64 * 0.5 - 0.5;
+                                let src_y_pixel = (src_y_grid + 1.0) * hsize as f64 * 0.5 - 0.5;
 
                                 const SCALE: f64 = 8.0;
 
@@ -549,11 +558,7 @@ pub async fn logging_worker(
                                                 let magnitude = (dx.powi(2) + dy.powi(2)).sqrt();
 
                                                 let color: Srgb<_> = Hsv::from_components((
-                                                    RgbHue::from_radians(
-                                                        // 180.0 * row as f64 / hsize as f64
-                                                        //     + 180.0 * col as f64 / wsize as f64,
-                                                        angle,
-                                                    ),
+                                                    RgbHue::from_radians(angle),
                                                     1.0,
                                                     (magnitude / 8.0).max(1.0),
                                                 ))
@@ -601,7 +606,7 @@ pub async fn logging_worker(
                         .await?;
                     }
 
-                    let max_motion_field_magnitude: R64 = seq
+                    let max_motion_field_magnitude: R64 = motion_field_pixel_seq
                         .iter()
                         .map(|field| {
                             let max: f64 = field

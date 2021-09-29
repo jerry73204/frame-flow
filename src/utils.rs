@@ -528,6 +528,7 @@ mod warp {
             };
 
             let grid = ident_grid.to_device(field.device()) - field.permute(&[0, 2, 3, 1]) * 2.0;
+            // let grid = ident_grid;
 
             Ok(Warp {
                 grid,
@@ -541,7 +542,7 @@ mod warp {
         fn default() -> Self {
             Self {
                 mode: WarpMode::Nearest,
-                padding: WarpPadding::Zeros,
+                padding: WarpPadding::Border,
             }
         }
     }
@@ -568,6 +569,7 @@ mod warp {
                 padding as i64,
                 false,
             )?;
+
             Ok(output)
         }
 
