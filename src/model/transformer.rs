@@ -585,7 +585,7 @@ mod motion_based {
             num_classes: usize,
             inner_c: usize,
         ) -> Result<MotionBasedTransformer> {
-            const OBJ_PROB_THRESHOLD: f64 = 0.5;
+            // const OBJ_PROB_THRESHOLD: f64 = 0.5;
             // const BORDER_SIZE_RATIO: f64 = 4.0 / 64.0;
 
             let path = path.borrow();
