@@ -2,10 +2,9 @@ use crate::{
     common::*,
     config, message as msg,
     model::{
-        AttentionBasedTransformer, AttentionBasedTransformerInit, CustomGeneratorInit,
-        DetectionEmbedding, DetectionEmbeddingInit, DetectionSimilarity, Discriminator, Generator,
-        MotionBasedTransformerInit, NLayerDiscriminatorInit, ResnetGeneratorInit, Transformer,
-        UnetGeneratorInit, WGanGp, WGanGpInit,
+        CustomGeneratorInit, DetectionEmbedding, DetectionEmbeddingInit, DetectionSimilarity,
+        Discriminator, Generator, MotionBasedTransformerInit, NLayerDiscriminatorInit,
+        ResnetGeneratorInit, Transformer, UnetGeneratorInit, WGanGp, WGanGpInit,
     },
     utils::{CustomTensorExt, DenseDetectionTensorListExt},
     FILE_STRFTIME,
@@ -342,7 +341,7 @@ impl TrainWorker {
         with_artifacts: bool,
     ) -> Result<(
         Option<f64>,
-        Option<DetectionSimilarity>,
+        Option<Vec<DetectionSimilarity>>,
         Option<msg::WeightsAndGrads>,
     )> {
         self.freeze_all_vs();
@@ -360,7 +359,7 @@ impl TrainWorker {
         let input_len = transformer_model.input_len();
         ensure!(input_len < seq_len);
 
-        let (loss, similarity) = (0..steps).try_fold((None, None), |_, _| -> Result<_> {
+        let (loss, similarity_vec) = (0..steps).try_fold((None, None), |_, _| -> Result<_> {
             clamp_running_var(transformer_vs);
             let real_det_seq: Vec<_> = gt_image_seq
                 .iter()
@@ -371,7 +370,7 @@ impl TrainWorker {
                 .map(|det| det.shallow_clone())
                 .collect();
 
-            let (total_consistency_loss, similarity): (AddVal<_>, First<_>) =
+            let (total_consistency_loss, similarity_vec): (AddVal<_>, Vec<_>) =
                 (0..=(seq_len - input_len - 1))
                     .map(|index| -> Result<_> {
                         let input_det_window = &real_det_seq[index..(index + input_len)];
@@ -417,13 +416,13 @@ impl TrainWorker {
             // optimize
             transformer_opt.backward_step(&total_loss);
 
-            Ok((Some(f64::from(total_loss)), similarity.into_inner()))
+            Ok((Some(f64::from(total_loss)), Some(similarity_vec)))
         })?;
 
         let weights_and_grads =
             (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(transformer_vs));
 
-        Ok((loss, similarity, weights_and_grads))
+        Ok((loss, similarity_vec, weights_and_grads))
     }
 
     pub fn train_backward_consistency_gen(
@@ -1249,7 +1248,7 @@ pub fn training_worker(
             .unzip_n();
 
         // train forward time consistency
-        let (forward_consistency_loss, forward_consistency_similarity, transformer_weights_1) =
+        let (forward_consistency_loss, forward_consistency_similarity_seq, transformer_weights_1) =
             worker.train_forward_consistency(
                 config.train.train_forward_consistency_steps,
                 &gt_image_seq,
@@ -1406,7 +1405,7 @@ pub fn training_worker(
                     .into_inner()
                     .unwrap(),
                 forward_consistency_loss,
-                forward_consistency_similarity,
+                forward_consistency_similarity_seq,
                 backward_consistency_gen_loss,
                 backward_consistency_disc_loss,
 
