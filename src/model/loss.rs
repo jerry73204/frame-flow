@@ -117,7 +117,7 @@ fn dense_detection_difference(
     src: &DenseDetectionTensor,
     dst: &DenseDetectionTensor,
 ) -> Result<DetectionSimilarity> {
-    const CONFIDENCE_THRESH: f64 = 0.4;
+    const CONFIDENCE_THRESH: f64 = 0.5;
 
     tch::no_grad(|| {
         ensure!(src.cy.size() == dst.cy.size());
