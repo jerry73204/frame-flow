@@ -73,6 +73,7 @@
         // "image_recon": "RaSGan",
     },
     "train": {
+        "dry_run_training": false,
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
         "batch_size": 30,

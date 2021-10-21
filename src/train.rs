@@ -6,7 +6,7 @@ use crate::{
         Discriminator, Generator, MotionBasedTransformerInit, NLayerDiscriminatorInit,
         ResnetGeneratorInit, Transformer, UnetGeneratorInit, WGanGp, WGanGpInit,
     },
-    utils::{CustomTensorExt, DenseDetectionTensorListExt},
+    utils::DenseDetectionTensorListExt,
     FILE_STRFTIME,
 };
 use yolo_dl::{loss::YoloLoss, model::YoloModel};
@@ -70,6 +70,7 @@ impl TrainWorker {
         image: &Tensor,
         labels: &[Vec<RatioRectLabel<R64>>],
         with_artifacts: bool,
+        dry_run: bool,
     ) -> Result<(Option<f64>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
         let Self {
@@ -93,13 +94,15 @@ impl TrainWorker {
                 detector_loss_fn.forward(&real_det.shallow_clone().try_into()?, labels);
 
             // optimize detector
-            detector_opt.backward_step(&real_det_loss.total_loss);
+            if !dry_run {
+                detector_opt.backward_step(&real_det_loss.total_loss);
+            }
 
             Ok(Some(f64::from(real_det_loss.total_loss)))
         })?;
 
-        let weights_and_grads =
-            (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(detector_vs));
+        let weights_and_grads = (!dry_run && with_artifacts && loss.is_some())
+            .then(|| get_weights_and_grads(detector_vs));
 
         Ok((loss, weights_and_grads))
     }
@@ -111,6 +114,7 @@ impl TrainWorker {
         input_det: &DenseDetectionTensorList,
         train_discriminator: bool,
         with_artifacts: bool,
+        dry_run: bool,
     ) -> Result<(Option<f64>, Option<Tensor>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
 
@@ -153,13 +157,15 @@ impl TrainWorker {
             let generator_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
 
             // optimize generator
-            generator_opt.backward_step(&generator_loss);
+            if !dry_run {
+                generator_opt.backward_step(&generator_loss);
+            }
 
             Ok((Some(f64::from(generator_loss)), Some(fake_image)))
         })?;
 
-        let weights_and_grads =
-            (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(generator_vs));
+        let weights_and_grads = (!dry_run && with_artifacts && loss.is_some())
+            .then(|| get_weights_and_grads(generator_vs));
 
         Ok((loss, fake_image, weights_and_grads))
     }
@@ -171,6 +177,7 @@ impl TrainWorker {
         input_det: &DenseDetectionTensorList,
         train_generator: bool,
         with_artifacts: bool,
+        dry_run: bool,
     ) -> Result<(Option<f64>, Option<Tensor>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
 
@@ -226,18 +233,22 @@ impl TrainWorker {
             )?;
 
             // optimize generator
-            discriminator_opt.backward_step(&loss);
+            if !dry_run {
+                discriminator_opt.backward_step(&loss);
+            }
 
             // clip gradient
-            if gan_loss_kind == config::GanLoss::WGan {
-                discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+            if !dry_run {
+                if gan_loss_kind == config::GanLoss::WGan {
+                    discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+                }
             }
 
             Ok((Some(f64::from(loss)), Some(fake_image)))
         })?;
 
-        let weights_and_grads =
-            (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(discriminator_vs));
+        let weights_and_grads = (!dry_run && with_artifacts && loss.is_some())
+            .then(|| get_weights_and_grads(discriminator_vs));
 
         Ok((loss, fake_image, weights_and_grads))
     }
@@ -247,6 +258,7 @@ impl TrainWorker {
         steps: usize,
         gt_det: &DenseDetectionTensorList,
         gt_labels: &[Vec<RatioRectLabel<R64>>],
+        dry_run: bool,
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
@@ -275,12 +287,14 @@ impl TrainWorker {
             let similarity = crate::model::dense_detection_list_similarity(gt_det, &recon_det)?;
 
             // optimize generator
-            generator_opt.backward_step(&loss.total_loss);
-            // detector_opt.zero_grad();
-            // generator_opt.zero_grad();
-            // loss.total_loss.backward();
-            // detector_opt.step();
-            // generator_opt.step();
+            if !dry_run {
+                generator_opt.backward_step(&loss.total_loss);
+                // detector_opt.zero_grad();
+                // generator_opt.zero_grad();
+                // loss.total_loss.backward();
+                // detector_opt.step();
+                // generator_opt.step();
+            }
 
             Ok((Some(f64::from(loss.total_loss)), Some(similarity)))
         })
@@ -291,6 +305,7 @@ impl TrainWorker {
         steps: usize,
         gt_image: &Tensor,
         gt_labels: &[Vec<RatioRectLabel<R64>>],
+        dry_run: bool,
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
@@ -321,12 +336,14 @@ impl TrainWorker {
             let similarity = crate::model::dense_detection_list_similarity(&orig_det, &recon_det)?;
 
             // optimize generator
-            generator_opt.backward_step(&loss.total_loss);
-            // detector_opt.zero_grad();
-            // generator_opt.zero_grad();
-            // loss.total_loss.backward();
-            // detector_opt.step();
-            // generator_opt.step();
+            if !dry_run {
+                generator_opt.backward_step(&loss.total_loss);
+                // detector_opt.zero_grad();
+                // generator_opt.zero_grad();
+                // loss.total_loss.backward();
+                // detector_opt.step();
+                // generator_opt.step();
+            }
 
             Ok((Some(f64::from(loss.total_loss)), Some(similarity)))
         })
@@ -339,6 +356,7 @@ impl TrainWorker {
         gt_labels_seq: &[Vec<Vec<RatioRectLabel<R64>>>],
         // _gt_det_seq: &[DenseDetectionTensorList],
         with_artifacts: bool,
+        dry_run: bool,
     ) -> Result<(
         Option<f64>,
         Option<Vec<DetectionSimilarity>>,
@@ -414,13 +432,15 @@ impl TrainWorker {
             let total_loss = total_consistency_loss.unwrap();
 
             // optimize
-            transformer_opt.backward_step(&total_loss);
+            if !dry_run {
+                transformer_opt.backward_step(&total_loss);
+            }
 
             Ok((Some(f64::from(total_loss)), Some(similarity_vec)))
         })?;
 
-        let weights_and_grads =
-            (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(transformer_vs));
+        let weights_and_grads = (!dry_run && with_artifacts && loss.is_some())
+            .then(|| get_weights_and_grads(transformer_vs));
 
         Ok((loss, similarity_vec, weights_and_grads))
     }
@@ -431,6 +451,7 @@ impl TrainWorker {
         gt_image_seq: &[Tensor],
         gt_det_seq: &[DenseDetectionTensorList],
         with_artifacts: bool,
+        dry_run: bool,
     ) -> Result<(Option<f64>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
         let Self {
@@ -483,13 +504,15 @@ impl TrainWorker {
             // optimize
             // let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
             let total_loss = total_consistency_loss.unwrap();
-            transformer_opt.backward_step(&total_loss);
+            if !dry_run {
+                transformer_opt.backward_step(&total_loss);
+            }
 
             Ok(Some(f64::from(total_loss)))
         })?;
 
-        let weights_and_grads =
-            (with_artifacts && loss.is_some()).then(|| get_weights_and_grads(transformer_vs));
+        let weights_and_grads = (!dry_run && with_artifacts && loss.is_some())
+            .then(|| get_weights_and_grads(transformer_vs));
 
         Ok((loss, weights_and_grads))
     }
@@ -500,6 +523,7 @@ impl TrainWorker {
         gt_image_seq: &[Tensor],
         gt_det_seq: &[DenseDetectionTensorList],
         with_artifacts: bool,
+        dry_run: bool,
     ) -> Result<(Option<f64>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
         let Self {
@@ -559,8 +583,10 @@ impl TrainWorker {
                 // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
 
                 // clip gradient
-                if gan_loss_kind == config::GanLoss::WGan {
-                    image_seq_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+                if !dry_run {
+                    if gan_loss_kind == config::GanLoss::WGan {
+                        image_seq_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+                    }
                 }
 
                 Ok(consistency_loss)
@@ -570,12 +596,14 @@ impl TrainWorker {
             // optimize
             // let total_loss = total_consistency_loss.unwrap() + total_recon_loss.unwrap();
             let total_loss = total_consistency_loss.unwrap();
-            image_seq_discriminator_opt.backward_step(&total_loss);
+            if !dry_run {
+                image_seq_discriminator_opt.backward_step(&total_loss);
+            }
 
             Ok(Some(f64::from(total_loss)))
         })?;
 
-        let weights_and_grads = (with_artifacts && loss.is_some())
+        let weights_and_grads = (!dry_run && with_artifacts && loss.is_some())
             .then(|| get_weights_and_grads(image_seq_discriminator_vs));
 
         Ok((loss, weights_and_grads))
@@ -680,6 +708,7 @@ pub fn training_worker(
     let train_transformer = config.train.train_forward_consistency_steps > 0
         || config.train.train_backward_consistency_gen_steps > 0;
     let train_image_seq_discriminator = config.train.train_backward_consistency_disc_steps > 0;
+    let dry_run_training = config.train.dry_run_training;
     let config::Logging {
         save_detector_checkpoint,
         save_discriminator_checkpoint,
@@ -1189,6 +1218,7 @@ pub fn training_worker(
                     gt_image,
                     gt_labels,
                     true,
+                    dry_run_training,
                 )?;
 
                 // train discriminator
@@ -1199,6 +1229,7 @@ pub fn training_worker(
                         gt_det,
                         train_generator,
                         true,
+                        dry_run_training,
                     )?;
 
                 // train generator
@@ -1209,6 +1240,7 @@ pub fn training_worker(
                         gt_det,
                         train_discriminator,
                         true,
+                        dry_run_training,
                     )?;
 
                 let generated_image = generated_image_1.and(generated_image_2);
@@ -1219,6 +1251,7 @@ pub fn training_worker(
                         config.train.train_retraction_identity_steps,
                         gt_det,
                         gt_labels,
+                        dry_run_training,
                     )?;
 
                 let (triangular_identity_loss, triangular_identity_similarity) = worker
@@ -1226,6 +1259,7 @@ pub fn training_worker(
                         config.train.train_triangular_identity_steps,
                         gt_image,
                         gt_labels,
+                        dry_run_training,
                     )?;
 
                 // create logs
@@ -1255,6 +1289,7 @@ pub fn training_worker(
                 &gt_labels_seq,
                 // &gt_det_seq,
                 true,
+                dry_run_training,
             )?;
 
         // train backward time consistency (adversarial step)
@@ -1264,6 +1299,7 @@ pub fn training_worker(
                 &gt_image_seq,
                 &gt_det_seq,
                 true,
+                dry_run_training,
             )?;
 
         // train backward time consistency (generator step)
@@ -1273,6 +1309,7 @@ pub fn training_worker(
                 &gt_image_seq,
                 &gt_det_seq,
                 true,
+                dry_run_training,
             )?;
 
         let transformer_weights = transformer_weights_1.or(transformer_weights_2);

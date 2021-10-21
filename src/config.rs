@@ -74,6 +74,7 @@ impl MnistDataset {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Training {
+    pub dry_run_training: bool,
     pub cache_dir: PathBuf,
     pub batch_size: NonZeroUsize,
     pub image_size: NonZeroUsize,
