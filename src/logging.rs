@@ -769,14 +769,20 @@ where
             let image = image.select(0, batch_index);
 
             let name = format!("{}/batch_{:04}/seq_{:04}", name, batch_index, seq_index);
+            let (nc, _, _) = image.size3().unwrap();
+            let color_space = match nc {
+                1 => tfrecord::ColorSpace::Luma,
+                3 => tfrecord::ColorSpace::Rgb,
+                _ => unreachable!(),
+            };
 
             let result = event_writer
                 .write_image(
                     &name,
                     step,
                     tfrecord::TchTensorAsImage::new(
-                        tfrecord::ColorSpace::Rgb,
-                        tfrecord::TchChannelOrder::HWC,
+                        color_space,
+                        tfrecord::TchChannelOrder::CHW,
                         image,
                     )?,
                 )

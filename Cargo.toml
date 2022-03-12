@@ -31,7 +31,6 @@ tracing-subscriber = "0.3.9"
 # opentelemetry-jaeger = "0.14.0"
 # tracing-opentelemetry = "0.13.0"
 noisy_float = { version = "0.2.0", features = ["serde"] }
-tfrecord = { version = "0.13.0", features = ["full"] }
 chrono = "0.4.19"
 iii-formosa-dataset = "0.2.0"
 glob = "0.3.0"
@@ -51,17 +50,22 @@ palette = "0.6.0"
 clap = { version = "3.1.6", features = ["derive"] }
 log = "0.4.14"
 
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "65f6a98692c5025e33413ea0e6aeee517e7dd14b" }
-tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "65f6a98692c5025e33413ea0e6aeee517e7dd14b" }
-yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "65f6a98692c5025e33413ea0e6aeee517e7dd14b" }
-tch-act = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "65f6a98692c5025e33413ea0e6aeee517e7dd14b" }
-bbox = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "65f6a98692c5025e33413ea0e6aeee517e7dd14b" }
-label = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "65f6a98692c5025e33413ea0e6aeee517e7dd14b" }
+tfrecord = { version = "0.13.0", features = ["full"] }
+# tfrecord = { path = "/home/aeon/repos/rust-tfrecord", features = ["full"] }
+
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
+tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
+yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
+tch-act = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
+bbox = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
+label = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
 
 # tch-goodies = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-goodies" }
 # tch-modules = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-modules" }
 # yolo-dl = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/yolo-dl" }
-# train = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/train" }
+# bbox = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/bbox" }
+# label = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/label" }
+# tch-act = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-act" }
 
 [profile.release]
 debug = true
@@ -72,7 +76,7 @@ overflow-checks = true
 lto = false
 
 [profile.release.package."*"]
-debug = false
+debug = true
 debug-assertions = false
 overflow-checks = false
 opt-level = 3
