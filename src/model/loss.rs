@@ -1,54 +1,116 @@
+use crate::{common::*, config};
 use tch_goodies::{DenseDetectionTensor, DenseDetectionTensorList};
 
-use crate::common::*;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WGanGpKind {
-    Real,
-    Fake,
-    Mixed,
+pub fn bce_loss(pred: impl Borrow<Tensor>, target: impl Borrow<Tensor>) -> Tensor {
+    pred.borrow().binary_cross_entropy_with_logits::<Tensor>(
+        target.borrow(),
+        None,
+        None,
+        Reduction::Mean,
+    )
 }
 
-#[derive(Debug, Clone)]
-pub struct WGanGpInit {
-    pub kind: WGanGpKind,
-    pub constant: f64,
-    pub lambda: f64,
+pub fn mse_loss(pred: impl Borrow<Tensor>, target: impl Borrow<Tensor>) -> Tensor {
+    pred.borrow().mse_loss(target.borrow(), Reduction::Mean)
 }
 
-impl WGanGpInit {
-    pub fn build(self) -> Result<WGanGp> {
-        let Self {
-            kind,
-            constant,
-            lambda,
-        } = self;
+pub fn generator_gan_loss(
+    kind: config::GanLoss,
+    real_score: &Tensor,
+    fake_score: &Tensor,
+) -> Result<Tensor> {
+    ensure!(real_score.size()[0] == fake_score.size()[0]);
+    ensure!(real_score.device() == fake_score.device());
+    let batch_size = real_score.size()[0];
+    let device = real_score.device();
 
-        ensure!(lambda > 0.0);
+    let loss = match kind {
+        config::GanLoss::DcGan => {
+            let ones = (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1 + 0.9)
+                .set_requires_grad(false);
 
-        Ok(WGanGp {
-            kind,
-            c: constant,
-            λ: lambda,
-        })
-    }
-}
-
-impl Default for WGanGpInit {
-    fn default() -> Self {
-        Self {
-            kind: WGanGpKind::Mixed,
-            constant: 1.0,
-            lambda: 10.0,
+            fake_score.binary_cross_entropy_with_logits::<Tensor>(
+                &ones,
+                None,
+                None,
+                Reduction::Mean,
+            )
         }
-    }
+        config::GanLoss::RaSGan => {
+            let ones = (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1 + 0.9)
+                .set_requires_grad(false);
+            let zeros =
+                (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1).set_requires_grad(false);
+
+            bce_loss(real_score - fake_score.mean(Kind::Float), zeros)
+                + bce_loss(fake_score - real_score.mean(Kind::Float), ones)
+        }
+        config::GanLoss::RaLsGan => {
+            mse_loss(real_score, fake_score.mean(Kind::Float) - 1.0)
+                + mse_loss(fake_score, real_score.mean(Kind::Float) + 1.0)
+        }
+        config::GanLoss::WGan | config::GanLoss::WGanGp => (-fake_score).mean(Kind::Float),
+    };
+
+    Ok(loss)
 }
 
-#[derive(Debug)]
-pub struct WGanGp {
-    kind: WGanGpKind,
-    c: f64,
-    λ: f64,
+pub fn discriminator_gan_loss(
+    kind: config::GanLoss,
+    real_score: &Tensor,
+    fake_score: &Tensor,
+    real_input: &Tensor,
+    fake_input: &Tensor,
+    gp: &WGanGp,
+    discriminator_fn: impl Fn(&Tensor, bool) -> Tensor,
+) -> Result<Tensor> {
+    ensure!(real_score.size()[0] == fake_score.size()[0]);
+    ensure!(real_score.device() == fake_score.device());
+    let batch_size = real_score.size()[0];
+    let device = real_score.device();
+
+    let loss = match kind {
+        config::GanLoss::DcGan => {
+            let ones = (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1 + 0.9)
+                .set_requires_grad(false);
+            let zeros =
+                (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1).set_requires_grad(false);
+
+            real_score.binary_cross_entropy_with_logits::<Tensor>(
+                &ones,
+                None,
+                None,
+                Reduction::Mean,
+            ) + fake_score.binary_cross_entropy_with_logits::<Tensor>(
+                &zeros,
+                None,
+                None,
+                Reduction::Mean,
+            )
+        }
+        config::GanLoss::RaSGan => {
+            let ones = (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1 + 0.9)
+                .set_requires_grad(false);
+            let zeros =
+                (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1).set_requires_grad(false);
+
+            bce_loss(real_score - &fake_score.mean(Kind::Float), ones)
+                + bce_loss(fake_score - &real_score.mean(Kind::Float), zeros)
+        }
+        config::GanLoss::RaLsGan => {
+            mse_loss(real_score, fake_score.mean(Kind::Float) + 1.0)
+                + mse_loss(fake_score, real_score.mean(Kind::Float) - 1.0)
+        }
+        config::GanLoss::WGan => (fake_score - real_score).mean(Kind::Float),
+        config::GanLoss::WGanGp => {
+            let discriminator_loss = (fake_score - real_score).mean(Kind::Float);
+            let gp_loss = gp.forward(real_input, fake_input, discriminator_fn, true)?;
+            // discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
+            discriminator_loss + gp_loss
+        }
+    };
+
+    Ok(loss)
 }
 
 pub fn dense_detection_list_similarity(
@@ -202,86 +264,145 @@ fn dense_detection_difference(
     })
 }
 
-#[derive(Debug)]
-pub struct DetectionSimilarity {
-    pub cy_loss: Tensor,
-    pub cx_loss: Tensor,
-    pub h_loss: Tensor,
-    pub w_loss: Tensor,
-    pub obj_loss: Tensor,
-    pub class_loss: Tensor,
+pub use detection_similarity::*;
+mod detection_similarity {
+    use super::*;
+
+    #[derive(Debug)]
+    pub struct DetectionSimilarity {
+        pub cy_loss: Tensor,
+        pub cx_loss: Tensor,
+        pub h_loss: Tensor,
+        pub w_loss: Tensor,
+        pub obj_loss: Tensor,
+        pub class_loss: Tensor,
+    }
+
+    impl DetectionSimilarity {
+        pub fn position_loss(&self) -> Tensor {
+            let Self {
+                cy_loss, cx_loss, ..
+            } = self;
+            cy_loss + cx_loss
+        }
+
+        pub fn size_loss(&self) -> Tensor {
+            let Self { h_loss, w_loss, .. } = self;
+            h_loss + w_loss
+        }
+
+        pub fn total_loss(&self) -> Tensor {
+            let Self {
+                cy_loss,
+                cx_loss,
+                h_loss,
+                w_loss,
+                obj_loss,
+                class_loss,
+            } = self;
+            cy_loss + cx_loss + h_loss + w_loss + obj_loss + class_loss
+        }
+    }
 }
 
-impl DetectionSimilarity {
-    pub fn position_loss(&self) -> Tensor {
-        let Self {
-            cy_loss, cx_loss, ..
-        } = self;
-        cy_loss + cx_loss
+pub use wgan_gp::*;
+mod wgan_gp {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum WGanGpKind {
+        Real,
+        Fake,
+        Mixed,
     }
 
-    pub fn size_loss(&self) -> Tensor {
-        let Self { h_loss, w_loss, .. } = self;
-        h_loss + w_loss
+    #[derive(Debug, Clone)]
+    pub struct WGanGpInit {
+        pub kind: WGanGpKind,
+        pub constant: f64,
+        pub lambda: f64,
     }
 
-    pub fn total_loss(&self) -> Tensor {
-        let Self {
-            cy_loss,
-            cx_loss,
-            h_loss,
-            w_loss,
-            obj_loss,
-            class_loss,
-        } = self;
-        cy_loss + cx_loss + h_loss + w_loss + obj_loss + class_loss
+    impl WGanGpInit {
+        pub fn build(self) -> Result<WGanGp> {
+            let Self {
+                kind,
+                constant,
+                lambda,
+            } = self;
+
+            ensure!(lambda > 0.0);
+
+            Ok(WGanGp {
+                kind,
+                c: constant,
+                λ: lambda,
+            })
+        }
     }
-}
 
-impl WGanGp {
-    pub fn forward(
-        &self,
-        real: &Tensor,
-        fake: &Tensor,
-        discriminator: impl FnOnce(&Tensor, bool) -> Tensor,
-        train: bool,
-    ) -> Result<Tensor> {
-        // ensure!(!fake.requires_grad() && !real.requires_grad());
-        ensure!(fake.size() == real.size());
-        ensure!(fake.kind() == real.kind());
-        ensure!(fake.device() == real.device());
-        ensure!(fake.dim() > 0);
-
-        let Self { kind, c, λ } = *self;
-        let batch_size = fake.size()[0];
-
-        let mix = match kind {
-            WGanGpKind::Real => real.detach(),
-            WGanGpKind::Fake => fake.detach(),
-            WGanGpKind::Mixed => {
-                let ratio = Tensor::rand(&[batch_size, 1], (fake.kind(), fake.device()))
-                    .expand(&[batch_size, fake.numel() as i64 / batch_size], false)
-                    .contiguous()
-                    .view(&*fake.size());
-
-                &ratio * real.detach() + (-&ratio + 1.0) * fake.detach()
+    impl Default for WGanGpInit {
+        fn default() -> Self {
+            Self {
+                kind: WGanGpKind::Mixed,
+                constant: 1.0,
+                lambda: 10.0,
             }
         }
-        .set_requires_grad(true);
+    }
 
-        let score = discriminator(&mix, train);
-        let grad = &Tensor::run_backward(
-            &[&score], // outputs
-            &[&mix],   // inputs
-            true,      // keep_graph
-            true,      // create_graph
-        )[0];
-        let penalty = (Tensor::norm_except_dim(&(grad + 1e-16), 2, 1) - c)
-            .pow_tensor_scalar(2)
-            .mean(Kind::Float)
-            * λ;
-        debug_assert!(penalty.is_all_finite());
+    #[derive(Debug)]
+    pub struct WGanGp {
+        kind: WGanGpKind,
+        c: f64,
+        λ: f64,
+    }
 
-        Ok(penalty)
+    impl WGanGp {
+        pub fn forward(
+            &self,
+            real: &Tensor,
+            fake: &Tensor,
+            discriminator: impl FnOnce(&Tensor, bool) -> Tensor,
+            train: bool,
+        ) -> Result<Tensor> {
+            // ensure!(!fake.requires_grad() && !real.requires_grad());
+            ensure!(fake.size() == real.size());
+            ensure!(fake.kind() == real.kind());
+            ensure!(fake.device() == real.device());
+            ensure!(fake.dim() > 0);
+
+            let Self { kind, c, λ } = *self;
+            let batch_size = fake.size()[0];
+
+            let mix = match kind {
+                WGanGpKind::Real => real.detach(),
+                WGanGpKind::Fake => fake.detach(),
+                WGanGpKind::Mixed => {
+                    let ratio = Tensor::rand(&[batch_size, 1], (fake.kind(), fake.device()))
+                        .expand(&[batch_size, fake.numel() as i64 / batch_size], false)
+                        .contiguous()
+                        .view(&*fake.size());
+
+                    &ratio * real.detach() + (-&ratio + 1.0) * fake.detach()
+                }
+            }
+            .set_requires_grad(true);
+
+            let score = discriminator(&mix, train);
+            let grad = &Tensor::run_backward(
+                &[&score], // outputs
+                &[&mix],   // inputs
+                true,      // keep_graph
+                true,      // create_graph
+            )[0];
+            let penalty = (Tensor::norm_except_dim(&(grad + 1e-16), 2, 1) - c)
+                .pow_tensor_scalar(2)
+                .mean(Kind::Float)
+                * λ;
+            debug_assert!(penalty.is_all_finite());
+
+            Ok(penalty)
+        }
     }
 }

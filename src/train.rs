@@ -2,9 +2,10 @@ use crate::{
     common::*,
     config, message as msg,
     model::{
-        CustomGeneratorInit, DetectionEmbedding, DetectionEmbeddingInit, DetectionSimilarity,
-        Discriminator, Generator, MotionBasedTransformerInit, NLayerDiscriminatorInit,
-        ResnetGeneratorInit, Transformer, UnetGeneratorInit, WGanGp, WGanGpInit,
+        self, CustomGeneratorInit, DetectionEmbeddingInit, DetectionSimilarity, DetectorWrapper,
+        Discriminator, Generator, GeneratorWrapper, ImageSequenceDiscriminatorWrapper,
+        MotionBasedTransformerInit, NLayerDiscriminatorInit, ResnetGeneratorInit, Transformer,
+        UnetGeneratorInit, WGanGp, WGanGpInit,
     },
     rate_meter::RateMeter,
     utils::DenseDetectionTensorListExt,
@@ -156,7 +157,8 @@ impl TrainWorker {
             let fake_score = discriminator_model.forward_t(&fake_image, train_discriminator);
 
             // compute loss
-            let generator_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
+            let generator_loss =
+                crate::model::generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
 
             // optimize generator
             if !dry_run {
@@ -224,7 +226,7 @@ impl TrainWorker {
             let fake_score = discriminator_model.forward_t(&fake_image, true);
 
             // compute loss
-            let loss = discriminator_gan_loss(
+            let loss = crate::model::discriminator_gan_loss(
                 gan_loss_kind,
                 &real_score,
                 &fake_score,
@@ -494,7 +496,8 @@ impl TrainWorker {
                 let fake_score = image_seq_discriminator_model.forward_t(fake_input, true)?;
 
                 // compute loss
-                let consistency_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
+                let consistency_loss =
+                    crate::model::generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
                 // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
 
                 Ok(consistency_loss)
@@ -571,7 +574,7 @@ impl TrainWorker {
                 let fake_input_tensor = Tensor::cat(fake_input_seq, 1);
 
                 // compute loss
-                let consistency_loss = discriminator_gan_loss(
+                let consistency_loss = crate::model::discriminator_gan_loss(
                     gan_loss_kind,
                     &real_score,
                     &fake_score,
@@ -1492,118 +1495,6 @@ pub fn training_worker(
     Ok(())
 }
 
-fn bce_loss(pred: impl Borrow<Tensor>, target: impl Borrow<Tensor>) -> Tensor {
-    pred.borrow().binary_cross_entropy_with_logits::<Tensor>(
-        target.borrow(),
-        None,
-        None,
-        Reduction::Mean,
-    )
-}
-
-fn mse_loss(pred: impl Borrow<Tensor>, target: impl Borrow<Tensor>) -> Tensor {
-    pred.borrow().mse_loss(target.borrow(), Reduction::Mean)
-}
-
-fn generator_gan_loss(
-    kind: config::GanLoss,
-    real_score: &Tensor,
-    fake_score: &Tensor,
-) -> Result<Tensor> {
-    ensure!(real_score.size()[0] == fake_score.size()[0]);
-    ensure!(real_score.device() == fake_score.device());
-    let batch_size = real_score.size()[0];
-    let device = real_score.device();
-
-    let loss = match kind {
-        config::GanLoss::DcGan => {
-            let ones = (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1 + 0.9)
-                .set_requires_grad(false);
-
-            fake_score.binary_cross_entropy_with_logits::<Tensor>(
-                &ones,
-                None,
-                None,
-                Reduction::Mean,
-            )
-        }
-        config::GanLoss::RaSGan => {
-            let ones = (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1 + 0.9)
-                .set_requires_grad(false);
-            let zeros =
-                (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1).set_requires_grad(false);
-
-            bce_loss(real_score - fake_score.mean(Kind::Float), zeros)
-                + bce_loss(fake_score - real_score.mean(Kind::Float), ones)
-        }
-        config::GanLoss::RaLsGan => {
-            mse_loss(real_score, fake_score.mean(Kind::Float) - 1.0)
-                + mse_loss(fake_score, real_score.mean(Kind::Float) + 1.0)
-        }
-        config::GanLoss::WGan | config::GanLoss::WGanGp => (-fake_score).mean(Kind::Float),
-    };
-
-    Ok(loss)
-}
-
-fn discriminator_gan_loss(
-    kind: config::GanLoss,
-    real_score: &Tensor,
-    fake_score: &Tensor,
-    real_input: &Tensor,
-    fake_input: &Tensor,
-    gp: &WGanGp,
-    discriminator_fn: impl Fn(&Tensor, bool) -> Tensor,
-) -> Result<Tensor> {
-    ensure!(real_score.size()[0] == fake_score.size()[0]);
-    ensure!(real_score.device() == fake_score.device());
-    let batch_size = real_score.size()[0];
-    let device = real_score.device();
-
-    let loss = match kind {
-        config::GanLoss::DcGan => {
-            let ones = (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1 + 0.9)
-                .set_requires_grad(false);
-            let zeros =
-                (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1).set_requires_grad(false);
-
-            real_score.binary_cross_entropy_with_logits::<Tensor>(
-                &ones,
-                None,
-                None,
-                Reduction::Mean,
-            ) + fake_score.binary_cross_entropy_with_logits::<Tensor>(
-                &zeros,
-                None,
-                None,
-                Reduction::Mean,
-            )
-        }
-        config::GanLoss::RaSGan => {
-            let ones = (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1 + 0.9)
-                .set_requires_grad(false);
-            let zeros =
-                (Tensor::rand(&[batch_size], (Kind::Float, device)) * 0.1).set_requires_grad(false);
-
-            bce_loss(real_score - &fake_score.mean(Kind::Float), ones)
-                + bce_loss(fake_score - &real_score.mean(Kind::Float), zeros)
-        }
-        config::GanLoss::RaLsGan => {
-            mse_loss(real_score, fake_score.mean(Kind::Float) + 1.0)
-                + mse_loss(fake_score, real_score.mean(Kind::Float) - 1.0)
-        }
-        config::GanLoss::WGan => (fake_score - real_score).mean(Kind::Float),
-        config::GanLoss::WGanGp => {
-            let discriminator_loss = (fake_score - real_score).mean(Kind::Float);
-            let gp_loss = gp.forward(real_input, fake_input, discriminator_fn, true)?;
-            // discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
-            discriminator_loss + gp_loss
-        }
-    };
-
-    Ok(loss)
-}
-
 fn clamp_running_var(vs: &mut nn::VarStore) {
     vs.variables().iter().for_each(|(name, var)| {
         if name.ends_with(".running_var") {
@@ -1635,76 +1526,4 @@ fn get_weights_and_grads(vs: &nn::VarStore) -> msg::WeightsAndGrads {
             .collect();
         msg::WeightsAndGrads { weights, grads }
     })
-}
-
-#[derive(Debug)]
-struct DetectorWrapper {
-    model: YoloModel,
-}
-
-impl DetectorWrapper {
-    pub fn forward_t(&mut self, input: &Tensor, train: bool) -> Result<DenseDetectionTensorList> {
-        let input = input * 0.5 + 0.5;
-        self.model.forward_t(&input, train)
-    }
-}
-
-#[derive(Debug)]
-struct GeneratorWrapper {
-    latent_dim: i64,
-    embedding_model: DetectionEmbedding,
-    generator_model: Generator,
-}
-
-impl GeneratorWrapper {
-    pub fn forward_t(
-        &self,
-        input: &DenseDetectionTensorList,
-        noise: Option<&Tensor>,
-        train: bool,
-    ) -> Result<Tensor> {
-        let Self {
-            latent_dim,
-            ref embedding_model,
-            ref generator_model,
-        } = *self;
-        let device = input.device();
-
-        let embedding = embedding_model.forward_t(input, train)?;
-        let noise = {
-            let (b, _c, h, w) = embedding.size4()?;
-            let noise = match noise {
-                Some(noise) => {
-                    let noise = noise.borrow();
-                    ensure!(noise.size1()? == latent_dim);
-                    noise.view([1, latent_dim, 1, 1]).to_device(device)
-                }
-                None => Tensor::randn(&[b, latent_dim, 1, 1], (Kind::Float, device)),
-            };
-            noise.expand(&[b, latent_dim, h, w], false)
-        };
-        let input = Tensor::cat(&[embedding, noise], 1);
-        let output = generator_model.forward_t(&input, train);
-        Ok(output)
-    }
-}
-
-#[derive(Debug)]
-struct ImageSequenceDiscriminatorWrapper {
-    model: Discriminator,
-    input_len: usize,
-}
-
-impl ImageSequenceDiscriminatorWrapper {
-    pub fn forward_t(&self, input: &[impl Borrow<Tensor>], train: bool) -> Result<Tensor> {
-        let Self {
-            input_len,
-            ref model,
-        } = *self;
-        ensure!(input_len == input.len());
-
-        let input = Tensor::cat(input, 1);
-        let output = model.forward_t(&input, train);
-        Ok(output)
-    }
 }

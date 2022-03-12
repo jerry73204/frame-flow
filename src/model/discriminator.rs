@@ -1,12 +1,8 @@
 use super::misc::NormKind;
 use crate::common::*;
 
-// pub use custom::*;
-pub use discriminator::*;
-pub use n_layers::*;
-pub use pixel::*;
-
-mod discriminator {
+pub use generic::*;
+mod generic {
     use super::*;
 
     #[derive(Debug)]
@@ -37,6 +33,7 @@ mod discriminator {
     }
 }
 
+pub use n_layers::*;
 mod n_layers {
     use super::*;
 
@@ -208,6 +205,7 @@ mod n_layers {
     }
 }
 
+pub use pixel::*;
 mod pixel {
     use super::*;
 
@@ -293,6 +291,7 @@ mod pixel {
     }
 }
 
+// pub use custom::*;
 // mod custom {
 //     use super::*;
 

@@ -5,12 +5,8 @@ use super::{
 };
 use crate::common::*;
 
-pub use custom::*;
-pub use generator::*;
-pub use resnet::*;
-pub use unet::*;
-
-mod generator {
+pub use generic::*;
+mod generic {
     use super::*;
 
     #[derive(Debug)]
@@ -49,6 +45,7 @@ mod generator {
     }
 }
 
+pub use unet::*;
 mod unet {
     use super::*;
 
@@ -164,6 +161,7 @@ mod unet {
     }
 }
 
+pub use resnet::*;
 mod resnet {
     use super::*;
 
@@ -357,6 +355,7 @@ mod resnet {
     }
 }
 
+pub use custom::*;
 mod custom {
     use super::*;
 
