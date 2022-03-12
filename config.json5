@@ -1,7 +1,7 @@
 {
     "dataset": {
         "type": "simple",
-        "dataset_dir": "/home/aeon/dataset/pcd-gen_output",
+        "dataset_dir": "/home/circle/Workings/NEWSLabNTU/wayside/src/wayside-portal/config/2022-03-PingTung/2022-03-12-all-lidars",
         "file_name_digits": 8,
     },
     // "dataset": {
@@ -21,7 +21,7 @@
         },
         "detector": {
             "model_file": "cfg/model/yolov4-csp-custom-64x64-2021-08-21.json5",
-            "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/detector_2021-10-22-07-25-10.751+0800_014599.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/detector_2021-10-22-07-25-10.751+0800_014599.ckpt",
             // "weights_file": "cfg/weights/yolov4-csp-custom-64x64-2021-08-22-12-41-00.823+0800_194000_02.21592.ckpt",
         },
         "generator": {
@@ -29,26 +29,26 @@
             // "kind": "Custom",
             "norm": "BatchNorm",
             // "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-04-58-18.338+0800/checkpoints/generator_2021-09-02-09-13-43.222+0800_002100.ckpt",
-            "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/generator_2021-10-22-07-25-10.751+0800_014599.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/generator_2021-10-22-07-25-10.751+0800_014599.ckpt",
         },
         "discriminator": {
             "num_blocks": 6,
             "norm": "None",
             // "norm": "InstanceNorm",
             // "weights_file": "log-wayside-64x64-2021-09-02/2021-09-02-04-58-18.338+0800/checkpoints/discriminator_2021-09-02-09-13-43.222+0800_002100.ckpt",
-            "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/discriminator_2021-10-22-07-25-10.751+0800_014599.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/discriminator_2021-10-22-07-25-10.751+0800_014599.ckpt",
         },
         "transformer": {
             "norm": "BatchNorm",
             "num_input_detections": 5,
-            "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/transformer_2021-10-22-07-25-10.751+0800_014599.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/transformer_2021-10-22-07-25-10.751+0800_014599.ckpt",
         },
         "image_seq_discriminator": {
             "num_detections": 6,
             "num_blocks": 6,
             "norm": "None",
             // "norm": "InstanceNorm",
-            "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/image_seq_discriminator_2021-10-22-07-25-10.751+0800_014599.ckpt",
+            // "weights_file": "log-wayside-64x64-2021-10-19/2021-10-20-17-23-12.220+0800/checkpoints/image_seq_discriminator_2021-10-22-07-25-10.751+0800_014599.ckpt",
         },
     },
     "loss": {
@@ -74,7 +74,7 @@
     },
     "train": {
         "dry_run_training": false,
-        "cache_dir": "/home/aeon/frame-flow-cache",
+        "cache_dir": "cache",
         // resnet
         "batch_size": 30,
         // unet
@@ -97,13 +97,16 @@
         "train_generator_steps": 0,
         "train_retraction_identity_steps": 0,
         "train_triangular_identity_steps": 0,
-        "train_forward_consistency_steps": 1,
-        "train_backward_consistency_disc_steps": 5,
-        "train_backward_consistency_gen_steps": 1,
+        // "train_forward_consistency_steps": 1,
+        "train_forward_consistency_steps": 0,
+        // "train_backward_consistency_disc_steps": 5,
+        "train_backward_consistency_disc_steps": 0,
+        // "train_backward_consistency_gen_steps": 1,
+        "train_backward_consistency_gen_steps": 0,
     },
     "logging": {
-        // "log_dir": "log-test",
-        "log_dir": "log-wayside-64x64-2021-10-19",
+        "log_dir": "log-test",
+        // "log_dir": "log-wayside-64x64-2021-10-19",
         "save_image_steps": 100,
         "save_checkpoint_steps": 100,
         "save_detector_checkpoint": true,
