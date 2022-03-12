@@ -1,5 +1,5 @@
 use crate::{common::*, message as msg, model::DetectionSimilarity, FILE_STRFTIME};
-use tfrecord::{EventAsyncWriter, TchTensorAsImageList};
+use tfrecord::EventAsyncWriter;
 
 pub async fn logging_worker(
     log_dir: impl AsRef<Path>,
@@ -578,16 +578,14 @@ pub async fn logging_worker(
                                             .unwrap();
                                         });
 
-                                        let image = Tensor::try_from_cv(image)
+                                        Tensor::try_from_cv(image)
                                             .unwrap()
                                             .permute(&[2, 0, 1])
-                                            .unsqueeze(0);
-                                        image
+                                            .unsqueeze(0)
                                     })
                                     .collect();
-                                let field_image = Tensor::cat(&images, 0);
 
-                                field_image
+                                Tensor::cat(&images, 0)
                             })
                             .collect();
 

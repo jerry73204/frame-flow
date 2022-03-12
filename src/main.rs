@@ -14,7 +14,7 @@ pub(crate) const FILE_STRFTIME: &str = "%Y-%m-%d-%H-%M-%S.%3f%z";
 use crate::common::*;
 use anyhow::Result;
 use clap::Parser;
-use std::{env, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Parser)]
 /// Implementation for 'frame-flow' model.
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
             classes_file,
             class_whitelist.clone(),
             min_seq_len,
-            blacklist_files.clone().unwrap_or_else(HashSet::new),
+            blacklist_files.clone().unwrap_or_default(),
         )
         .await?
         .into(),

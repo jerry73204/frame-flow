@@ -70,21 +70,10 @@ pub struct WeightsAndGrads {
     pub grads: Vec<(String, f64)>,
 }
 
-#[derive(Debug, TensorLike)]
+#[derive(Debug, Default, TensorLike)]
 pub struct TransformerArtifacts {
     pub motion_norm_pixel: Option<Tensor>,
     pub motion_potential_pixel: Option<Tensor>,
     pub motion_field_pixel: Option<Tensor>,
     pub attention_image: Option<Tensor>,
-}
-
-impl Default for TransformerArtifacts {
-    fn default() -> Self {
-        Self {
-            motion_norm_pixel: None,
-            motion_potential_pixel: None,
-            motion_field_pixel: None,
-            attention_image: None,
-        }
-    }
 }

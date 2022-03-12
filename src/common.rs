@@ -1,5 +1,6 @@
 pub use anyhow::{bail, ensure, format_err, Context, Error, Result};
 pub use approx::{abs_diff_eq, assert_abs_diff_eq};
+pub use bbox::prelude::*;
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
 pub use collected::{AddVal, Count, First, GroupHashMap, Last, MaxVal};
@@ -12,6 +13,7 @@ pub use futures::{
 pub use indexmap::{IndexMap, IndexSet};
 pub use iterator_ext::IteratorExt as _;
 pub use itertools::{chain, iproduct, izip, Itertools};
+pub use log::{info, warn};
 pub use mona::prelude::*;
 pub use ndarray as nd;
 pub use noisy_float::types::{r64, R64};
@@ -41,8 +43,6 @@ pub use tch::{
     nn::{self, Module as _, ModuleT as _, OptimizerConfig},
     vision, Device, IndexOp, Kind, Reduction, Tensor,
 };
-pub use bbox::prelude::*;
-pub use log::{info, warn};
 pub use tch_act::TensorActivationExt as _;
 pub use tch_goodies::TensorExt as _;
 pub use tch_tensor_like::TensorLike;

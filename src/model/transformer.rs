@@ -260,8 +260,7 @@ mod potential_based {
                     ensure!(input.iter().all(|list| list.tensors.len() == 1));
                     ensure!(input
                         .iter()
-                        .map(|list| &list.tensors)
-                        .flatten()
+                        .flat_map(|list| &list.tensors)
                         .all(|tensor| tensor.num_classes() == num_classes));
                     debug_assert!(input.iter().any(|&list| list.is_all_finite()));
 
@@ -398,9 +397,7 @@ mod potential_based {
                                 //     -1.0,
                                 //     1.0,
                                 // );
-                                let next_potential = prev_potential_pixel + addition;
-
-                                next_potential
+                                prev_potential_pixel + addition
                             },
                         )
                     };
@@ -725,8 +722,7 @@ mod motion_based {
                     ensure!(input.iter().all(|list| list.tensors.len() == 1));
                     ensure!(input
                         .iter()
-                        .map(|list| &list.tensors)
-                        .flatten()
+                        .flat_map(|list| &list.tensors)
                         .all(|tensor| tensor.num_classes() == num_classes));
                     debug_assert!(input.iter().any(|&list| list.is_all_finite()));
 
@@ -1100,8 +1096,7 @@ mod attention_based {
                     ensure!(input.iter().all(|list| list.tensors.len() == 1));
                     ensure!(input
                         .iter()
-                        .map(|list| &list.tensors)
-                        .flatten()
+                        .flat_map(|list| &list.tensors)
                         .all(|tensor| tensor.num_anchors() == 1
                             && tensor.num_classes() == num_classes));
                     assert!(input.iter().all(|&list| list.is_all_finite()));

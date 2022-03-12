@@ -240,10 +240,8 @@ impl TrainWorker {
             }
 
             // clip gradient
-            if !dry_run {
-                if gan_loss_kind == config::GanLoss::WGan {
-                    discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
-                }
+            if !dry_run && gan_loss_kind == config::GanLoss::WGan {
+                discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
             }
 
             Ok((Some(f64::from(loss)), Some(fake_image)))
@@ -585,10 +583,8 @@ impl TrainWorker {
                 // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
 
                 // clip gradient
-                if !dry_run {
-                    if gan_loss_kind == config::GanLoss::WGan {
-                        image_seq_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
-                    }
+                if !dry_run && gan_loss_kind == config::GanLoss::WGan {
+                    image_seq_discriminator_opt.clip_grad_norm(WEIGHT_CLAMP);
                 }
 
                 Ok(consistency_loss)
@@ -1674,7 +1670,7 @@ impl GeneratorWrapper {
         } = *self;
         let device = input.device();
 
-        let embedding = embedding_model.forward_t(&input, train)?;
+        let embedding = embedding_model.forward_t(input, train)?;
         let noise = {
             let (b, _c, h, w) = embedding.size4()?;
             let noise = match noise {
