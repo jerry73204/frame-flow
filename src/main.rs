@@ -25,6 +25,8 @@ struct Opts {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    pretty_env_logger::init();
+
     let args = Opts::parse();
     let config = config::Config::load(&args.config)?;
 
