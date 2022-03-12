@@ -54,12 +54,12 @@ pretty_env_logger = "0.4.0"
 tfrecord = { version = "0.13.0", features = ["full"] }
 # tfrecord = { path = "/home/aeon/repos/rust-tfrecord", features = ["full"] }
 
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
-tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
-yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
-tch-act = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
-bbox = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
-label = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "edf79c828282aaeb7f072c80dbba03b9ac2ae153" }
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "e4eced59358315368e1e9af553e23564fbf2e084" }
+tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "e4eced59358315368e1e9af553e23564fbf2e084" }
+yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "e4eced59358315368e1e9af553e23564fbf2e084" }
+tch-act = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "e4eced59358315368e1e9af553e23564fbf2e084" }
+bbox = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "e4eced59358315368e1e9af553e23564fbf2e084" }
+label = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "e4eced59358315368e1e9af553e23564fbf2e084" }
 
 # tch-goodies = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-goodies" }
 # tch-modules = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-modules" }

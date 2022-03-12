@@ -35,13 +35,18 @@ pub async fn training_stream(
                     .map(|sample| -> Result<_> {
                         let image = sample.image()?;
 
-                        let orig_size = {
+                        let orig_pixel_size = {
                             let (_, h, w) = image.size3().unwrap();
                             HW::from_hw([h, w]).cast::<R64>()
                         };
-                        let new_size = HW::from_hw([image_size, image_size]).cast::<R64>();
-                        let transform =
-                            Pixel(Transform::from_sizes_letterbox(orig_size, new_size.clone()));
+                        let new_pixel_size = HW::from_hw([image_size, image_size]).cast::<R64>();
+                        let pixel_transform = Transform::from_sizes_letterbox(
+                            orig_pixel_size,
+                            new_pixel_size.clone(),
+                        );
+                        let ratio_transform =
+                            Transform::from_sizes_exact(new_pixel_size, HW::unit());
+                        let transform = &ratio_transform * &pixel_transform;
 
                         // resize and scale image
                         let image = image
@@ -56,7 +61,7 @@ pub async fn training_stream(
                             .iter()
                             .map(|label| {
                                 Ratio(RectLabel {
-                                    rect: (&transform.0 * &label.rect).scale_hw(new_size.hw()),
+                                    rect: &transform * &label.rect,
                                     class: label.class,
                                 })
                             })

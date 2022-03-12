@@ -1,5 +1,5 @@
 use crate::common::*;
-use bbox::{HW, TLBR};
+use bbox::{Transform, HW, TLBR};
 use num_traits::{NumCast, ToPrimitive};
 use tch_goodies::{
     DenseDetectionTensor, DenseDetectionTensorList, DenseDetectionTensorListUnchecked,
@@ -93,7 +93,6 @@ mod num_convert {
 
 pub use dense_detection_tensor_list_ext::*;
 mod dense_detection_tensor_list_ext {
-
     use super::*;
 
     pub trait DenseDetectionTensorListExt
@@ -202,9 +201,12 @@ mod dense_detection_tensor_list_ext {
                         const MIN_SIZE: f64 = 1.0;
                         const MAX_HW_RATIO: f64 = 4.0;
 
+                        let transform =
+                            Transform::from_sizes_exact(HW::unit(), image_size.0.cast::<R64>());
+
                         let ratio_label = ratio_label.borrow();
                         let pixel_label: Pixel<RectLabel> = Pixel(RectLabel {
-                            rect: ratio_label.rect.scale_hw(image_size.cast::<R64>().hw()),
+                            rect: &transform * &ratio_label.rect,
                             class: ratio_label.class,
                         });
                         let bbox = pixel_label.rect.intersect_with(&image_boundary.0)?;
@@ -223,13 +225,10 @@ mod dense_detection_tensor_list_ext {
                             rect: bbox.into(),
                             class: pixel_label.class,
                         });
-                        let ratio_label: Ratio<RectLabel> = {
-                            let [h, w] = image_size.cast::<R64>().hw();
-                            Ratio(RectLabel {
-                                rect: pixel_label.rect.scale_hw([h.recip(), w.recip()]),
-                                class: pixel_label.class,
-                            })
-                        };
+                        let ratio_label: Ratio<RectLabel> = Ratio(RectLabel {
+                            rect: &transform.inverse() * &pixel_label.rect,
+                            class: pixel_label.class,
+                        });
 
                         Some((ratio_label, pixel_label))
                     })
