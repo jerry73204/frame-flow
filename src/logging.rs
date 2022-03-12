@@ -1,4 +1,5 @@
 use crate::{common::*, message as msg, model::DetectionSimilarity, FILE_STRFTIME};
+use tfrecord::{EventAsyncWriter, TchTensorAsImageList};
 
 pub async fn logging_worker(
     log_dir: impl AsRef<Path>,
@@ -12,15 +13,13 @@ pub async fn logging_worker(
     tokio::fs::create_dir_all(&event_dir).await?;
 
     let mut event_writer = {
-        let event_path_prefix = event_dir
+        let prefix = event_dir
             .join("frame-flow")
             .into_os_string()
             .into_string()
             .unwrap();
 
-        EventWriterInit::default()
-            .from_prefix_async(event_path_prefix, None)
-            .await?
+        EventAsyncWriter::from_prefix(prefix, "", Default::default()).await?
     };
 
     loop {
@@ -66,58 +65,54 @@ pub async fn logging_worker(
                 let step = step as i64;
 
                 event_writer
-                    .write_scalar_async("params/learning_rate", step, learning_rate as f32)
+                    .write_scalar("params/learning_rate", step, learning_rate as f32)
                     .await?;
 
                 if let Some(loss) = detector_loss {
                     event_writer
-                        .write_scalar_async("loss/detector_loss", step, loss as f32)
+                        .write_scalar("loss/detector_loss", step, loss as f32)
                         .await?;
                 }
 
                 if let Some(loss) = generator_loss {
                     event_writer
-                        .write_scalar_async("loss/generator_loss", step, loss as f32)
+                        .write_scalar("loss/generator_loss", step, loss as f32)
                         .await?;
                 }
 
                 if let Some(loss) = discriminator_loss {
                     event_writer
-                        .write_scalar_async("loss/discriminator_loss", step, loss as f32)
+                        .write_scalar("loss/discriminator_loss", step, loss as f32)
                         .await?;
                 }
 
                 if let Some(loss) = retraction_identity_loss {
                     event_writer
-                        .write_scalar_async("loss/retraction_identity_loss", step, loss as f32)
+                        .write_scalar("loss/retraction_identity_loss", step, loss as f32)
                         .await?;
                 }
 
                 if let Some(loss) = triangular_identity_loss {
                     event_writer
-                        .write_scalar_async("loss/triangular_identity_loss", step, loss as f32)
+                        .write_scalar("loss/triangular_identity_loss", step, loss as f32)
                         .await?;
                 }
 
                 if let Some(loss) = forward_consistency_loss {
                     event_writer
-                        .write_scalar_async("loss/forward_consistency_loss", step, loss as f32)
+                        .write_scalar("loss/forward_consistency_loss", step, loss as f32)
                         .await?;
                 }
 
                 if let Some(loss) = backward_consistency_gen_loss {
                     event_writer
-                        .write_scalar_async("loss/backward_consistency_gen_loss", step, loss as f32)
+                        .write_scalar("loss/backward_consistency_gen_loss", step, loss as f32)
                         .await?;
                 }
 
                 if let Some(loss) = backward_consistency_disc_loss {
                     event_writer
-                        .write_scalar_async(
-                            "loss/backward_consistency_disc_loss",
-                            step,
-                            loss as f32,
-                        )
+                        .write_scalar("loss/backward_consistency_disc_loss", step, loss as f32)
                         .await?;
                 }
 
@@ -135,28 +130,28 @@ pub async fn logging_worker(
                     let size_loss = h_loss + w_loss;
 
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "retraction_identity_similarity/position_loss",
                             step,
                             f32::from(position_loss),
                         )
                         .await?;
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "retraction_identity_similarity/size_loss",
                             step,
                             f32::from(size_loss),
                         )
                         .await?;
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "retraction_identity_similarity/obj_loss",
                             step,
                             f32::from(obj_loss),
                         )
                         .await?;
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "retraction_identity_similarity/class_loss",
                             step,
                             f32::from(class_loss),
@@ -178,28 +173,28 @@ pub async fn logging_worker(
                     let size_loss = h_loss + w_loss;
 
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "triangular_identity_similarity/position_loss",
                             step,
                             f32::from(position_loss),
                         )
                         .await?;
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "triangular_identity_similarity/size_loss",
                             step,
                             f32::from(size_loss),
                         )
                         .await?;
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "triangular_identity_similarity/obj_loss",
                             step,
                             f32::from(obj_loss),
                         )
                         .await?;
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "triangular_identity_similarity/class_loss",
                             step,
                             f32::from(class_loss),
@@ -222,7 +217,7 @@ pub async fn logging_worker(
                         let size_loss = h_loss + w_loss;
 
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!(
                                     "forward_consistency_similarity/position_loss/seq_{}",
                                     seq_index
@@ -232,7 +227,7 @@ pub async fn logging_worker(
                             )
                             .await?;
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!(
                                     "forward_consistency_similarity/size_loss/seq_{}",
                                     seq_index
@@ -242,7 +237,7 @@ pub async fn logging_worker(
                             )
                             .await?;
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!(
                                     "forward_consistency_similarity/obj_loss/seq_{}",
                                     seq_index
@@ -252,7 +247,7 @@ pub async fn logging_worker(
                             )
                             .await?;
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!(
                                     "forward_consistency_similarity/class_loss/seq_{}",
                                     seq_index
@@ -268,21 +263,13 @@ pub async fn logging_worker(
                 if let Some(msg::WeightsAndGrads { weights, grads }) = detector_weights {
                     for (name, weight) in weights {
                         event_writer
-                            .write_scalar_async(
-                                format!("detector_weights/{}", name),
-                                step,
-                                weight as f32,
-                            )
+                            .write_scalar(format!("detector_weights/{}", name), step, weight as f32)
                             .await?;
                     }
 
                     for (name, grad) in grads {
                         event_writer
-                            .write_scalar_async(
-                                format!("detector_gradients/{}", name),
-                                step,
-                                grad as f32,
-                            )
+                            .write_scalar(format!("detector_gradients/{}", name), step, grad as f32)
                             .await?;
                     }
                 }
@@ -290,7 +277,7 @@ pub async fn logging_worker(
                 if let Some(msg::WeightsAndGrads { weights, grads }) = discriminator_weights {
                     for (name, weight) in weights {
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!("discriminator_weights/{}", name),
                                 step,
                                 weight as f32,
@@ -300,7 +287,7 @@ pub async fn logging_worker(
 
                     for (name, grad) in grads {
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!("discriminator_gradients/{}", name),
                                 step,
                                 grad as f32,
@@ -312,7 +299,7 @@ pub async fn logging_worker(
                 if let Some(msg::WeightsAndGrads { weights, grads }) = generator_weights {
                     for (name, weight) in weights {
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!("generator_weights/{}", name),
                                 step,
                                 weight as f32,
@@ -322,7 +309,7 @@ pub async fn logging_worker(
 
                     for (name, grad) in grads {
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!("generator_gradients/{}", name),
                                 step,
                                 grad as f32,
@@ -334,7 +321,7 @@ pub async fn logging_worker(
                 if let Some(msg::WeightsAndGrads { weights, grads }) = transformer_weights {
                     for (name, weight) in weights {
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!("transformer_weights/{}", name),
                                 step,
                                 weight as f32,
@@ -344,7 +331,7 @@ pub async fn logging_worker(
 
                     for (name, grad) in grads {
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!("transformer_gradients/{}", name),
                                 step,
                                 grad as f32,
@@ -358,7 +345,7 @@ pub async fn logging_worker(
                 {
                     for (name, weight) in weights {
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!("image_seq_discriminator_weights/{}", name),
                                 step,
                                 weight as f32,
@@ -368,7 +355,7 @@ pub async fn logging_worker(
 
                     for (name, grad) in grads {
                         event_writer
-                            .write_scalar_async(
+                            .write_scalar(
                                 format!("image_seq_discriminator_gradients/{}", name),
                                 step,
                                 grad as f32,
@@ -396,7 +383,7 @@ pub async fn logging_worker(
                         })
                         .await??;
 
-                        Fallible::Ok(seq)
+                        anyhow::Ok(seq)
                     };
 
                 if let Some(seq) = ground_truth_image_seq {
@@ -624,7 +611,7 @@ pub async fn logging_worker(
                         .iter()
                         .map(|field| {
                             let max: f64 = field
-                                .pow(2)
+                                .pow_tensor_scalar(2)
                                 .sum_dim_intlist(&[1], true, Kind::Float)
                                 .sqrt()
                                 .max()
@@ -635,7 +622,7 @@ pub async fn logging_worker(
                         .unwrap();
 
                     event_writer
-                        .write_scalar_async(
+                        .write_scalar(
                             "max_motion_field_magnitude",
                             step,
                             max_motion_field_magnitude.raw() as f32,
@@ -709,19 +696,27 @@ pub async fn logging_worker(
                     } = log_step;
 
                     event_writer
-                        .write_image_list_async(
+                        .write_image_list(
                             format!("true_image/{}", seq_index),
                             step,
-                            true_image,
+                            tfrecord::TchTensorAsImageList::new(
+                                tfrecord::ColorSpace::Rgb,
+                                tfrecord::TchChannelOrder::HWC,
+                                true_image,
+                            )?,
                         )
                         .await?;
 
                     if let Some(fake_image) = fake_image {
                         event_writer
-                            .write_image_list_async(
+                            .write_image_list(
                                 format!("fake_image/{}", seq_index),
                                 step,
-                                fake_image,
+                                tfrecord::TchTensorAsImageList::new(
+                                    tfrecord::ColorSpace::Rgb,
+                                    tfrecord::TchChannelOrder::HWC,
+                                    fake_image,
+                                )?,
                             )
                             .await?;
                     }
@@ -761,13 +756,13 @@ fn save_image_seq(
 }
 
 async fn save_image_seq_to_tfrecord<W>(
-    event_writer: &mut EventWriter<W>,
+    event_writer: &mut EventAsyncWriter<W>,
     name: &'static str,
     step: i64,
     seq: Vec<Tensor>,
 ) -> Result<()>
 where
-    W: Unpin + futures::AsyncWriteExt,
+    W: Unpin + futures::AsyncWrite,
 {
     let batch_size = seq[0].size()[0];
 
@@ -777,7 +772,17 @@ where
 
             let name = format!("{}/batch_{:04}/seq_{:04}", name, batch_index, seq_index);
 
-            let result = event_writer.write_image_async(&name, step, image).await;
+            let result = event_writer
+                .write_image(
+                    &name,
+                    step,
+                    tfrecord::TchTensorAsImage::new(
+                        tfrecord::ColorSpace::Rgb,
+                        tfrecord::TchChannelOrder::HWC,
+                        image,
+                    )?,
+                )
+                .await;
 
             if let Err(err) = result {
                 warn!(

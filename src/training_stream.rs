@@ -1,3 +1,6 @@
+use bbox::{Transform, HW};
+use tch_goodies::{Pixel, Ratio};
+
 use crate::{common::*, config, dataset::Dataset, message as msg};
 
 pub async fn training_stream(
@@ -34,14 +37,11 @@ pub async fn training_stream(
 
                         let orig_size = {
                             let (_, h, w) = image.size3().unwrap();
-                            PixelSize::from_hw(h, w).unwrap().cast::<R64>().unwrap()
+                            HW::from_hw([h, w]).cast::<R64>()
                         };
-                        let new_size = PixelSize::from_hw(image_size, image_size)
-                            .unwrap()
-                            .cast::<R64>()
-                            .unwrap();
+                        let new_size = HW::from_hw([image_size, image_size]).cast::<R64>();
                         let transform =
-                            PixelRectTransform::from_resizing_letterbox(&orig_size, &new_size);
+                            Pixel(Transform::from_sizes_letterbox(orig_size, new_size.clone()));
 
                         // resize and scale image
                         let image = image
@@ -54,7 +54,12 @@ pub async fn training_stream(
                         let boxes: Vec<_> = sample
                             .boxes()
                             .iter()
-                            .map(|rect| (&transform * rect).to_ratio_label(&new_size))
+                            .map(|label| {
+                                Ratio(RectLabel {
+                                    rect: (&transform.0 * &label.rect).scale_hw(new_size.hw()),
+                                    class: label.class,
+                                })
+                            })
                             .collect();
 
                         Ok((image, boxes))
@@ -62,21 +67,22 @@ pub async fn training_stream(
                     .try_collect()?;
                 let (image_seq, boxes_seq) = pairs.into_iter().unzip_n_vec();
 
-                Fallible::Ok((image_seq, boxes_seq))
+                anyhow::Ok((image_seq, boxes_seq))
             }
         })
     };
 
     // group into chunks
-    let stream = stream
-        .chunks(batch_size)
-        .wrapping_enumerate()
-        .par_map_unordered(None, |(batch_index, results)| {
-            move || {
-                let chunk: Vec<_> = results.into_iter().try_collect()?;
-                Fallible::Ok((batch_index, chunk))
-            }
-        });
+    let stream =
+        stream
+            .chunks(batch_size)
+            .enumerate()
+            .par_map_unordered(None, |(batch_index, results)| {
+                move || {
+                    let chunk: Vec<_> = results.into_iter().try_collect()?;
+                    anyhow::Ok((batch_index, chunk))
+                }
+            });
 
     // convert to batched type
     let stream = stream.try_par_map_unordered(None, move |(batch_index, chunk)| {
@@ -94,7 +100,7 @@ pub async fn training_stream(
                 .into_iter()
                 .map(|image_batch| Tensor::stack(&image_batch, 0))
                 .collect();
-            let boxes_batch_seq: Vec<Vec<Vec<RatioRectLabel<_>>>> =
+            let boxes_batch_seq: Vec<Vec<Vec<Ratio<RectLabel>>>> =
                 boxes_seq_batch.transpose().unwrap();
 
             let seq_len = image_batch_seq.len();
@@ -102,7 +108,7 @@ pub async fn training_stream(
                 .map(|_| Tensor::randn(&[batch_size as i64, latent_dim], FLOAT_CPU))
                 .collect();
 
-            Fallible::Ok((batch_index, image_batch_seq, boxes_batch_seq, noise_seq))
+            anyhow::Ok((batch_index, image_batch_seq, boxes_batch_seq, noise_seq))
         }
     });
 

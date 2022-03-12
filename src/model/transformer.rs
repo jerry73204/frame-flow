@@ -1,16 +1,15 @@
 use super::misc::{NormKind, PaddingKind};
 use crate::{common::*, message as msg, utils::*};
 // use tch_modules::GroupNormInit;
+use bbox::HW;
+use tch_goodies::{
+    DenseDetectionTensor, DenseDetectionTensorList, DenseDetectionTensorListUnchecked,
+    DenseDetectionTensorUnchecked, Ratio,
+};
 
-use denormed_detection::*;
-use detection_encode::*;
-
-pub use attention_based::*;
-pub use motion_based::*;
-pub use potential_based::*;
 pub use transformer::*;
-
 mod transformer {
+
     use super::*;
 
     #[derive(Debug)]
@@ -62,7 +61,9 @@ mod transformer {
     }
 }
 
+pub use potential_based::*;
 mod potential_based {
+
     use super::*;
 
     #[derive(Debug, Clone)]
@@ -107,7 +108,7 @@ mod potential_based {
             let gaussian_blur =
                 GaussianBlur::new(path / "gaussian_blur", &[5, 5], &[1.0, 1.0]).unwrap();
 
-            let feature_maps: Vec<_> = array::IntoIter::new([
+            let feature_maps = [
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -116,7 +117,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 4,
                 }
-                .build(path / "feature_0", ctx_c, inner_c, inner_c), // 64 -> 64
+                .build(path / "feature_0", ctx_c, inner_c, inner_c)?, // 64 -> 64
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -125,7 +126,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 3,
                 }
-                .build(path / "feature_1", inner_c, inner_c, inner_c), // 64 -> 32
+                .build(path / "feature_1", inner_c, inner_c, inner_c)?, // 64 -> 32
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -134,7 +135,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 2,
                 }
-                .build(path / "feature_2", inner_c, inner_c, inner_c), // 32 -> 16
+                .build(path / "feature_2", inner_c, inner_c, inner_c)?, // 32 -> 16
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -143,7 +144,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 1,
                 }
-                .build(path / "feature_3", inner_c, inner_c, inner_c), // 16 -> 8
+                .build(path / "feature_3", inner_c, inner_c, inner_c)?, // 16 -> 8
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -152,7 +153,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 0,
                 }
-                .build(path / "feature_4", inner_c, inner_c, inner_c), // 8 -> 4
+                .build(path / "feature_4", inner_c, inner_c, inner_c)?, // 8 -> 4
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -161,12 +162,10 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 0,
                 }
-                .build(path / "feature_5", inner_c, inner_c, inner_c), // 4 -> 2
-            ])
-            .try_collect()
-            .unwrap();
+                .build(path / "feature_5", inner_c, inner_c, inner_c)?, // 4 -> 2
+            ];
 
-            let motion_maps: Vec<_> = array::IntoIter::new([
+            let motion_maps = [
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -175,7 +174,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 4,
                 }
-                .build(path / "motion_0", inner_c + 1, 1, inner_c), // 64
+                .build(path / "motion_0", inner_c + 1, 1, inner_c)?, // 64
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -184,7 +183,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 3,
                 }
-                .build(path / "motion_1", inner_c + 1, 1, inner_c), // 32
+                .build(path / "motion_1", inner_c + 1, 1, inner_c)?, // 32
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -193,7 +192,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 3,
                 }
-                .build(path / "motion_2", inner_c + 1, 1, inner_c), // 16
+                .build(path / "motion_2", inner_c + 1, 1, inner_c)?, // 16
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -202,7 +201,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 2,
                 }
-                .build(path / "motion_3", inner_c + 1, 1, inner_c), // 8
+                .build(path / "motion_3", inner_c + 1, 1, inner_c)?, // 8
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -211,7 +210,7 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 0,
                 }
-                .build(path / "motion_4", inner_c + 1, 1, inner_c), // 4
+                .build(path / "motion_4", inner_c + 1, 1, inner_c)?, // 4
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -220,10 +219,8 @@ mod potential_based {
                     num_mid: 1,
                     num_up: 0,
                 }
-                .build(path / "motion_5", inner_c, 1, inner_c), // 2
-            ])
-            .try_collect()
-            .unwrap();
+                .build(path / "motion_5", inner_c, 1, inner_c)?, // 2
+            ];
 
             // let spectral_coefs = {
             //     const SIZE: i64 = 64;
@@ -302,7 +299,8 @@ mod potential_based {
                                 // let (bsize, num_entires, num_anchors, height, width) = context.size5().unwrap();
 
                                 // scale batch_size to bsize * num_anchors
-                                let context = context.repeat_interleave_self_int(num_anchors, 0);
+                                let context =
+                                    context.repeat_interleave_self_int(num_anchors, 0, None);
 
                                 // merge entry and anchor dimensions
                                 let context = context.view([bsize * num_anchors, -1, in_h, in_w]);
@@ -557,6 +555,7 @@ mod potential_based {
     }
 }
 
+pub use motion_based::*;
 mod motion_based {
     use super::*;
 
@@ -600,7 +599,7 @@ mod motion_based {
 
             let ctx_c = in_c * input_len;
 
-            let feature_maps: Vec<_> = array::IntoIter::new([
+            let feature_maps = [
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -609,7 +608,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 4,
                 }
-                .build(path / "feature_0", ctx_c, inner_c, inner_c), // 64 -> 64
+                .build(path / "feature_0", ctx_c, inner_c, inner_c)?, // 64 -> 64
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -618,7 +617,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 3,
                 }
-                .build(path / "feature_1", inner_c, inner_c, inner_c), // 64 -> 32
+                .build(path / "feature_1", inner_c, inner_c, inner_c)?, // 64 -> 32
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -627,7 +626,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 2,
                 }
-                .build(path / "feature_2", inner_c, inner_c, inner_c), // 32 -> 16
+                .build(path / "feature_2", inner_c, inner_c, inner_c)?, // 32 -> 16
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -636,7 +635,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 1,
                 }
-                .build(path / "feature_3", inner_c, inner_c, inner_c), // 16 -> 8
+                .build(path / "feature_3", inner_c, inner_c, inner_c)?, // 16 -> 8
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -645,7 +644,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 0,
                 }
-                .build(path / "feature_4", inner_c, inner_c, inner_c), // 8 -> 4
+                .build(path / "feature_4", inner_c, inner_c, inner_c)?, // 8 -> 4
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -654,12 +653,10 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 0,
                 }
-                .build(path / "feature_5", inner_c, inner_c, inner_c), // 4 -> 2
-            ])
-            .try_collect()
-            .unwrap();
+                .build(path / "feature_5", inner_c, inner_c, inner_c)?, // 4 -> 2
+            ];
 
-            let motion_maps: Vec<_> = array::IntoIter::new([
+            let motion_maps = [
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -668,7 +665,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 4,
                 }
-                .build(path / "motion_0", inner_c + 1, 2, inner_c), // 64
+                .build(path / "motion_0", inner_c + 1, 2, inner_c)?, // 64
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -677,7 +674,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 3,
                 }
-                .build(path / "motion_1", inner_c + 1, 2, inner_c), // 32
+                .build(path / "motion_1", inner_c + 1, 2, inner_c)?, // 32
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -686,7 +683,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 3,
                 }
-                .build(path / "motion_2", inner_c + 1, 2, inner_c), // 16
+                .build(path / "motion_2", inner_c + 1, 2, inner_c)?, // 16
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -695,7 +692,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 2,
                 }
-                .build(path / "motion_3", inner_c + 1, 2, inner_c), // 8
+                .build(path / "motion_3", inner_c + 1, 2, inner_c)?, // 8
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -704,7 +701,7 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 0,
                 }
-                .build(path / "motion_4", inner_c + 1, 2, inner_c), // 4
+                .build(path / "motion_4", inner_c + 1, 2, inner_c)?, // 4
                 resnet::ResnetInit {
                     ksize,
                     norm_kind,
@@ -713,10 +710,8 @@ mod motion_based {
                     num_mid: 1,
                     num_up: 0,
                 }
-                .build(path / "motion_5", inner_c, 2, inner_c), // 2
-            ])
-            .try_collect()
-            .unwrap();
+                .build(path / "motion_5", inner_c, 2, inner_c)?, // 2
+            ];
 
             let scaling_coefs = [4.0, 2.0, 1.0, 0.5, 0.5, 0.5];
 
@@ -769,7 +764,8 @@ mod motion_based {
                                 // let (bsize, num_entires, num_anchors, height, width) = context.size5().unwrap();
 
                                 // scale batch_size to bsize * num_anchors
-                                let context = context.repeat_interleave_self_int(num_anchors, 0);
+                                let context =
+                                    context.repeat_interleave_self_int(num_anchors, 0, None);
 
                                 // merge entry and anchor dimensions
                                 let context = context.view([bsize * num_anchors, -1, in_h, in_w]);
@@ -888,9 +884,10 @@ mod motion_based {
                     // motion vector in ratio unit
                     let motion_dx_pixel = motion_field_pixel.i((.., 0..1, .., ..));
                     let motion_dy_pixel = motion_field_pixel.i((.., 1..2, .., ..));
-                    let motion_norm_pixel = (motion_dx_pixel.pow(2.0) + motion_dy_pixel.pow(2.0))
-                        .sqrt()
-                        .mean_dim(&[2, 3], false, Kind::Float);
+                    let motion_norm_pixel = (motion_dx_pixel.pow_tensor_scalar(2.0)
+                        + motion_dy_pixel.pow_tensor_scalar(2.0))
+                    .sqrt()
+                    .mean_dim(&[2, 3], false, Kind::Float);
 
                     // scale [0..in_h, 0..in_w] = [0..1, 0..1]
                     let motion_dx_ratio = &motion_dx_pixel / in_w as f64;
@@ -1020,6 +1017,7 @@ mod motion_based {
     }
 }
 
+pub use attention_based::*;
 mod attention_based {
     use super::*;
 
@@ -1726,16 +1724,18 @@ mod resnet2 {
     }
 }
 
+use detection_encode::*;
 mod detection_encode {
+
     use super::*;
 
     pub trait DetectionEncode {
-        fn encode_detection(&self) -> Result<(Tensor, Vec<RatioSize<R64>>)>;
-        fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> Self;
+        fn encode_detection(&self) -> Result<(Tensor, Vec<Ratio<HW<R64>>>)>;
+        fn decode_detection(input: &Tensor, anchors: Vec<Ratio<HW<R64>>>) -> Self;
     }
 
     impl DetectionEncode for DenseDetectionTensor {
-        fn encode_detection(&self) -> Result<(Tensor, Vec<RatioSize<R64>>)> {
+        fn encode_detection(&self) -> Result<(Tensor, Vec<Ratio<HW<R64>>>)> {
             let input = self;
             let device = input.device();
             let bsize = input.batch_size() as i64;
@@ -1813,7 +1813,7 @@ mod detection_encode {
             Ok((merge, input.anchors.clone()))
         }
 
-        fn decode_detection(input: &Tensor, anchors: Vec<RatioSize<R64>>) -> Self {
+        fn decode_detection(input: &Tensor, anchors: Vec<Ratio<HW<R64>>>) -> Self {
             debug_assert!(input.is_all_finite());
 
             let device = input.device();
@@ -1832,8 +1832,18 @@ mod detection_encode {
                 ((xs.i((.., 0..1, .., .., ..)).sigmoid() * 2.0 - 0.5) + y_offsets) / in_h as f64;
             let cx =
                 ((xs.i((.., 1..2, .., .., ..)).sigmoid() * 2.0 - 0.5) + x_offsets) / in_w as f64;
-            let h = xs.i((.., 2..3, .., .., ..)).sigmoid().mul(2.0).pow(2.0) * anchor_heights;
-            let w = xs.i((.., 3..4, .., .., ..)).sigmoid().mul(2.0).pow(2.0) * anchor_widths;
+            let h = xs
+                .i((.., 2..3, .., .., ..))
+                .sigmoid()
+                .mul(2.0)
+                .pow_tensor_scalar(2.0)
+                * anchor_heights;
+            let w = xs
+                .i((.., 3..4, .., .., ..))
+                .sigmoid()
+                .mul(2.0)
+                .pow_tensor_scalar(2.0)
+                * anchor_widths;
             let obj_logit = xs.i((.., 4..5, .., .., ..));
             let class_logit = xs.i((.., 5.., .., .., ..));
 
@@ -1856,6 +1866,7 @@ mod detection_encode {
     }
 }
 
+use denormed_detection::*;
 mod denormed_detection {
     use super::*;
 
@@ -1868,7 +1879,7 @@ mod denormed_detection {
         pub obj_prob: Tensor,
         pub class_prob: Tensor,
         #[tensor_like(clone)]
-        pub anchors: Vec<RatioSize<R64>>,
+        pub anchors: Vec<Ratio<HW<R64>>>,
     }
 
     impl DenormedDetection {
@@ -1986,7 +1997,7 @@ struct DetectionAdditions {
 }
 
 impl DetectionAdditions {
-    pub fn new(height: usize, width: usize, anchors: &[RatioSize<R64>]) -> Self {
+    pub fn new(height: usize, width: usize, anchors: &[Ratio<HW<R64>>]) -> Self {
         let height = height as i64;
         let width = width as i64;
         let num_anchors = anchors.len() as i64;
@@ -2001,8 +2012,8 @@ impl DetectionAdditions {
             .iter()
             .cloned()
             .map(|anchor_size| {
-                let anchor_size = anchor_size.cast::<f32>().unwrap();
-                (anchor_size.h, anchor_size.w)
+                let anchor_size = anchor_size.cast::<f32>();
+                (anchor_size.h(), anchor_size.w())
             })
             .unzip_n_vec();
 
@@ -2034,8 +2045,8 @@ mod tests {
             let in_h = 16;
             let in_w = 9;
             let anchors: Vec<_> = [(0.5, 0.1), (0.1, 0.6)]
-                .iter()
-                .map(|&(h, w)| RatioSize::from_hw(r64(h), r64(w)).unwrap())
+                .into_iter()
+                .map(|(h, w)| Ratio(HW::from_hw([h, w]).cast::<R64>()))
                 .collect();
             let num_anchors = anchors.len() as i64;
             let y_offsets = Tensor::arange(in_h, FLOAT_CPU)
@@ -2048,8 +2059,8 @@ mod tests {
                 .iter()
                 .cloned()
                 .map(|anchor_size| {
-                    let anchor_size = anchor_size.cast::<f32>().unwrap();
-                    (anchor_size.h, anchor_size.w)
+                    let anchor_size = anchor_size.cast::<f32>();
+                    (anchor_size.h(), anchor_size.w())
                 })
                 .unzip_n_vec();
             let anchor_heights = Tensor::of_slice(&anchor_h_vec)
@@ -2115,8 +2126,8 @@ mod tests {
             let in_h = 16;
             let in_w = 9;
             let anchors: Vec<_> = [(0.5, 0.1), (0.1, 0.6)]
-                .iter()
-                .map(|&(h, w)| RatioSize::from_hw(r64(h), r64(w)).unwrap())
+                .into_iter()
+                .map(|(h, w)| Ratio(HW::from_hw([h, w]).cast::<R64>()))
                 .collect();
             let num_anchors = anchors.len() as i64;
             let y_offsets = Tensor::arange(in_h, FLOAT_CPU)
@@ -2129,8 +2140,8 @@ mod tests {
                 .iter()
                 .cloned()
                 .map(|anchor_size| {
-                    let anchor_size = anchor_size.cast::<f32>().unwrap();
-                    (anchor_size.h, anchor_size.w)
+                    let anchor_size = anchor_size.cast::<f32>();
+                    (anchor_size.h(), anchor_size.w())
                 })
                 .unzip_n_vec();
             let anchor_heights = Tensor::of_slice(&anchor_h_vec)

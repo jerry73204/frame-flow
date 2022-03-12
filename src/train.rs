@@ -6,9 +6,11 @@ use crate::{
         Discriminator, Generator, MotionBasedTransformerInit, NLayerDiscriminatorInit,
         ResnetGeneratorInit, Transformer, UnetGeneratorInit, WGanGp, WGanGpInit,
     },
+    rate_meter::RateMeter,
     utils::DenseDetectionTensorListExt,
     FILE_STRFTIME,
 };
+use tch_goodies::{lr_schedule::LrScheduler, DenseDetectionTensorList, Ratio};
 use yolo_dl::{loss::YoloLoss, model::YoloModel};
 
 const WEIGHT_CLAMP: f64 = 0.01;
@@ -21,11 +23,11 @@ struct TrainWorker {
     transformer_vs: nn::VarStore,
     image_seq_discriminator_vs: nn::VarStore,
 
-    detector_opt: nn::Optimizer<nn::Adam>,
-    generator_opt: nn::Optimizer<nn::Adam>,
-    discriminator_opt: nn::Optimizer<nn::Adam>,
-    transformer_opt: nn::Optimizer<nn::Adam>,
-    image_seq_discriminator_opt: nn::Optimizer<nn::Adam>,
+    detector_opt: nn::Optimizer,
+    generator_opt: nn::Optimizer,
+    discriminator_opt: nn::Optimizer,
+    transformer_opt: nn::Optimizer,
+    image_seq_discriminator_opt: nn::Optimizer,
 
     detector_model: DetectorWrapper,
     generator_model: GeneratorWrapper,
@@ -68,7 +70,7 @@ impl TrainWorker {
         &mut self,
         steps: usize,
         image: &Tensor,
-        labels: &[Vec<RatioRectLabel<R64>>],
+        labels: &[Vec<Ratio<RectLabel>>],
         with_artifacts: bool,
         dry_run: bool,
     ) -> Result<(Option<f64>, Option<msg::WeightsAndGrads>)> {
@@ -257,7 +259,7 @@ impl TrainWorker {
         &mut self,
         steps: usize,
         gt_det: &DenseDetectionTensorList,
-        gt_labels: &[Vec<RatioRectLabel<R64>>],
+        gt_labels: &[Vec<Ratio<RectLabel>>],
         dry_run: bool,
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
@@ -304,7 +306,7 @@ impl TrainWorker {
         &mut self,
         steps: usize,
         gt_image: &Tensor,
-        gt_labels: &[Vec<RatioRectLabel<R64>>],
+        gt_labels: &[Vec<Ratio<RectLabel>>],
         dry_run: bool,
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
@@ -353,7 +355,7 @@ impl TrainWorker {
         &mut self,
         steps: usize,
         gt_image_seq: &[Tensor],
-        gt_labels_seq: &[Vec<Vec<RatioRectLabel<R64>>>],
+        gt_labels_seq: &[Vec<Vec<Ratio<RectLabel>>>],
         // _gt_det_seq: &[DenseDetectionTensorList],
         with_artifacts: bool,
         dry_run: bool,
@@ -413,7 +415,7 @@ impl TrainWorker {
                                 .motion_norm_pixel
                                 .unwrap()
                                 .mean(Kind::Float)
-                                .pow(2);
+                                .pow_tensor_scalar(2);
 
                         let similarity = crate::model::dense_detection_list_similarity(
                             last_real_det,
@@ -722,8 +724,8 @@ pub fn training_worker(
 
     // variables
     // let mut train_step = 0;
-    let mut lr_scheduler = train::utils::LrScheduler::new(&config.train.lr_schedule, 0)?;
-    let mut rate_counter = train::utils::RateCounter::with_second_intertal();
+    let mut lr_scheduler = LrScheduler::new(&config.train.lr_schedule, 0)?;
+    let mut rate_counter = RateMeter::with_second_intertal();
     let init_lr = lr_scheduler.next();
 
     let train_step_iter = 0..;
@@ -870,7 +872,7 @@ pub fn training_worker(
         let mut vs = nn::VarStore::new(device);
         let root = vs.root();
 
-        let channels: Vec<_> = chain!(array::IntoIter::new([16, 32]), iter::repeat(64))
+        let channels: Vec<_> = chain!([16, 32], iter::repeat(64))
             .take(num_blocks)
             .collect();
         let disc_model: Discriminator = NLayerDiscriminatorInit {
@@ -935,7 +937,7 @@ pub fn training_worker(
         let mut vs = nn::VarStore::new(device);
         let root = vs.root();
 
-        let channels: Vec<_> = chain!(array::IntoIter::new([16, 32]), iter::repeat(64))
+        let channels: Vec<_> = chain!([16, 32], iter::repeat(64))
             .take(num_blocks)
             .collect();
         let model: Discriminator = NLayerDiscriminatorInit {
@@ -1012,7 +1014,7 @@ pub fn training_worker(
     tch::no_grad(|| -> Result<_> {
         worker.freeze_all_vs();
         let warm_up_steps = config.train.warm_up_steps;
-        let mut rate_counter = train::utils::RateCounter::with_second_intertal();
+        let mut rate_counter = RateMeter::with_second_intertal();
         info!("run warm-up for {} steps", warm_up_steps);
 
         for warm_up_step in 0..warm_up_steps {
@@ -1033,7 +1035,6 @@ pub fn training_worker(
                     let det_vec: Vec<_> = batch
                         .iter()
                         .map(|labels| {
-                            let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
                             DenseDetectionTensorList::from_labels(
                                 labels,
                                 &worker.detector_model.model.anchors(),
@@ -1164,7 +1165,6 @@ pub fn training_worker(
                 let det_vec: Vec<_> = batch
                     .iter()
                     .map(|labels| -> Result<_> {
-                        let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
                         let det = DenseDetectionTensorList::from_labels(
                             labels,
                             &worker.detector_model.model.anchors(),

@@ -1,4 +1,5 @@
 use crate::{common::*, model::DetectionSimilarity};
+use tch_goodies::{DenseDetectionTensorList, Ratio};
 
 #[derive(Debug)]
 pub enum LogMessage {
@@ -60,7 +61,7 @@ pub struct TrainingMessage {
     pub noise_seq: Vec<Tensor>,
     /// Sequence of batched sets of boxes.
     #[tensor_like(clone)]
-    pub boxes_batch_seq: Vec<Vec<Vec<RatioRectLabel<R64>>>>,
+    pub boxes_batch_seq: Vec<Vec<Vec<Ratio<RectLabel>>>>,
 }
 
 #[derive(Debug)]

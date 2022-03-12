@@ -3,14 +3,14 @@ pub use approx::{abs_diff_eq, assert_abs_diff_eq};
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
 pub use collected::{AddVal, Count, First, GroupHashMap, Last, MaxVal};
-pub use cv_convert::{FromCv, TryFromCv};
+pub use cv_convert::{FromCv as _, TryFromCv as _};
 pub use derivative::Derivative;
 pub use futures::{
-    future::FutureExt,
-    stream::{self, Stream, StreamExt, TryStreamExt},
+    future::FutureExt as _,
+    stream::{self, Stream, StreamExt as _, TryStreamExt as _},
 };
 pub use indexmap::{IndexMap, IndexSet};
-pub use iterator_ext::IteratorExt;
+pub use iterator_ext::IteratorExt as _;
 pub use itertools::{chain, iproduct, izip, Itertools};
 pub use mona::prelude::*;
 pub use ndarray as nd;
@@ -34,28 +34,24 @@ pub use std::{
     ops::{Add, Div, Mul, Sub},
     path::{Path, PathBuf},
     sync::{Arc, Once},
+    time::{Duration, Instant},
 };
-pub use structopt::StructOpt;
 pub use tch::{
     kind::{FLOAT_CPU, INT64_CPU},
     nn::{self, Module as _, ModuleT as _, OptimizerConfig},
     vision, Device, IndexOp, Kind, Reduction, Tensor,
 };
-pub use tch_goodies::{
-    Activation, DenseDetectionTensor, DenseDetectionTensorList, DenseDetectionTensorListUnchecked,
-    DenseDetectionTensorUnchecked, GridSize, InstanceIndex, OptionalTensorList, PixelCyCxHW,
-    PixelRectLabel, PixelRectTransform, PixelSize, PixelTLBR, RatioCyCxHW, RatioRectLabel,
-    RatioSize, RatioUnit, Rect, TensorExt, TensorList, NONE_TENSORS,
-};
+pub use bbox::prelude::*;
+pub use log::{info, warn};
+pub use tch_act::TensorActivationExt as _;
+pub use tch_goodies::TensorExt as _;
 pub use tch_tensor_like::TensorLike;
-pub use tfrecord::{EventWriter, EventWriterInit};
 pub use tokio::sync::mpsc;
 pub use tokio_stream::wrappers::ReadDirStream;
-pub use tracing::{error, info, info_span, instrument, trace, trace_span, warn, Instrument};
-pub use unzip_n::unzip_n;
 
-pub type Fallible<T> = Result<T>;
+pub type RectLabel = label::Label<bbox::CyCxHW<R64>, usize>;
 
+use unzip_n::unzip_n;
 unzip_n!(pub 2);
 unzip_n!(pub 3);
 unzip_n!(pub 6);

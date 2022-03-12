@@ -1,4 +1,6 @@
 use crate::{common::*, model::NormKind};
+use tch_goodies::lr_schedule;
+use yolo_dl::loss;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -82,7 +84,7 @@ pub struct Training {
     pub seq_len: NonZeroUsize,
     #[serde(with = "tch_serde::serde_device")]
     pub device: Device,
-    pub lr_schedule: train::config::LearningRateSchedule,
+    pub lr_schedule: lr_schedule::Config,
     #[serde(default = "default_warm_up_steps")]
     pub warm_up_steps: usize,
     #[serde(default = "default_label_flip_prob")]
@@ -173,7 +175,7 @@ pub struct ImageSequenceDiscriminatorModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Loss {
-    pub detector: train::config::Loss,
+    pub detector: loss::Config,
     pub image_recon: GanLoss,
     // pub det_recon: GanLoss,
 }

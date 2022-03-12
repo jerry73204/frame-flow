@@ -1,11 +1,10 @@
 use crate::common::*;
+use bbox::{CyCxHW, HW};
+use label::Label;
+use tch_goodies::Pixel;
 
-pub use dataset::*;
-pub use iii_dataset::*;
-pub use mnist_dataset::*;
-pub use simple_dataset::*;
-
-mod dataset {
+pub use dataset_::*;
+mod dataset_ {
     use super::*;
 
     #[derive(Debug)]
@@ -25,14 +24,14 @@ mod dataset {
             Ok(image)
         }
 
-        pub fn size(&self) -> PixelSize<usize> {
+        pub fn size(&self) -> Pixel<HW<usize>> {
             match self {
                 Self::File(sample) => sample.size.clone(),
                 Self::Tensor(sample) => sample.size(),
             }
         }
 
-        pub fn boxes(&self) -> &[PixelRectLabel<R64>] {
+        pub fn boxes(&self) -> &[Pixel<RectLabel>] {
             match self {
                 Self::File(sample) => &sample.boxes,
                 Self::Tensor(sample) => &sample.boxes,
@@ -67,14 +66,14 @@ mod dataset {
             Ok(image)
         }
 
-        pub fn size(&self) -> PixelSize<usize> {
+        pub fn size(&self) -> Pixel<HW<usize>> {
             match self {
                 Self::File(sample) => sample.size.clone(),
                 Self::Tensor(sample) => sample.size(),
             }
         }
 
-        pub fn boxes(&self) -> &[PixelRectLabel<R64>] {
+        pub fn boxes(&self) -> &[Pixel<RectLabel>] {
             match self {
                 Self::File(sample) => &sample.boxes,
                 Self::Tensor(sample) => &sample.boxes,
@@ -97,23 +96,23 @@ mod dataset {
     #[derive(Debug, Clone)]
     pub struct FileSample {
         pub image_file: PathBuf,
-        pub size: PixelSize<usize>,
-        pub boxes: Vec<PixelRectLabel<R64>>,
+        pub size: Pixel<HW<usize>>,
+        pub boxes: Vec<Pixel<RectLabel>>,
     }
 
     #[derive(Debug)]
     pub struct TensorSample {
         pub image: Tensor,
-        pub boxes: Vec<PixelRectLabel<R64>>,
+        pub boxes: Vec<Pixel<RectLabel>>,
     }
 
     // HACK: workaround for `Tensor` is not Sync
     unsafe impl Sync for TensorSample {}
 
     impl TensorSample {
-        pub fn size(&self) -> PixelSize<usize> {
+        pub fn size(&self) -> Pixel<HW<usize>> {
             let (_c, h, w) = self.image.size3().unwrap();
-            PixelSize::from_hw(h as usize, w as usize).unwrap()
+            Pixel(HW::from_hw([h as usize, w as usize]))
         }
     }
 
@@ -161,9 +160,10 @@ mod dataset {
     }
 }
 
+pub use iii_dataset::*;
 mod iii_dataset {
     use super::{
-        dataset::{FileSample, SampleRef},
+        dataset_::{FileSample, SampleRef},
         *,
     };
     use iii_formosa_dataset as iii;
@@ -257,7 +257,7 @@ mod iii_dataset {
 
                             let size = {
                                 let iii::Size { width, height, .. } = annotation.size;
-                                PixelSize::from_hw(height, width).unwrap()
+                                Pixel(HW::from_hw([height, width]))
                             };
 
                             let boxes: Vec<_> = annotation
@@ -279,13 +279,11 @@ mod iii_dataset {
                                         xmax: r,
                                         ymax: b,
                                     } = obj.bndbox;
-                                    let bbox =
-                                        PixelCyCxHW::from_tlbr(t, l, b, r)?.cast::<R64>().unwrap();
-
-                                    let labeled_bbox = PixelRectLabel {
+                                    let bbox = CyCxHW::from_tlbr([t, l, b, r]).cast::<R64>();
+                                    let labeled_bbox = Pixel(Label {
                                         rect: bbox,
                                         class: class_index,
-                                    };
+                                    });
                                     Ok(labeled_bbox)
                                 })
                                 .try_collect()?;
@@ -296,7 +294,7 @@ mod iii_dataset {
                                 boxes,
                             };
 
-                            Fallible::Ok((dir, sample))
+                            anyhow::Ok((dir, sample))
                         }
                     })
                     .try_collect()
@@ -443,9 +441,10 @@ mod iii_dataset {
     // }
 }
 
+pub use mnist_dataset::*;
 mod mnist_dataset {
     use super::{
-        dataset::{SampleRef, TensorSample},
+        dataset_::{SampleRef, TensorSample},
         *,
     };
 
@@ -506,9 +505,10 @@ mod mnist_dataset {
     }
 }
 
+pub use simple_dataset::*;
 mod simple_dataset {
     use super::{
-        dataset::{FileSample, SampleRef},
+        dataset_::{FileSample, SampleRef},
         *,
     };
 
@@ -599,7 +599,7 @@ mod simple_dataset {
             let series: IndexMap<_, _> = series_entries
                 .into_iter()
                 .map(|(series_name, series_entry)| -> Result<_> {
-                    let image_size = PixelSize::from_hw(series_entry.height, series_entry.width)?;
+                    let image_size = Pixel(HW::from_hw([series_entry.height, series_entry.width]));
 
                     let mut labels = {
                         let labels: GroupHashMap<_, _> = label_entries
@@ -624,10 +624,10 @@ mod simple_dataset {
                                     )
                                 })?;
 
-                                let label = PixelRectLabel {
-                                    rect: PixelCyCxHW::from_tlhw(t, l, h, w)?.cast().unwrap(),
+                                let label = Pixel(Label {
+                                    rect: CyCxHW::from_tlhw([t, l, h, w]).cast(),
                                     class,
-                                };
+                                });
 
                                 Ok((index, label))
                             })

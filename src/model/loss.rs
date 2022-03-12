@@ -1,3 +1,5 @@
+use tch_goodies::{DenseDetectionTensor, DenseDetectionTensorList};
+
 use crate::common::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -275,7 +277,7 @@ impl WGanGp {
             true,      // create_graph
         )[0];
         let penalty = (Tensor::norm_except_dim(&(grad + 1e-16), 2, 1) - c)
-            .pow(2)
+            .pow_tensor_scalar(2)
             .mean(Kind::Float)
             * λ;
         debug_assert!(penalty.is_all_finite());

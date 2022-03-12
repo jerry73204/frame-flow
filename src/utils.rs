@@ -1,13 +1,12 @@
 use crate::common::*;
+use bbox::{HW, TLBR};
 use num_traits::{NumCast, ToPrimitive};
+use tch_goodies::{
+    DenseDetectionTensor, DenseDetectionTensorList, DenseDetectionTensorListUnchecked,
+    DenseDetectionTensorUnchecked, Pixel, Ratio,
+};
 
-pub use dense_detection_tensor_list_ext::*;
-pub use gaussian_blur::*;
-pub use num_convert::*;
 pub use sequential_ext::*;
-pub use tensor_ext::*;
-pub use warp::*;
-
 mod sequential_ext {
     use super::*;
 
@@ -60,6 +59,7 @@ mod sequential_ext {
     }
 }
 
+pub use num_convert::*;
 mod num_convert {
     use super::*;
 
@@ -91,7 +91,9 @@ mod num_convert {
     }
 }
 
+pub use dense_detection_tensor_list_ext::*;
 mod dense_detection_tensor_list_ext {
+
     use super::*;
 
     pub trait DenseDetectionTensorListExt
@@ -99,28 +101,28 @@ mod dense_detection_tensor_list_ext {
         Self: Sized,
     {
         fn from_labels<R>(
-            labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
+            labels: impl IntoIterator<Item = impl Borrow<Ratio<RectLabel>>>,
             anchors: &[impl Borrow<[R]>],
             heights: &[usize],
             widths: &[usize],
             num_classes: usize,
         ) -> Result<Self>
         where
-            R: Borrow<RatioSize<R64>>;
+            R: Borrow<Ratio<HW<R64>>>;
 
         fn is_all_finite(&self) -> bool;
     }
 
     impl DenseDetectionTensorListExt for DenseDetectionTensorList {
         fn from_labels<R>(
-            labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
+            labels: impl IntoIterator<Item = impl Borrow<Ratio<RectLabel>>>,
             anchors: &[impl Borrow<[R]>],
             heights: &[usize],
             widths: &[usize],
             num_classes: usize,
         ) -> Result<Self>
         where
-            R: Borrow<RatioSize<R64>>,
+            R: Borrow<Ratio<HW<R64>>>,
         {
             let list_len = anchors.len();
             ensure!(list_len == heights.len() && list_len == widths.len());
@@ -151,14 +153,14 @@ mod dense_detection_tensor_list_ext {
         Self: Sized,
     {
         fn from_labels<R>(
-            labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
+            labels: impl IntoIterator<Item = impl Borrow<Ratio<RectLabel>>>,
             anchors: impl Borrow<[R]>,
             height: usize,
             width: usize,
             num_classes: usize,
         ) -> Result<Self>
         where
-            R: Borrow<RatioSize<R64>>;
+            R: Borrow<Ratio<HW<R64>>>;
 
         fn detach(&self) -> Self;
         fn copy(&self) -> Self;
@@ -167,14 +169,14 @@ mod dense_detection_tensor_list_ext {
 
     impl DenseDetectionTensorExt for DenseDetectionTensor {
         fn from_labels<R>(
-            labels: impl IntoIterator<Item = impl Borrow<RatioRectLabel<f64>>>,
+            labels: impl IntoIterator<Item = impl Borrow<Ratio<RectLabel>>>,
             anchors: impl Borrow<[R]>,
             height: usize,
             width: usize,
             num_classes: usize,
         ) -> Result<Self>
         where
-            R: Borrow<RatioSize<R64>>,
+            R: Borrow<Ratio<HW<R64>>>,
         {
             tch::no_grad(move || -> Result<_> {
                 const MAX_ANCHOR_SCALE: f64 = 4.0;
@@ -188,8 +190,8 @@ mod dense_detection_tensor_list_ext {
                     .collect();
                 let num_anchors = anchors.len() as i64;
                 let image_boundary =
-                    PixelTLBR::from_tlbr(0.0, 0.0, height as f64, width as f64).unwrap();
-                let image_size = PixelSize::from_hw(height as f64, width as f64).unwrap();
+                    Pixel(TLBR::from_tlbr([0.0, 0.0, height as f64, width as f64]).cast::<R64>());
+                let image_size = Pixel(HW::from_hw([height as f64, width as f64]));
 
                 // crop and filter out bad labels
                 let mut used_positions = HashSet::new();
@@ -200,32 +202,44 @@ mod dense_detection_tensor_list_ext {
                         const MIN_SIZE: f64 = 1.0;
                         const MAX_HW_RATIO: f64 = 4.0;
 
-                        let pixel_label = ratio_label.borrow().to_pixel_label(&image_size);
-                        let bbox = pixel_label.intersect_with(&image_boundary)?;
+                        let ratio_label = ratio_label.borrow();
+                        let pixel_label: Pixel<RectLabel> = Pixel(RectLabel {
+                            rect: ratio_label.rect.scale_hw(image_size.cast::<R64>().hw()),
+                            class: ratio_label.class,
+                        });
+                        let bbox = pixel_label.rect.intersect_with(&image_boundary.0)?;
 
                         if bbox.h() < MIN_SIZE && bbox.w() < MIN_SIZE {
                             return None;
                         }
 
-                        if !(MAX_HW_RATIO.recip()..=MAX_HW_RATIO).contains(&(bbox.h() / bbox.w())) {
+                        if !(MAX_HW_RATIO.recip()..=MAX_HW_RATIO)
+                            .contains(&(bbox.h() / bbox.w()).raw())
+                        {
                             return None;
                         }
 
-                        let pixel_label = PixelRectLabel {
+                        let pixel_label = Pixel(RectLabel {
                             rect: bbox.into(),
                             class: pixel_label.class,
+                        });
+                        let ratio_label: Ratio<RectLabel> = {
+                            let [h, w] = image_size.cast::<R64>().hw();
+                            Ratio(RectLabel {
+                                rect: pixel_label.rect.scale_hw([h.recip(), w.recip()]),
+                                class: pixel_label.class,
+                            })
                         };
-                        let ratio_label = pixel_label.to_ratio_label(&image_size);
 
                         Some((ratio_label, pixel_label))
                     })
                     .flat_map(|(ratio_label, pixel_label)| {
-                        let cy = pixel_label.cy();
-                        let cx = pixel_label.cx();
+                        let cy = pixel_label.rect.cy();
+                        let cx = pixel_label.rect.cx();
                         let cy_fract = cy.fract();
                         let cx_fract = cx.fract();
-                        let row = cy.floor() as isize;
-                        let col = cx.floor() as isize;
+                        let row = cy.floor().raw() as isize;
+                        let col = cx.floor().raw() as isize;
 
                         let pos_c = iter::once((row, col));
                         let pos_t = (cy_fract < SNAP_THRESH).then(|| (row - 1, col));
@@ -252,21 +266,21 @@ mod dense_detection_tensor_list_ext {
                     })
                     // filter by position constraint
                     .filter(|&(_, ref pixel_label, row, col)| {
-                        let [cy, cx, _, _] = pixel_label.cycxhw();
-                        (0.0..=1.0).contains(&((cy - row as f64 + 0.5) / 2.0))
-                            && (0.0..=1.0).contains(&((cx - col as f64 + 0.5) / 2.0))
+                        let [cy, cx, _, _] = pixel_label.rect.cycxhw();
+                        (0.0..=1.0).contains(&((cy - row as f64 + 0.5) / 2.0).raw())
+                            && (0.0..=1.0).contains(&((cx - col as f64 + 0.5) / 2.0).raw())
                     })
                     .filter_map(|(ratio_label, _, row, col)| {
                         let position = anchors.iter().enumerate().find_map(
                             |(anchor_index, anchor_size)| {
-                                let h_scale = ratio_label.h() / anchor_size.h.raw();
-                                let w_scale = ratio_label.w() / anchor_size.w.raw();
+                                let h_scale = ratio_label.rect.h() / anchor_size.h().raw();
+                                let w_scale = ratio_label.rect.w() / anchor_size.w().raw();
                                 let position = (row, col, anchor_index);
                                 let ok = !used_positions.contains(&position)
-                                    && anchor_scale_range.contains(&h_scale)
-                                    && anchor_scale_range.contains(&w_scale)
-                                    && (0.0..=2.0).contains(&h_scale.sqrt())
-                                    && (0.0..=2.0).contains(&w_scale.sqrt());
+                                    && anchor_scale_range.contains(&h_scale.raw())
+                                    && anchor_scale_range.contains(&w_scale.raw())
+                                    && (0.0..=2.0).contains(&h_scale.raw().sqrt())
+                                    && (0.0..=2.0).contains(&w_scale.raw().sqrt());
                                 ok.then(|| position)
                             },
                         )?;
@@ -297,10 +311,10 @@ mod dense_detection_tensor_list_ext {
                                 row as i64,
                                 col as i64,
                                 anchor_index as i64,
-                                cy as f32,
-                                cx as f32,
-                                h as f32,
-                                w as f32,
+                                cy.raw() as f32,
+                                cx.raw() as f32,
+                                h.raw() as f32,
+                                w.raw() as f32,
                                 class as i64,
                             )
                         })
@@ -503,6 +517,7 @@ mod dense_detection_tensor_list_ext {
     }
 }
 
+pub use warp::*;
 mod warp {
     use super::*;
 
@@ -595,6 +610,7 @@ mod warp {
     }
 }
 
+pub use tensor_ext::*;
 mod tensor_ext {
     use super::*;
 
@@ -795,6 +811,7 @@ mod tensor_ext {
     }
 }
 
+pub use gaussian_blur::*;
 mod gaussian_blur {
     use super::*;
 
@@ -815,7 +832,7 @@ mod gaussian_blur {
                     1 => Tensor::ones(&[1], (Kind::Float, device)),
                     size => Tensor::arange(size, (Kind::Float, device)) - (size - 1) as f64 / 2.0,
                 }
-                .pow(2)
+                .pow_tensor_scalar(2)
                 .neg()
                 .div(2.0 * std * std)
                 .exp();

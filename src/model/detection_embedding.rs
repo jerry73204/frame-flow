@@ -1,5 +1,6 @@
 use super::misc::{NormKind, PaddingKind};
 use crate::common::*;
+use tch_goodies::DenseDetectionTensorList;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DetectionEmbeddingInit {
