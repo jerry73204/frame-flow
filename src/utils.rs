@@ -109,6 +109,8 @@ mod dense_detection_tensor_list_ext {
             R: Borrow<RatioSize<R64>>;
 
         fn is_all_finite(&self) -> bool;
+        fn detach(&self) -> Self;
+        fn copy(&self) -> Self;
     }
 
     impl DenseDetectionTensorListExt for DenseDetectionTensorList {
@@ -143,6 +145,21 @@ mod dense_detection_tensor_list_ext {
 
         fn is_all_finite(&self) -> bool {
             self.tensors.iter().any(|tensor| tensor.is_all_finite())
+        }
+
+        fn detach(&self) -> Self {
+            DenseDetectionTensorListUnchecked {
+                tensors: self.tensors.iter().map(|det| det.detach()).collect(),
+            }
+            .build()
+            .unwrap()
+        }
+        fn copy(&self) -> Self {
+            DenseDetectionTensorListUnchecked {
+                tensors: self.tensors.iter().map(|det| det.copy()).collect(),
+            }
+            .build()
+            .unwrap()
         }
     }
 

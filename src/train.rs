@@ -1199,28 +1199,41 @@ pub fn training_worker(
         } = msg.to_device(device);
         let seq_len = gt_image_seq.len();
 
-        let gt_det_seq: Vec<_> = gt_labels_seq
+        let gt_det_seq: Vec<_> = gt_image_seq
             .iter()
-            .map(|batch| -> Result<_> {
-                let det_vec: Vec<_> = batch
-                    .iter()
-                    .map(|labels| -> Result<_> {
-                        let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
-                        let det = DenseDetectionTensorList::from_labels(
-                            labels,
-                            &worker.detector_ctx.detector_model.model.anchors(),
-                            &[image_h],
-                            &[image_w],
-                            num_classes,
-                        )?
-                        .to_device(device);
-                        Ok(det)
-                    })
-                    .try_collect()?;
-                let det_batch = DenseDetectionTensorList::cat_batch(&det_vec).unwrap();
-                Ok(det_batch)
+            .map(|gt_image| {
+                let det = worker
+                    .detector_ctx
+                    .detector_model
+                    .forward_t(gt_image, true)?
+                    .detach()
+                    .copy();
+                anyhow::Ok(det)
             })
             .try_collect()?;
+
+        // let gt_det_seq: Vec<_> = gt_labels_seq
+        //     .iter()
+        //     .map(|batch| -> Result<_> {
+        //         let det_vec: Vec<_> = batch
+        //             .iter()
+        //             .map(|labels| -> Result<_> {
+        //                 let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
+        //                 let det = DenseDetectionTensorList::from_labels(
+        //                     labels,
+        //                     &worker.detector_ctx.detector_model.model.anchors(),
+        //                     &[image_h],
+        //                     &[image_w],
+        //                     num_classes,
+        //                 )?
+        //                 .to_device(device);
+        //                 Ok(det)
+        //             })
+        //             .try_collect()?;
+        //         let det_batch = DenseDetectionTensorList::cat_batch(&det_vec).unwrap();
+        //         Ok(det_batch)
+        //     })
+        //     .try_collect()?;
 
         let (
             detector_loss,
