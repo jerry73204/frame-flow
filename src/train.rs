@@ -361,15 +361,16 @@ impl TrainWorker {
             let similarity = crate::model::dense_detection_list_similarity(&recon_det, &orig_det)?;
 
             // run discriminator
-            let real_score = discriminator_model.forward_t(gt_image, train_discriminator);
-            let fake_score = discriminator_model.forward_t(&fake_image, train_discriminator);
+            // let real_score = discriminator_model.forward_t(gt_image, train_discriminator);
+            // let fake_score = discriminator_model.forward_t(&fake_image, train_discriminator);
 
             // compute loss
-            let generator_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
+            // let generator_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
 
             // optimize generator
             if !dry_run {
-                generator_opt.backward_step(&(&loss.total_loss + &generator_loss));
+                // generator_opt.backward_step(&(&loss.total_loss + &generator_loss));
+                generator_opt.backward_step(&loss.total_loss);
                 // detector_opt.zero_grad();
                 // generator_opt.zero_grad();
                 // loss.total_loss.backward();
