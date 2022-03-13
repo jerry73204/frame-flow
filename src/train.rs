@@ -75,6 +75,7 @@ impl TrainWorker {
         with_artifacts: bool,
         dry_run: bool,
     ) -> Result<(Option<f64>, Option<msg::WeightsAndGrads>)> {
+        dbg!();
         self.freeze_all_vs();
         let Self {
             detector_vs,
@@ -1213,6 +1214,7 @@ pub fn training_worker(
                 );
 
                 // train detector
+                dbg!();
                 let (detector_loss, detector_weights) = worker.train_detector(
                     config.train.train_detector_steps,
                     gt_image,
@@ -1220,6 +1222,7 @@ pub fn training_worker(
                     true,
                     dry_run_training,
                 )?;
+                dbg!();
 
                 // train discriminator
                 let (discriminator_loss, generated_image_1, discriminator_weights) = worker
