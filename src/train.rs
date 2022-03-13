@@ -284,7 +284,7 @@ impl TrainWorker {
 
             let (loss, _) =
                 detector_loss_fn.forward(&recon_det.shallow_clone().try_into()?, gt_labels);
-            let similarity = crate::model::dense_detection_list_similarity(gt_det, &recon_det)?;
+            let similarity = crate::model::dense_detection_list_similarity(&recon_det, gt_det)?;
 
             // optimize generator
             if !dry_run {
@@ -333,7 +333,7 @@ impl TrainWorker {
             let (loss, _) =
                 detector_loss_fn.forward(&recon_det.shallow_clone().try_into()?, gt_labels);
 
-            let similarity = crate::model::dense_detection_list_similarity(&orig_det, &recon_det)?;
+            let similarity = crate::model::dense_detection_list_similarity(&recon_det, &orig_det)?;
 
             // optimize generator
             if !dry_run {
@@ -416,8 +416,8 @@ impl TrainWorker {
                                 .pow(2);
 
                         let similarity = crate::model::dense_detection_list_similarity(
-                            last_real_det,
                             &last_fake_det,
+                            last_real_det,
                         )?;
 
                         // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
