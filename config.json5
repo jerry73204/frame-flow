@@ -94,7 +94,7 @@
         "critic_noise_prob": 0.5,
         "train_detector_steps": 1,
         "train_discriminator_steps": 1,
-        "train_generator_steps": 0,
+        "train_generator_steps": 1,
         "train_retraction_identity_steps": 0,
         "train_triangular_identity_steps": 1,
         "train_forward_consistency_steps": 0,
