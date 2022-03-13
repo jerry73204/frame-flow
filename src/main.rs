@@ -48,8 +48,8 @@ async fn main() -> Result<()> {
     }
 
     let config = ArcRef::new(Arc::new(config));
-    let (train_tx, train_rx) = mpsc::channel(16);
-    let (log_tx, log_rx) = mpsc::channel(2);
+    let (train_tx, train_rx) = flume::bounded(16);
+    let (log_tx, log_rx) = flume::bounded(16);
 
     // load dataset
     let dataset: dataset::Dataset = match config.dataset {
@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
             let mut stream = training_stream::training_stream(dataset, &config.train).await?;
 
             while let Some(msg) = stream.next().await.transpose()? {
-                let result = train_tx.send(msg).await;
+                let result = train_tx.send_async(msg).await;
                 if result.is_err() {
                     break;
                 }

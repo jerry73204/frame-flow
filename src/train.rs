@@ -691,8 +691,8 @@ pub fn training_worker(
     config: ArcRef<config::Config>,
     num_classes: usize,
     checkpoint_dir: impl AsRef<Path>,
-    mut train_rx: mpsc::Receiver<msg::TrainingMessage>,
-    log_tx: mpsc::Sender<msg::LogMessage>,
+    mut train_rx: flume::Receiver<msg::TrainingMessage>,
+    log_tx: flume::Sender<msg::LogMessage>,
 ) -> Result<()> {
     let image_h = config.train.image_size.get();
     let image_w = config.train.image_size.get();
@@ -1017,9 +1017,9 @@ pub fn training_worker(
         info!("run warm-up for {} steps", warm_up_steps);
 
         for warm_up_step in 0..warm_up_steps {
-            let msg = match train_rx.blocking_recv() {
-                Some(msg) => msg,
-                None => break,
+            let msg = match train_rx.recv() {
+                Ok(msg) => msg,
+                Err(_) => break,
             };
             let msg::TrainingMessage {
                 image_batch_seq: gt_image_seq,
@@ -1146,7 +1146,7 @@ pub fn training_worker(
 
     info!("start training");
 
-    while let Some(msg) = train_rx.blocking_recv() {
+    while let Ok(msg) = train_rx.recv() {
         let (train_step, lr, save_checkpoint, save_image) = train_param_iter.next().unwrap();
         worker.set_lr(lr);
 
@@ -1170,12 +1170,13 @@ pub fn training_worker(
                             &[image_h],
                             &[image_w],
                             num_classes,
-                        )?
-                        .to_device(device);
+                        )?;
                         Ok(det)
                     })
                     .try_collect()?;
-                let det_batch = DenseDetectionTensorList::cat_batch(&det_vec).unwrap();
+                let det_batch = DenseDetectionTensorList::cat_batch(&det_vec)
+                    .unwrap()
+                    .to_device(device);
                 Ok(det_batch)
             })
             .try_collect()?;
@@ -1463,7 +1464,7 @@ pub fn training_worker(
                 attention_image_seq,
             });
 
-            let result = log_tx.blocking_send(msg);
+            let result = log_tx.send(msg);
             if result.is_err() {
                 break;
             }

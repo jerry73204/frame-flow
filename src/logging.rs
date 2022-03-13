@@ -3,7 +3,7 @@ use tfrecord::EventAsyncWriter;
 
 pub async fn logging_worker(
     log_dir: impl AsRef<Path>,
-    mut log_rx: mpsc::Receiver<msg::LogMessage>,
+    mut log_rx: flume::Receiver<msg::LogMessage>,
     save_motion_field_image: bool,
     save_files: bool,
 ) -> Result<()> {
@@ -23,9 +23,9 @@ pub async fn logging_worker(
     };
 
     loop {
-        let msg = match log_rx.recv().await {
-            Some(msg) => msg,
-            None => break,
+        let msg = match log_rx.recv_async().await {
+            Ok(msg) => msg,
+            Err(_) => break,
         };
 
         match msg {
