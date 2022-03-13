@@ -284,6 +284,7 @@ impl TrainWorker {
             generator_vs,
             generator_model,
             generator_opt,
+            gan_loss_kind,
             ..
         } = self;
 
@@ -321,6 +322,7 @@ impl TrainWorker {
         gt_image: &Tensor,
         gt_labels: &[Vec<RatioRectLabel<R64>>],
         dry_run: bool,
+        train_discriminator: bool,
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
@@ -328,16 +330,19 @@ impl TrainWorker {
                 DetectorContext {
                     // detector_vs,
                     // detector_opt,
-                    detector_loss_fn,
-                    detector_model,
+                    ref detector_loss_fn,
+                    ref mut detector_model,
                     ..
                 },
 
-            generator_vs,
-            generator_model,
-            generator_opt,
+            ref mut generator_vs,
+            ref mut generator_model,
+            ref mut generator_opt,
+
+            ref discriminator_model,
+            gan_loss_kind,
             ..
-        } = self;
+        } = *self;
 
         // detector_vs.unfreeze();
         generator_vs.unfreeze();
@@ -355,9 +360,16 @@ impl TrainWorker {
 
             let similarity = crate::model::dense_detection_list_similarity(&recon_det, &orig_det)?;
 
+            // run discriminator
+            let real_score = discriminator_model.forward_t(gt_image, train_discriminator);
+            let fake_score = discriminator_model.forward_t(&fake_image, train_discriminator);
+
+            // compute loss
+            let generator_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
+
             // optimize generator
             if !dry_run {
-                generator_opt.backward_step(&loss.total_loss);
+                generator_opt.backward_step(&(&loss.total_loss + &generator_loss));
                 // detector_opt.zero_grad();
                 // generator_opt.zero_grad();
                 // loss.total_loss.backward();
@@ -1314,6 +1326,7 @@ pub fn training_worker(
                         gt_image,
                         gt_labels,
                         dry_run_training,
+                        train_discriminator,
                     )?;
 
                 // create logs
