@@ -175,6 +175,7 @@ mod resnet {
         pub ksize: usize,
         pub num_scale_blocks: usize,
         pub num_blocks: usize,
+        pub gray_output: bool,
     }
 
     impl Default for ResnetGeneratorInit {
@@ -186,6 +187,7 @@ mod resnet {
                 ksize: 5,
                 num_scale_blocks: 2,
                 num_blocks: 2,
+                gray_output: true,
             }
         }
     }
@@ -206,6 +208,7 @@ mod resnet {
                 ksize,
                 num_scale_blocks,
                 num_blocks,
+                gray_output,
             } = self;
             let in_c = in_c as i64;
             let out_c = out_c as i64;
@@ -339,6 +342,16 @@ mod resnet {
                         },
                     ))
                     .add_fn(|xs| xs.tanh())
+            };
+
+            let seq = if gray_output {
+                seq.add_fn(|xs| {
+                    let (b, c, h, w) = xs.size4().unwrap();
+                    xs.mean_dim(&[1], true, Kind::Float)
+                        .expand(&[b, c, h, w], false)
+                })
+            } else {
+                seq
             };
 
             ResnetGenerator { seq }
