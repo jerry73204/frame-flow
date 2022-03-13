@@ -50,11 +50,11 @@ pub struct WGanGp {
 }
 
 pub fn dense_detection_list_similarity(
-    lhs: &DenseDetectionTensorList,
-    rhs: &DenseDetectionTensorList,
+    src: &DenseDetectionTensorList,
+    dst: &DenseDetectionTensorList,
 ) -> Result<DetectionSimilarity> {
     tch::no_grad(|| {
-        ensure!(lhs.tensors.len() == rhs.tensors.len());
+        ensure!(src.tensors.len() == dst.tensors.len());
 
         let (count, cy_loss, cx_loss, h_loss, w_loss, obj_loss, class_loss): (
             Count<_>,
@@ -64,8 +64,8 @@ pub fn dense_detection_list_similarity(
             AddVal<_>,
             AddVal<_>,
             AddVal<_>,
-        ) = izip!(&lhs.tensors, &rhs.tensors)
-            .map(|(lhs, rhs)| -> Result<_> {
+        ) = izip!(&src.tensors, &dst.tensors)
+            .map(|(src, dst)| -> Result<_> {
                 let DetectionSimilarity {
                     cy_loss,
                     cx_loss,
@@ -73,7 +73,7 @@ pub fn dense_detection_list_similarity(
                     w_loss,
                     obj_loss,
                     class_loss,
-                } = dense_detection_similarity(lhs, rhs)?;
+                } = dense_detection_similarity_batched(src, dst)?;
 
                 Ok(((), cy_loss, cx_loss, h_loss, w_loss, obj_loss, class_loss))
             })
@@ -94,29 +94,87 @@ pub fn dense_detection_list_similarity(
     })
 }
 
-pub fn dense_detection_similarity(
-    lhs: &DenseDetectionTensor,
-    rhs: &DenseDetectionTensor,
+// pub fn dense_detection_similarity(
+//     lhs: &DenseDetectionTensor,
+//     rhs: &DenseDetectionTensor,
+// ) -> Result<DetectionSimilarity> {
+//     tch::no_grad(|| {
+//         let diff1 = dense_detection_difference(lhs, rhs)?;
+//         let diff2 = dense_detection_difference(rhs, lhs)?;
+
+//         Ok(DetectionSimilarity {
+//             cy_loss: (diff1.cy_loss + diff2.cy_loss) / 2.0,
+//             cx_loss: (diff1.cx_loss + diff2.cx_loss) / 2.0,
+//             h_loss: (diff1.h_loss + diff2.h_loss) / 2.0,
+//             w_loss: (diff1.w_loss + diff2.w_loss) / 2.0,
+//             obj_loss: (diff1.obj_loss + diff2.obj_loss) / 2.0,
+//             class_loss: (diff1.class_loss + diff2.class_loss) / 2.0,
+//         })
+//     })
+// }
+
+fn dense_detection_similarity_batched(
+    src: &DenseDetectionTensor,
+    dst: &DenseDetectionTensor,
 ) -> Result<DetectionSimilarity> {
     tch::no_grad(|| {
-        let diff1 = dense_detection_difference(lhs, rhs)?;
-        let diff2 = dense_detection_difference(rhs, lhs)?;
+        ensure!(src.cy.size() == dst.cy.size());
+        ensure!(src.cx.size() == dst.cx.size());
+        ensure!(src.h.size() == dst.h.size());
+        ensure!(src.w.size() == dst.w.size());
+        ensure!(src.cy.size() == dst.cy.size());
+        ensure!(src.cx.size() == dst.cx.size());
+        let batch_size = src.batch_size();
+
+        let (cy_loss_vec, cx_loss_vec, h_loss_vec, w_loss_vec, obj_loss_vec, class_loss_vec) = (0
+            ..batch_size)
+            .map(|batch_index| -> Result<_> {
+                let DetectionSimilarity {
+                    cy_loss,
+                    cx_loss,
+                    h_loss,
+                    w_loss,
+                    obj_loss,
+                    class_loss,
+                } = dense_detection_similarity(batch_index as usize, src, dst)?;
+                Ok((
+                    cy_loss.view([1]),
+                    cx_loss.view([1]),
+                    h_loss.view([1]),
+                    w_loss.view([1]),
+                    obj_loss.view([1]),
+                    class_loss.view([1]),
+                ))
+            })
+            .try_collect::<_, Vec<_>, _>()?
+            .into_iter()
+            .unzip_n_vec();
+
+        let cy_loss = Tensor::cat(&cy_loss_vec, 0);
+        let cx_loss = Tensor::cat(&cx_loss_vec, 0);
+        let h_loss = Tensor::cat(&h_loss_vec, 0);
+        let w_loss = Tensor::cat(&w_loss_vec, 0);
+        let obj_loss = Tensor::cat(&obj_loss_vec, 0);
+        let class_loss = Tensor::cat(&class_loss_vec, 0);
 
         Ok(DetectionSimilarity {
-            cy_loss: (diff1.cy_loss + diff2.cy_loss) / 2.0,
-            cx_loss: (diff1.cx_loss + diff2.cx_loss) / 2.0,
-            h_loss: (diff1.h_loss + diff2.h_loss) / 2.0,
-            w_loss: (diff1.w_loss + diff2.w_loss) / 2.0,
-            obj_loss: (diff1.obj_loss + diff2.obj_loss) / 2.0,
-            class_loss: (diff1.class_loss + diff2.class_loss) / 2.0,
+            cy_loss,
+            cx_loss,
+            h_loss,
+            w_loss,
+            obj_loss,
+            class_loss,
         })
     })
 }
 
-fn dense_detection_difference(
+fn dense_detection_similarity(
+    batch_index: usize,
     src: &DenseDetectionTensor,
     dst: &DenseDetectionTensor,
 ) -> Result<DetectionSimilarity> {
+    let batch_index = batch_index as i64;
+
     const CONFIDENCE_THRESH: f64 = 0.5;
 
     tch::no_grad(|| {
@@ -127,8 +185,24 @@ fn dense_detection_difference(
         ensure!(src.cy.size() == dst.cy.size());
         ensure!(src.cx.size() == dst.cx.size());
 
-        let (confidence, _) = dst.confidence().max_dim(1, true);
-        let indexes: Vec<_> = confidence.ge(CONFIDENCE_THRESH).nonzero_numpy();
+        let src_cy = src.cy.select(0, batch_index);
+        let src_cx = src.cx.select(0, batch_index);
+        let src_h = src.h.select(0, batch_index);
+        let src_w = src.w.select(0, batch_index);
+        let src_obj_logit = src.obj_logit.select(0, batch_index);
+        let src_class_logit = src.class_logit.select(0, batch_index);
+
+        let dst_cy = dst.cy.select(0, batch_index);
+        let dst_cx = dst.cx.select(0, batch_index);
+        let dst_h = dst.h.select(0, batch_index);
+        let dst_w = dst.w.select(0, batch_index);
+        let dst_obj_logit = dst.obj_logit.select(0, batch_index);
+        let dst_class_logit = dst.class_logit.select(0, batch_index);
+
+        let indexes: Vec<_> = dst_obj_logit
+            .sigmoid()
+            .ge(CONFIDENCE_THRESH)
+            .nonzero_numpy();
 
         if indexes[0].is_empty() {
             let device = src.device();
@@ -143,49 +217,37 @@ fn dense_detection_difference(
         }
 
         let indexes: Vec<_> = indexes.into_iter().map(Some).collect();
-        let reduction = Reduction::Mean;
 
-        let cy_loss = src
-            .cy
-            .index(&indexes)
-            .mse_loss(&dst.cy.index(&indexes), reduction);
-        let cx_loss = src
-            .cx
-            .index(&indexes)
-            .mse_loss(&dst.cx.index(&indexes), reduction);
-        let h_loss = src
-            .h
-            .index(&indexes)
-            .mse_loss(&dst.h.index(&indexes), reduction);
-        let w_loss = src
-            .w
-            .index(&indexes)
-            .mse_loss(&dst.w.index(&indexes), reduction);
-        let obj_loss = src.obj_logit.binary_cross_entropy_with_logits::<Tensor>(
-            &dst.obj_logit.sigmoid(),
+        let obj_loss = src_obj_logit.binary_cross_entropy_with_logits::<Tensor>(
+            &dst_obj_logit.sigmoid(),
             None,
             None,
-            reduction,
+            Reduction::Mean,
         );
+        let cy_loss = src_cy
+            .index(&indexes)
+            .mse_loss(&dst_cy.index(&indexes), Reduction::Mean);
+        let cx_loss = src_cx
+            .index(&indexes)
+            .mse_loss(&dst_cx.index(&indexes), Reduction::Mean);
+        let h_loss = src_h
+            .index(&indexes)
+            .mse_loss(&dst_h.index(&indexes), Reduction::Mean);
+        let w_loss = src_w
+            .index(&indexes)
+            .mse_loss(&dst_w.index(&indexes), Reduction::Mean);
         let class_loss = {
-            let batch_indexes = indexes[0].as_ref();
-            let anchor_indexes = indexes[2].as_ref();
-            let row_indexes = indexes[3].as_ref();
-            let col_indexes = indexes[4].as_ref();
-            let indexes = &[
-                batch_indexes,
-                None,
-                anchor_indexes,
-                row_indexes,
-                col_indexes,
-            ];
-            src.class_logit
+            let anchor_indexes = indexes[1].as_ref();
+            let row_indexes = indexes[2].as_ref();
+            let col_indexes = indexes[3].as_ref();
+            let indexes = &[None, anchor_indexes, row_indexes, col_indexes];
+            src_class_logit
                 .index(indexes)
                 .binary_cross_entropy_with_logits::<Tensor>(
-                    &dst.class_logit.index(indexes).sigmoid(),
+                    &dst_class_logit.index(indexes).sigmoid(),
                     None,
                     None,
-                    reduction,
+                    Reduction::Mean,
                 )
         };
 
@@ -200,7 +262,7 @@ fn dense_detection_difference(
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, TensorLike)]
 pub struct DetectionSimilarity {
     pub cy_loss: Tensor,
     pub cx_loss: Tensor,
