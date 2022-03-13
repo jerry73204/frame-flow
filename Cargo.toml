@@ -61,8 +61,8 @@ train = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", 
 
 [profile.release]
 debug = true
-debug-assertions = true
-overflow-checks = true
+debug-assertions = false
+overflow-checks = false
 ## enabling 'lto' improves the performance but results in
 ## very long compilation time.
 lto = false
