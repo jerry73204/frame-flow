@@ -28,7 +28,10 @@ pub use std::{
     borrow::{Borrow, Cow},
     collections::{self, hash_map, HashMap, HashSet},
     convert::TryInto,
-    f64, fs,
+    f64,
+    fmt::Display,
+    fs,
+    io::prelude::*,
     iter::{self, FromIterator, Sum},
     num::NonZeroUsize,
     ops::{Add, Div, Mul, Sub},
@@ -58,6 +61,7 @@ pub type Fallible<T> = Result<T>;
 
 unzip_n!(pub 2);
 unzip_n!(pub 3);
+unzip_n!(pub 4);
 unzip_n!(pub 6);
 unzip_n!(pub 7);
 unzip_n!(pub 8);
