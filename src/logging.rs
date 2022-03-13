@@ -65,6 +65,16 @@ pub async fn logging_worker(
             }) => {
                 let step = step as i64;
 
+                let sub_image_dir = {
+                    let dir = image_dir.join(format!(
+                        "{:08}_{}",
+                        step,
+                        Local::now().format(FILE_STRFTIME)
+                    ));
+                    fs::create_dir_all(&dir)?;
+                    Arc::new(dir)
+                };
+
                 event_writer
                     .write_scalar_async("params/learning_rate", step, learning_rate as f32)
                     .await?;
@@ -208,60 +218,109 @@ pub async fn logging_worker(
                 }
 
                 if let Some(seq) = forward_consistency_similarity_seq {
-                    for (seq_index, similarity) in seq.into_iter().enumerate() {
-                        let DetectionSimilarity {
-                            cy_loss,
-                            cx_loss,
-                            h_loss,
-                            w_loss,
-                            obj_loss,
-                            class_loss,
-                        } = similarity;
+                    let (position_loss_seq, size_loss_seq, obj_loss_seq, class_loss_seq) = seq
+                        .into_iter()
+                        .map(|similarity| {
+                            let position_loss = similarity.position_loss();
+                            let size_loss = similarity.size_loss();
+                            let DetectionSimilarity {
+                                obj_loss,
+                                class_loss,
+                                ..
+                            } = similarity;
 
-                        let position_loss = cy_loss + cx_loss;
-                        let size_loss = h_loss + w_loss;
+                            (position_loss, size_loss, obj_loss, class_loss)
+                        })
+                        .unzip_n_vec();
 
-                        event_writer
-                            .write_scalar_async(
-                                format!(
-                                    "forward_consistency_similarity/position_loss/seq_{}",
-                                    seq_index
-                                ),
-                                step,
-                                f32::from(position_loss),
-                            )
-                            .await?;
-                        event_writer
-                            .write_scalar_async(
-                                format!(
-                                    "forward_consistency_similarity/size_loss/seq_{}",
-                                    seq_index
-                                ),
-                                step,
-                                f32::from(size_loss),
-                            )
-                            .await?;
-                        event_writer
-                            .write_scalar_async(
-                                format!(
-                                    "forward_consistency_similarity/obj_loss/seq_{}",
-                                    seq_index
-                                ),
-                                step,
-                                f32::from(obj_loss),
-                            )
-                            .await?;
-                        event_writer
-                            .write_scalar_async(
-                                format!(
-                                    "forward_consistency_similarity/class_loss/seq_{}",
-                                    seq_index
-                                ),
-                                step,
-                                f32::from(class_loss),
-                            )
-                            .await?;
-                    }
+                    save_scalar_seq("position_loss", &*sub_image_dir, &position_loss_seq)?;
+                    save_scalar_seq("size_loss", &*sub_image_dir, &size_loss_seq)?;
+                    save_scalar_seq("obj_loss", &*sub_image_dir, &obj_loss_seq)?;
+                    save_scalar_seq("class_loss", &*sub_image_dir, &class_loss_seq)?;
+
+                    save_scalar_seq_to_tfrecord(
+                        &mut event_writer,
+                        "forward_consistency_similarity/position_loss",
+                        step,
+                        position_loss_seq,
+                    )
+                    .await?;
+                    save_scalar_seq_to_tfrecord(
+                        &mut event_writer,
+                        "forward_consistency_similarity/size_loss",
+                        step,
+                        size_loss_seq,
+                    )
+                    .await?;
+                    save_scalar_seq_to_tfrecord(
+                        &mut event_writer,
+                        "forward_consistency_similarity/obj_loss",
+                        step,
+                        obj_loss_seq,
+                    )
+                    .await?;
+                    save_scalar_seq_to_tfrecord(
+                        &mut event_writer,
+                        "forward_consistency_similarity/class_loss",
+                        step,
+                        class_loss_seq,
+                    )
+                    .await?;
+
+                    // for (seq_index, similarity) in seq.into_iter().enumerate() {
+                    //     let DetectionSimilarity {
+                    //         cy_loss,
+                    //         cx_loss,
+                    //         h_loss,
+                    //         w_loss,
+                    //         obj_loss,
+                    //         class_loss,
+                    //     } = similarity;
+
+                    //     let position_loss = cy_loss + cx_loss;
+                    //     let size_loss = h_loss + w_loss;
+
+                    //     event_writer
+                    //         .write_scalar_async(
+                    //             format!(
+                    //                 "forward_consistency_similarity/position_loss/seq_{}",
+                    //                 seq_index
+                    //             ),
+                    //             step,
+                    //             f32::from(position_loss),
+                    //         )
+                    //         .await?;
+                    //     event_writer
+                    //         .write_scalar_async(
+                    //             format!(
+                    //                 "forward_consistency_similarity/size_loss/seq_{}",
+                    //                 seq_index
+                    //             ),
+                    //             step,
+                    //             f32::from(size_loss),
+                    //         )
+                    //         .await?;
+                    //     event_writer
+                    //         .write_scalar_async(
+                    //             format!(
+                    //                 "forward_consistency_similarity/obj_loss/seq_{}",
+                    //                 seq_index
+                    //             ),
+                    //             step,
+                    //             f32::from(obj_loss),
+                    //         )
+                    //         .await?;
+                    //     event_writer
+                    //         .write_scalar_async(
+                    //             format!(
+                    //                 "forward_consistency_similarity/class_loss/seq_{}",
+                    //                 seq_index
+                    //             ),
+                    //             step,
+                    //             f32::from(class_loss),
+                    //         )
+                    //         .await?;
+                    // }
                 }
 
                 // log weights and gradients
@@ -376,15 +435,6 @@ pub async fn logging_worker(
                             .await?;
                     }
                 }
-
-                let sub_image_dir = {
-                    let dir = image_dir.join(format!(
-                        "{:08}_{}",
-                        step,
-                        Local::now().format(FILE_STRFTIME)
-                    ));
-                    Arc::new(dir)
-                };
 
                 let save_image_seq_async =
                     |name: &'static str, dir: Arc<PathBuf>, seq: Vec<Tensor>| async move {
@@ -785,6 +835,64 @@ where
                     name, err
                 )
             }
+        }
+    }
+
+    Ok(())
+}
+
+async fn save_scalar_seq_to_tfrecord<W>(
+    event_writer: &mut EventWriter<W>,
+    name: &'static str,
+    step: i64,
+    seq: Vec<Tensor>,
+) -> Result<()>
+where
+    W: Unpin + futures::AsyncWriteExt,
+{
+    let batch_size = seq[0].size()[0];
+
+    for (seq_index, image) in seq.into_iter().enumerate() {
+        for batch_index in 0..batch_size {
+            let scalar = image.select(0, batch_index);
+
+            let name = format!("{}/batch_{:04}/seq_{:04}", name, batch_index, seq_index);
+
+            let result = event_writer
+                .write_scalar_async(&name, step, f32::from(scalar))
+                .await;
+
+            if let Err(err) = result {
+                warn!(
+                    "unable to write to TensorBoard, name = '{}': {:?}",
+                    name, err
+                )
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn save_scalar_seq(
+    name: &str,
+    base_dir: impl AsRef<Path>,
+    seq: &[impl Borrow<Tensor>],
+) -> Result<()> {
+    let base_dir = base_dir.as_ref();
+    let batch_size = seq[0].borrow().size()[0];
+
+    for batch_index in 0..batch_size {
+        let dir = base_dir.join(format!("batch_{:03}", batch_index));
+        let file = dir.join(format!("{}.txt", name));
+
+        fs::create_dir_all(&dir)?;
+        let mut writer = fs::File::create(file)?;
+
+        for batch in seq {
+            let batch = batch.borrow();
+            let scalar = batch.select(0, batch_index);
+            writeln!(writer, "{:+e}", f64::from(scalar))?;
         }
     }
 
