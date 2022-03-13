@@ -1192,7 +1192,7 @@ pub fn training_worker(
             retraction_identity_similarity,
             triangular_identity_loss,
             triangular_identity_similarity,
-            _generator_generated_image_seq,
+            generator_generated_image_seq,
         ): (
             Last<_>,
             Last<_>,
@@ -1280,6 +1280,9 @@ pub fn training_worker(
             .try_collect::<_, Vec<_>, _>()?
             .into_iter()
             .unzip_n();
+
+        let generator_generated_image_seq: Option<Vec<_>> =
+            generator_generated_image_seq.into_iter().collect();
 
         // train forward time consistency
         let (forward_consistency_loss, forward_consistency_similarity_seq, transformer_weights_1) =
@@ -1369,7 +1372,7 @@ pub fn training_worker(
 
         let (
             detector_det_seq,
-            generator_image_seq,
+            transformer_generator_image_seq,
             transformer_det_seq,
             transformer_artifacts_seq,
             transformer_image_seq,
@@ -1425,6 +1428,9 @@ pub fn training_worker(
                     }
                     None => (None, None, None),
                 };
+
+            let generator_image_seq =
+                generator_generated_image_seq.or(transformer_generator_image_seq);
 
             let msg = msg::LogMessage::Loss(msg::Loss {
                 step: train_step,
