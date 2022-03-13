@@ -15,42 +15,48 @@ const WEIGHT_CLAMP: f64 = 0.01;
 
 #[derive(Debug)]
 struct TrainWorker {
-    detector_vs: nn::VarStore,
+    detector_ctx: DetectorContext,
+
     generator_vs: nn::VarStore,
     discriminator_vs: nn::VarStore,
     transformer_vs: nn::VarStore,
     image_seq_discriminator_vs: nn::VarStore,
 
-    detector_opt: nn::Optimizer<nn::Adam>,
     generator_opt: nn::Optimizer<nn::Adam>,
     discriminator_opt: nn::Optimizer<nn::Adam>,
     transformer_opt: nn::Optimizer<nn::Adam>,
     image_seq_discriminator_opt: nn::Optimizer<nn::Adam>,
 
-    detector_model: DetectorWrapper,
     generator_model: GeneratorWrapper,
     discriminator_model: Discriminator,
     transformer_model: Transformer,
     image_seq_discriminator_model: ImageSequenceDiscriminatorWrapper,
 
-    save_detector_checkpoint: bool,
     save_discriminator_checkpoint: bool,
     save_generator_checkpoint: bool,
     save_transformer_checkpoint: bool,
     save_image_seq_discriminator_checkpoint: bool,
 
     checkpoint_dir: PathBuf,
-    detector_loss_fn: YoloLoss,
     label_flip_prob: f64,
     gan_loss_kind: config::GanLoss,
     gp: WGanGp,
     gp_transformer: WGanGp,
 }
 
+#[derive(Debug)]
+struct DetectorContext {
+    detector_vs: nn::VarStore,
+    detector_opt: nn::Optimizer<nn::Adam>,
+    detector_model: DetectorWrapper,
+    save_detector_checkpoint: bool,
+    detector_loss_fn: YoloLoss,
+}
+
 impl TrainWorker {
     pub fn freeze_all_vs(&mut self) {
         let Self {
-            detector_vs,
+            detector_ctx: DetectorContext { detector_vs, .. },
             generator_vs,
             discriminator_vs,
             transformer_vs,
@@ -74,10 +80,14 @@ impl TrainWorker {
     ) -> Result<(Option<f64>, Option<msg::WeightsAndGrads>)> {
         self.freeze_all_vs();
         let Self {
-            detector_vs,
-            detector_model,
-            detector_opt,
-            detector_loss_fn,
+            detector_ctx:
+                DetectorContext {
+                    detector_vs,
+                    detector_model,
+                    detector_opt,
+                    detector_loss_fn,
+                    ..
+                },
             ..
         } = self;
 
@@ -262,13 +272,18 @@ impl TrainWorker {
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
-            // detector_vs,
+            detector_ctx:
+                DetectorContext {
+                    // detector_vs,
+                    // detector_opt,
+                    detector_loss_fn,
+                    detector_model,
+                    ..
+                },
+
             generator_vs,
-            detector_model,
             generator_model,
             generator_opt,
-            // detector_opt,
-            detector_loss_fn,
             ..
         } = self;
 
@@ -309,13 +324,18 @@ impl TrainWorker {
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
-            // detector_vs,
+            detector_ctx:
+                DetectorContext {
+                    // detector_vs,
+                    // detector_opt,
+                    detector_loss_fn,
+                    detector_model,
+                    ..
+                },
+
             generator_vs,
-            detector_model,
             generator_model,
             generator_opt,
-            // detector_opt,
-            detector_loss_fn,
             ..
         } = self;
 
@@ -364,11 +384,15 @@ impl TrainWorker {
     )> {
         self.freeze_all_vs();
         let Self {
+            detector_ctx:
+                DetectorContext {
+                    detector_model,
+                    detector_loss_fn,
+                    ..
+                },
             transformer_vs,
             transformer_model,
-            detector_model,
             transformer_opt,
-            detector_loss_fn,
             ..
         } = self;
         transformer_vs.unfreeze();
@@ -612,15 +636,20 @@ impl TrainWorker {
     /// Save parameters to a checkpoint file.
     fn save_checkpoint_files(&self, step: usize) -> Result<()> {
         let TrainWorker {
+            detector_ctx:
+                DetectorContext {
+                    save_detector_checkpoint,
+                    ref detector_vs,
+                    ..
+                },
+
             ref checkpoint_dir,
 
-            save_detector_checkpoint,
             save_discriminator_checkpoint,
             save_generator_checkpoint,
             save_transformer_checkpoint,
             save_image_seq_discriminator_checkpoint,
 
-            ref detector_vs,
             ref generator_vs,
             ref discriminator_vs,
             ref transformer_vs,
@@ -670,7 +699,7 @@ impl TrainWorker {
 
     pub fn set_lr(&mut self, lr: f64) {
         let Self {
-            detector_opt,
+            detector_ctx: DetectorContext { detector_opt, .. },
             generator_opt,
             discriminator_opt,
             transformer_opt,
@@ -976,32 +1005,35 @@ pub fn training_worker(
     };
 
     let mut worker = TrainWorker {
-        detector_vs,
+        detector_ctx: DetectorContext {
+            detector_vs,
+            detector_model,
+            detector_opt,
+            save_detector_checkpoint,
+            detector_loss_fn,
+        },
+
         discriminator_vs,
         generator_vs,
         transformer_vs,
         image_seq_discriminator_vs,
 
-        detector_model,
         discriminator_model,
         generator_model,
         transformer_model,
         image_seq_discriminator_model,
 
-        detector_opt,
         discriminator_opt,
         generator_opt,
         transformer_opt,
         image_seq_discriminator_opt,
 
-        save_detector_checkpoint,
         save_discriminator_checkpoint,
         save_generator_checkpoint,
         save_transformer_checkpoint,
         save_image_seq_discriminator_checkpoint,
 
         checkpoint_dir: checkpoint_dir.as_ref().to_owned(),
-        detector_loss_fn,
         label_flip_prob,
         gan_loss_kind,
         gp,
@@ -1036,7 +1068,7 @@ pub fn training_worker(
                             let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
                             DenseDetectionTensorList::from_labels(
                                 labels,
-                                &worker.detector_model.model.anchors(),
+                                &worker.detector_ctx.detector_model.model.anchors(),
                                 &[image_h],
                                 &[image_w],
                                 num_classes,
@@ -1056,14 +1088,20 @@ pub fn training_worker(
 
                 // detector
                 if train_detector {
-                    clamp_running_var(&mut worker.detector_vs);
-                    let _ = worker.detector_model.forward_t(gt_image, true)?;
+                    clamp_running_var(&mut worker.detector_ctx.detector_vs);
+                    let _ = worker
+                        .detector_ctx
+                        .detector_model
+                        .forward_t(gt_image, true)?;
                 }
 
                 // generator
                 if train_generator {
                     clamp_running_var(&mut worker.generator_vs);
-                    let det = worker.detector_model.forward_t(gt_image, true)?;
+                    let det = worker
+                        .detector_ctx
+                        .detector_model
+                        .forward_t(gt_image, true)?;
                     let fake_image = worker.generator_model.forward_t(&det, None, true)?;
                     debug_assert_eq!(gt_image.size(), fake_image.size());
                 }
@@ -1071,7 +1109,10 @@ pub fn training_worker(
                 // discriminator
                 if train_discriminator {
                     clamp_running_var(&mut worker.discriminator_vs);
-                    let det = worker.detector_model.forward_t(gt_image, true)?;
+                    let det = worker
+                        .detector_ctx
+                        .detector_model
+                        .forward_t(gt_image, true)?;
                     let fake_image = worker.generator_model.forward_t(&det, None, true)?;
                     let _ = worker.discriminator_model.forward_t(gt_image, true);
                     let _ = worker.discriminator_model.forward_t(&fake_image, true);
@@ -1085,7 +1126,7 @@ pub fn training_worker(
             if train_transformer {
                 let fake_det_seq: Vec<_> = gt_image_seq
                     .iter()
-                    .map(|image| worker.detector_model.forward_t(image, true))
+                    .map(|image| worker.detector_ctx.detector_model.forward_t(image, true))
                     .try_collect()?;
 
                 izip!(
@@ -1167,7 +1208,7 @@ pub fn training_worker(
                         let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
                         let det = DenseDetectionTensorList::from_labels(
                             labels,
-                            &worker.detector_model.model.anchors(),
+                            &worker.detector_ctx.detector_model.model.anchors(),
                             &[image_h],
                             &[image_w],
                             num_classes,
@@ -1321,7 +1362,7 @@ pub fn training_worker(
             .then(|| {
                 tch::no_grad(|| -> Result<_> {
                     let TrainWorker {
-                        detector_model,
+                        detector_ctx: DetectorContext { detector_model, .. },
                         generator_model,
                         transformer_model,
                         ..
