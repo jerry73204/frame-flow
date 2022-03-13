@@ -45,14 +45,14 @@ derivative = "2.2.0"
 ndarray = "0.15.3"
 cv-convert = { version = "0.12.0", default-features = false, features = ["opencv", "tch"] }
 num-integer = "0.1.44"
-
-tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "35fde79c70d62fc70f045acc8fee7aa85555298b" }
-tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "35fde79c70d62fc70f045acc8fee7aa85555298b" }
-yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "35fde79c70d62fc70f045acc8fee7aa85555298b" }
-train = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", rev = "35fde79c70d62fc70f045acc8fee7aa85555298b" }
 velcro = "0.5.3"
 opencv = "0.54.0"
 palette = "0.6.0"
+
+tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", branch = "itsc-2022" }
+tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", branch = "itsc-2022" }
+yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", branch = "itsc-2022" }
+train = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", branch = "itsc-2022" }
 
 # tch-goodies = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-goodies" }
 # tch-modules = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-modules" }
