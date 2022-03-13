@@ -213,34 +213,60 @@ pub async fn logging_worker(
                     let position_loss = cy_loss + cx_loss;
                     let size_loss = h_loss + w_loss;
 
-                    event_writer
-                        .write_scalar_async(
-                            "triangular_identity_similarity/position_loss",
-                            step,
-                            f32::from(position_loss),
-                        )
-                        .await?;
-                    event_writer
-                        .write_scalar_async(
-                            "triangular_identity_similarity/size_loss",
-                            step,
-                            f32::from(size_loss),
-                        )
-                        .await?;
-                    event_writer
-                        .write_scalar_async(
-                            "triangular_identity_similarity/obj_loss",
-                            step,
-                            f32::from(obj_loss),
-                        )
-                        .await?;
-                    event_writer
-                        .write_scalar_async(
-                            "triangular_identity_similarity/class_loss",
-                            step,
-                            f32::from(class_loss),
-                        )
-                        .await?;
+                    let position_loss_vec: Vec<f32> = position_loss.try_into().unwrap();
+                    let size_loss_vec: Vec<f32> = size_loss.try_into().unwrap();
+                    let obj_loss_vec: Vec<f32> = obj_loss.try_into().unwrap();
+                    let class_loss_vec: Vec<f32> = class_loss.try_into().unwrap();
+
+                    for (bidx, (position_loss, size_loss, obj_loss, class_loss)) in izip!(
+                        position_loss_vec,
+                        size_loss_vec,
+                        obj_loss_vec,
+                        class_loss_vec
+                    )
+                    .enumerate()
+                    {
+                        event_writer
+                            .write_scalar_async(
+                                format!(
+                                    "triangular_identity_similarity/position_loss/batch_{:04}",
+                                    bidx
+                                ),
+                                step,
+                                position_loss,
+                            )
+                            .await?;
+                        event_writer
+                            .write_scalar_async(
+                                format!(
+                                    "triangular_identity_similarity/size_loss/batch_{:04}",
+                                    bidx
+                                ),
+                                step,
+                                size_loss,
+                            )
+                            .await?;
+                        event_writer
+                            .write_scalar_async(
+                                format!(
+                                    "triangular_identity_similarity/obj_loss/batch_{:04}",
+                                    bidx
+                                ),
+                                step,
+                                obj_loss,
+                            )
+                            .await?;
+                        event_writer
+                            .write_scalar_async(
+                                format!(
+                                    "triangular_identity_similarity/class_loss/batch_{:04}",
+                                    bidx
+                                ),
+                                step,
+                                class_loss,
+                            )
+                            .await?;
+                    }
                 }
 
                 if let Some(seq) = forward_consistency_similarity_seq {
