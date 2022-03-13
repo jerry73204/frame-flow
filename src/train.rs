@@ -1297,7 +1297,7 @@ pub fn training_worker(
                         dry_run_training,
                     )?;
 
-                let generated_image = generated_image_1.and(generated_image_2);
+                let generated_image = generated_image_1.or(generated_image_2);
 
                 // train retraction identity
                 let (retraction_identity_loss, retraction_identity_similarity) = worker
