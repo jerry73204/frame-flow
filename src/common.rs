@@ -3,7 +3,7 @@ pub use approx::{abs_diff_eq, assert_abs_diff_eq};
 pub use by_address::ByAddress;
 pub use chrono::{DateTime, Local};
 pub use collected::{AddVal, Count, First, GroupHashMap, Last, MaxVal};
-pub use cv_convert::{FromCv, TryFromCv};
+pub use cv_convert::{FromCv, TryFromCv, TensorAsImage, ShapeConvention, TryIntoCv};
 pub use derivative::Derivative;
 pub use futures::{
     future::FutureExt,
@@ -17,7 +17,7 @@ pub use ndarray as nd;
 pub use noisy_float::types::{r64, R64};
 pub use num_integer::Integer as _;
 pub use num_traits::{Float, Num};
-pub use opencv::{core as core_cv, imgproc, prelude::*};
+pub use opencv::{core as core_cv, imgproc, imgcodecs, prelude::*};
 pub use owning_ref::{ArcRef, VecRef};
 pub use palette::{convert::IntoColor, Hsv, RgbHue, Srgb};
 pub use par_stream::{ParStreamExt, TryParStreamExt};
@@ -27,7 +27,7 @@ pub use std::{
     array,
     borrow::{Borrow, Cow},
     collections::{self, hash_map, HashMap, HashSet},
-    convert::TryInto,
+    convert::{TryInto, TryFrom},
     f64,
     fmt::Display,
     fs,
@@ -48,7 +48,7 @@ pub use tch_goodies::{
     Activation, DenseDetectionTensor, DenseDetectionTensorList, DenseDetectionTensorListUnchecked,
     DenseDetectionTensorUnchecked, GridSize, InstanceIndex, OptionalTensorList, PixelCyCxHW,
     PixelRectLabel, PixelRectTransform, PixelSize, PixelTLBR, RatioCyCxHW, RatioRectLabel,
-    RatioSize, RatioUnit, Rect, TensorExt, TensorList, NONE_TENSORS,
+    RatioSize, RatioUnit, Rect, TensorExt, TensorList, NONE_TENSORS, MergedDenseDetection,
 };
 pub use tch_tensor_like::TensorLike;
 pub use tfrecord::{EventWriter, EventWriterInit};
@@ -56,6 +56,7 @@ pub use tokio::sync::mpsc;
 pub use tokio_stream::wrappers::ReadDirStream;
 pub use tracing::{error, info, info_span, instrument, trace, trace_span, warn, Instrument};
 pub use unzip_n::unzip_n;
+pub use yolo_dl::loss::{YoloInferenceInit, YoloInferenceOutput};
 
 pub type Fallible<T> = Result<T>;
 

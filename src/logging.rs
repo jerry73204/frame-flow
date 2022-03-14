@@ -501,104 +501,170 @@ pub async fn logging_worker(
                         Fallible::Ok(seq)
                     };
 
+                let save_img_det_seq_async =
+                    |name: &'static str, dir: Arc<PathBuf>, img_seq: Vec<Tensor>, det_seq: Vec<YoloInferenceOutput>| async move {
+                        let img_seq = tokio::task::spawn_blocking(move || -> Result<_> {
+                            if save_files {
+                                save_img_det_seq(name, &**dir, &img_seq, &det_seq)?;
+                            }
+                            Ok(img_seq)
+                        })
+                        .await??;
+
+                        Fallible::Ok(img_seq)
+                    };
+
+
+
+                let ground_truth_det_seq: Option<Vec<YoloInferenceOutput>> = if let Some(seq) = gt_det_seq {
+                    let (objectness_seq, inferences_seq): (Vec<_>, Vec<_>) = seq
+                        .into_iter()
+                        .map(|det| {
+                            assert!(det.tensors.len() == 1);
+                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
+                            let yolo_inference = YoloInferenceInit {
+                                nms_iou_thresh: r64(0.5),
+                                nms_conf_thresh: r64(0.4),
+                            }
+                            .build()
+                            .unwrap();
+                            let det2 = MergedDenseDetection::try_from(det).unwrap();
+                            let inferences: YoloInferenceOutput = yolo_inference.forward(&det2).to_device(Device::Cpu);
+                            (max, inferences)
+                        })
+                        .unzip();
+
+                    let objectness_seq = save_image_seq_async(
+                        "ground_truth_objectness",
+                        sub_image_dir.clone(),
+                        objectness_seq,
+                    )
+                    .await?;
+
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "ground_truth_objectness",
+                        step,
+                        objectness_seq,
+                    )
+                    .await?;
+
+                    Some(inferences_seq)
+                } else {
+                    None
+                };
+
                 if let Some(seq) = ground_truth_image_seq {
                     let seq =
                         save_image_seq_async("ground_truth", sub_image_dir.clone(), seq).await?;
+                    let seq = if let Some(det_seq) = ground_truth_det_seq {
+                        save_img_det_seq_async("ground_truth_det", sub_image_dir.clone(), seq, det_seq).await?
+                    } else {
+                        seq
+                    };
                     save_image_seq_to_tfrecord(&mut event_writer, "ground_truth", step, seq)
                         .await?;
                 }
 
+                let generator_image_det_seq: Option<Vec<YoloInferenceOutput>> = if let Some(seq) = detector_det_seq {
+                    let (objectness_seq, inferences_seq): (Vec<_>, Vec<_>) = seq
+                        .into_iter()
+                        .map(|det| {
+                            assert!(det.tensors.len() == 1);
+                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
+                            let yolo_inference = YoloInferenceInit {
+                                nms_iou_thresh: r64(0.5),
+                                nms_conf_thresh: r64(0.4),
+                            }
+                            .build()
+                            .unwrap();
+                            let det2 = MergedDenseDetection::try_from(det).unwrap();
+                            let inferences: YoloInferenceOutput = yolo_inference.forward(&det2).to_device(Device::Cpu);
+                            (max, inferences)
+                        })
+                        .unzip();
+
+                    let objectness_seq = save_image_seq_async(
+                        "generator_image_objectness",
+                        sub_image_dir.clone(),
+                        objectness_seq,
+                    )
+                    .await?;
+
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "generator_image_objectness",
+                        step,
+                        objectness_seq,
+                    )
+                    .await?;
+
+                    Some(inferences_seq)
+                } else {
+                    None
+                };
+
                 if let Some(seq) = generator_image_seq {
                     let seq =
                         save_image_seq_async("generator_image", sub_image_dir.clone(), seq).await?;
+                    let seq = if let Some(det_seq) = generator_image_det_seq {
+                        save_img_det_seq_async("generator_image_det", sub_image_dir.clone(), seq, det_seq).await?
+                    } else {
+                        seq
+                    };
                     save_image_seq_to_tfrecord(&mut event_writer, "generator_image", step, seq)
                         .await?;
                 }
+
+                let transformer_image_det_seq: Option<Vec<YoloInferenceOutput>> = if let Some(seq) = transformer_det_seq {
+                    let (objectness_seq, inferences_seq): (Vec<_>, Vec<_>) = seq
+                        .into_iter()
+                        .map(|det| {
+                            assert!(det.tensors.len() == 1);
+                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
+                            let yolo_inference = YoloInferenceInit {
+                                nms_iou_thresh: r64(0.5),
+                                nms_conf_thresh: r64(0.4),
+                            }
+                            .build()
+                            .unwrap();
+                            let det2 = MergedDenseDetection::try_from(det).unwrap();
+                            let inferences: YoloInferenceOutput = yolo_inference.forward(&det2).to_device(Device::Cpu);
+                            (max, inferences)
+                        })
+                        .unzip();
+
+                    let objectness_seq = save_image_seq_async(
+                        "transformer_objectness",
+                        sub_image_dir.clone(),
+                        objectness_seq,
+                    )
+                    .await?;
+
+                    save_image_seq_to_tfrecord(
+                        &mut event_writer,
+                        "transformer_objectness",
+                        step,
+                        objectness_seq,
+                    )
+                    .await?;
+                    Some(inferences_seq)
+                } else {
+                    None
+                };
 
                 if let Some(seq) = transformer_image_seq {
                     let seq = save_image_seq_async("transformer_image", sub_image_dir.clone(), seq)
                         .await?;
 
+                    let seq = if let Some(det_seq) = transformer_image_det_seq {
+                        save_img_det_seq_async("transformer_image_det", sub_image_dir.clone(), seq, det_seq).await?
+                    } else {
+                        seq
+                    };
+
                     save_image_seq_to_tfrecord(&mut event_writer, "transformer_image", step, seq)
                         .await?;
-                }
-
-                if let Some(seq) = gt_det_seq {
-                    let objectness_seq: Vec<_> = seq
-                        .into_iter()
-                        .map(|det| {
-                            assert!(det.tensors.len() == 1);
-                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
-                            max
-                        })
-                        .collect();
-
-                    let objectness_seq = save_image_seq_async(
-                        "ground_truth_objectness",
-                        sub_image_dir.clone(),
-                        objectness_seq,
-                    )
-                    .await?;
-
-                    save_image_seq_to_tfrecord(
-                        &mut event_writer,
-                        "ground_truth_objectness",
-                        step,
-                        objectness_seq,
-                    )
-                    .await?;
-                }
-
-                if let Some(seq) = detector_det_seq {
-                    let objectness_seq: Vec<_> = seq
-                        .into_iter()
-                        .map(|det| {
-                            assert!(det.tensors.len() == 1);
-                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
-                            max
-                        })
-                        .collect();
-
-                    let objectness_seq = save_image_seq_async(
-                        "detector_objectness",
-                        sub_image_dir.clone(),
-                        objectness_seq,
-                    )
-                    .await?;
-
-                    save_image_seq_to_tfrecord(
-                        &mut event_writer,
-                        "detector_objectness",
-                        step,
-                        objectness_seq,
-                    )
-                    .await?;
-                }
-
-                if let Some(seq) = transformer_det_seq {
-                    let objectness_seq: Vec<_> = seq
-                        .into_iter()
-                        .map(|det| {
-                            assert!(det.tensors.len() == 1);
-                            let (max, _argmax) = det.tensors[0].obj_prob().max_dim(2, false);
-                            max
-                        })
-                        .collect();
-
-                    let objectness_seq = save_image_seq_async(
-                        "transformer_objectness",
-                        sub_image_dir.clone(),
-                        objectness_seq,
-                    )
-                    .await?;
-
-                    save_image_seq_to_tfrecord(
-                        &mut event_writer,
-                        "transformer_objectness",
-                        step,
-                        objectness_seq,
-                    )
-                    .await?;
                 }
 
                 if let Some(seq) = motion_potential_pixel_seq {
@@ -861,6 +927,69 @@ fn save_image_seq(
 
     Ok(())
 }
+
+fn save_img_det_seq(
+    name: &str,
+    base_dir: impl AsRef<Path>,
+    img_seq: &Vec<Tensor>,
+    det_seq: &Vec<YoloInferenceOutput>,
+) -> Result<()>
+{
+    let base_dir = base_dir.as_ref();
+    let batch_size = img_seq[0].borrow().size()[0];
+
+    for (seq_index, (batch_img, batch_det)) in img_seq.iter().zip(det_seq).enumerate() {
+        let batch_img = batch_img.borrow();
+        let batch_det = batch_det.borrow();
+
+        for batch_index in 0..batch_size {
+            // let image = batch_img.select(0, batch_index).mul(255.0).to_kind(Kind::Uint8);
+
+            let inference: YoloInferenceOutput = batch_det.batch_select(batch_index);
+            let bboxes: Vec<RatioCyCxHW<R64>> = inference.bbox.try_into()?;
+            // let image = batch_img.i((batch_index, .., .., ..));
+            let image = batch_img.select(0, batch_index).mul(255.0).to_kind(Kind::Uint8);
+
+            // plot target boxes
+            let image_size: PixelSize<R64> = {
+                let (_c, image_h, image_w) = image.size3().unwrap();
+                PixelSize::from_hw(image_h, image_w)
+                    .unwrap()
+                    .cast()
+                    .unwrap()
+            };
+
+            let mut canvas: Mat = TensorAsImage::new(image, ShapeConvention::Chw)?.try_into_cv()?;
+
+            bboxes.iter().try_for_each(|cycxhw| -> Result<_> {
+                let rect: PixelCyCxHW<i32> =
+                    cycxhw.to_pixel_cycxhw(&image_size).cast().unwrap();
+
+                imgproc::rectangle(
+                    &mut canvas,
+                    rect.into(),
+                    core_cv::Scalar::new(0.0, 255.0, 255.0, 0.0), // color
+                    1,                                   // thickness
+                    imgproc::LINE_8,                     // line_type
+                    0,                                   // shift
+                    )?;
+
+                Ok(())
+            })?;
+
+            // save image
+            let dir = base_dir
+                .join(format!("batch_{:03}", batch_index))
+                .join(name);
+            let path = dir.join(format!("seq_{:03}.jpg", seq_index));
+            fs::create_dir_all(&dir)?;
+            imgcodecs::imwrite(path.to_str().unwrap(), &canvas, &core_cv::Vector::new())?;
+        }
+    }
+
+    Ok(())
+}
+
 
 async fn save_image_seq_to_tfrecord<W>(
     event_writer: &mut EventWriter<W>,
