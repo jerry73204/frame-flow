@@ -53,6 +53,7 @@ tch-goodies = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.
 tch-modules = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", branch = "itsc-2022" }
 yolo-dl = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", branch = "itsc-2022" }
 train = { version = "0.1.0", git = "https://github.com/jerry73204/yolo-dl.git", branch = "itsc-2022" }
+flume = "0.10.12"
 
 # tch-goodies = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-goodies" }
 # tch-modules = { version = "0.1.0", path = "/home/aeon/repos/yolo-dl/tch-modules" }

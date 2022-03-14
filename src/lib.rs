@@ -69,9 +69,11 @@ pub async fn start(config: config::Config) -> Result<()> {
     // data stream to channel worker
     let data_fut = {
         let config = config.clone();
+        let sampling = config.sampling;
 
         tokio::task::spawn(async move {
-            let mut stream = training_stream::training_stream(dataset, &config.train).await?;
+            let mut stream =
+                training_stream::training_stream(dataset, sampling, &config.train).await?;
 
             while let Some(msg) = stream.next().await.transpose()? {
                 let result = train_tx.send(msg).await;

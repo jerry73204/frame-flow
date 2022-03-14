@@ -3,6 +3,7 @@ use crate::{common::*, model::NormKind};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub dataset: Dataset,
+    pub sampling: Sampling,
     pub train: Training,
     pub model: Model,
     pub logging: Logging,
@@ -22,6 +23,20 @@ pub enum Dataset {
     Iii(IiiDataset),
     Simple(SimpleDataset),
     Mnist(MnistDataset),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Sampling {
+    Random,
+    Sequential,
+    Position(PositionSample),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PositionSample {
+    pub series_index: usize,
+    pub seq_index: usize,
 }
 
 impl Dataset {

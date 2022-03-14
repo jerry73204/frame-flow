@@ -125,6 +125,19 @@ mod dataset {
     }
 
     impl Dataset {
+        pub fn sample_at(
+            &self,
+            series_idx: usize,
+            seq_idx: usize,
+            length: usize,
+        ) -> Result<Vec<SampleRef<'_>>> {
+            match self {
+                Self::Simple(dataset) => dataset.sample_at(series_idx, seq_idx, length),
+                Self::Iii(dataset) => dataset.sample_at(series_idx, seq_idx, length),
+                Self::Mnist(dataset) => bail!("not supported"),
+            }
+        }
+
         pub fn sample(&self, length: usize) -> Result<Vec<SampleRef<'_>>> {
             match self {
                 Self::Simple(dataset) => dataset.sample(length),
@@ -138,6 +151,21 @@ mod dataset {
                 Self::Simple(dataset) => dataset.classes(),
                 Self::Iii(dataset) => dataset.classes(),
                 Self::Mnist(dataset) => dataset.classes(),
+            }
+        }
+
+        pub fn sample_iter(
+            &self,
+            length: usize,
+        ) -> Result<impl Iterator<Item = Vec<SampleRef<'_>>>> {
+            match self {
+                Self::Simple(dataset) => Ok(dataset.sample_iter(length)),
+                Self::Iii(_dataset) => {
+                    bail!("Sequential sampling is not supported for III dataset")
+                }
+                Self::Mnist(_dataset) => {
+                    bail!("Sequential sampling is not supported for MNIST dataset")
+                }
             }
         }
     }
@@ -329,6 +357,24 @@ mod iii_dataset {
         }
 
         pub fn sample(&self, length: usize) -> Result<Vec<SampleRef<'_>>> {
+            let mut rng = rand::thread_rng();
+            let dist = dists::WeightedIndex::new(&self.weights).unwrap();
+            let series_index = dist.sample(&mut rng);
+            let series = &self.series[series_index];
+
+            // sample images
+            let end = series.samples.len() - length;
+            let seq_index = rng.gen_range(0..=end);
+
+            self.sample_at(series_index, seq_index, length)
+        }
+
+        pub fn sample_at(
+            &self,
+            series_index: usize,
+            seq_index: usize,
+            length: usize,
+        ) -> Result<Vec<SampleRef<'_>>> {
             ensure!(length > 0, "zero length is not allowed");
             ensure!(
                 self.min_series_len >= length,
@@ -338,16 +384,17 @@ mod iii_dataset {
             );
 
             // select series set
-            let mut rng = rand::thread_rng();
-            let dist = dists::WeightedIndex::new(&self.weights).unwrap();
-            let series_index = dist.sample(&mut rng);
-            let series = &self.series[series_index];
+            let series = self
+                .series
+                .get(series_index)
+                .ok_or_else(|| anyhow!("series index out of bound"))?;
 
             // sample images
-            let end = series.samples.len() - length;
-            let start_index = rng.gen_range(0..=end);
-            let end_index = start_index + length;
-            let samples: Vec<SampleRef<'_>> = series.samples[start_index..end_index]
+            let end_index = seq_index + length;
+            let samples: Vec<SampleRef<'_>> = series
+                .samples
+                .get(seq_index..end_index)
+                .ok_or_else(|| anyhow!("series index out of bound"))?
                 .iter()
                 .map(Into::into)
                 .collect();
@@ -685,6 +732,30 @@ mod simple_dataset {
                 ..
             } = *self;
 
+            let mut rng = rand::thread_rng();
+            let dist = dists::WeightedIndex::new(weights).unwrap();
+            let series_index = dist.sample(&mut rng);
+            let series = &series[series_index];
+
+            // sample images
+            let end = series.samples.len() - length;
+            let seq_index = rng.gen_range(0..=end);
+
+            self.sample_at(series_index, seq_index, length)
+        }
+
+        pub fn sample_at(
+            &self,
+            series_index: usize,
+            seq_index: usize,
+            length: usize,
+        ) -> Result<Vec<SampleRef<'_>>> {
+            let Self {
+                min_length,
+                ref series,
+                ..
+            } = *self;
+
             ensure!(
                 length <= min_length,
                 "the sampling length {} is greater the minimum sequence length {}",
@@ -693,16 +764,16 @@ mod simple_dataset {
             );
 
             // select series
-            let mut rng = rand::thread_rng();
-            let dist = dists::WeightedIndex::new(weights).unwrap();
-            let series_index = dist.sample(&mut rng);
-            let series = &series[series_index];
+            let (_, series) = series
+                .get_index(series_index)
+                .ok_or_else(|| anyhow!("series index out of bound"))?;
 
             // sample images
-            let end = series.samples.len() - length;
-            let start_index = rng.gen_range(0..=end);
-            let end_index = start_index + length;
-            let samples: Vec<SampleRef<'_>> = series.samples[start_index..end_index]
+            let end_index = seq_index + length;
+            let samples: Vec<SampleRef<'_>> = series
+                .samples
+                .get(seq_index..end_index)
+                .ok_or_else(|| anyhow!("seq_index out of bound"))?
                 .iter()
                 .map(Into::into)
                 .collect();
@@ -712,6 +783,21 @@ mod simple_dataset {
 
         pub fn classes(&self) -> &IndexSet<String> {
             &self.classes
+        }
+
+        pub fn sample_iter(&self, length: usize) -> impl Iterator<Item = Vec<SampleRef<'_>>> {
+            self.series.iter().flat_map(move |(_, series)| {
+                let end = series.samples.len() - length;
+
+                (0..end).map(move |start_index| {
+                    let end_index = start_index + length;
+                    let samples: Vec<SampleRef<'_>> = series.samples[start_index..end_index]
+                        .iter()
+                        .map(Into::into)
+                        .collect();
+                    samples
+                })
+            })
         }
     }
 

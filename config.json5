@@ -14,6 +14,15 @@
     //     "classes_file": "cfg/class/iii.class",
     //     "min_seq_len": 5,
     // },
+    "sampling": {
+        // "type": "random",
+
+        // "type": "sequential",
+
+        "type": "position",
+        "series_index": 0,
+        "seq_index": 661,
+    },
     "model": {
         "detection_embedding": {
             "channels": [6],
@@ -73,7 +82,7 @@
         "dry_run_training": false,
         "cache_dir": "/home/aeon/frame-flow-cache",
         // resnet
-        "batch_size": 30,
+        "batch_size": 1,
         // unet
         // "batch_size": 20,
         "image_size": 64,

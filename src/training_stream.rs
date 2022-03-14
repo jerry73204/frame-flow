@@ -1,7 +1,13 @@
-use crate::{common::*, config, dataset::Dataset, message as msg};
+use crate::{
+    common::*,
+    config,
+    dataset::{Dataset, SampleRef},
+    message as msg,
+};
 
 pub async fn training_stream(
     dataset: Dataset,
+    sampling: config::Sampling,
     train_cfg: &config::Training,
 ) -> Result<impl Stream<Item = Result<msg::TrainingMessage>>> {
     let config::Training {
@@ -20,51 +26,73 @@ pub async fn training_stream(
 
     let dataset = Arc::new(dataset);
 
-    // load sequence samples
-    let stream = {
-        stream::repeat(()).par_then_unordered(None, move |()| {
-            let dataset = dataset.clone();
+    // generate sample indexes
+    let stream = match sampling {
+        config::Sampling::Random => stream::repeat(())
+            .par_then_unordered(None, move |()| {
+                let dataset = dataset.clone();
 
-            async move {
-                let samples = dataset.sample(seq_len)?;
-                let pairs: Vec<_> = samples
-                    .iter()
-                    .map(|sample| -> Result<_> {
-                        let image = sample.image()?;
+                async move {
+                    let samples = dataset.sample(seq_len)?;
+                    let pairs: Vec<_> = samples
+                        .iter()
+                        .map(|sample| load_sample(sample, image_size))
+                        .try_collect()?;
+                    let (image_seq, boxes_seq) = pairs.into_iter().unzip_n_vec();
 
-                        let orig_size = {
-                            let (_, h, w) = image.size3().unwrap();
-                            PixelSize::from_hw(h, w).unwrap().cast::<R64>().unwrap()
-                        };
-                        let new_size = PixelSize::from_hw(image_size, image_size)
-                            .unwrap()
-                            .cast::<R64>()
-                            .unwrap();
-                        let transform =
-                            PixelRectTransform::from_resizing_letterbox(&orig_size, &new_size);
+                    Fallible::Ok((image_seq, boxes_seq))
+                }
+            })
+            .boxed(),
+        config::Sampling::Sequential => {
+            let (tx, rx) = flume::bounded(3);
 
-                        // resize and scale image
-                        let image = image
-                            .resize2d_letterbox(image_size, image_size)?
-                            .mul(2.0)
-                            .sub(1.0)
-                            .set_requires_grad(false);
+            tokio::task::spawn_blocking(move || {
+                let iter = dataset.sample_iter(seq_len)?.map({
+                    let dataset = dataset.clone();
 
-                        // transform boxes
-                        let boxes: Vec<_> = sample
-                            .boxes()
+                    move |samples| {
+                        let samples = dataset.sample(seq_len)?;
+                        let pairs: Vec<_> = samples
                             .iter()
-                            .map(|rect| (&transform * rect).to_ratio_label(&new_size))
-                            .collect();
+                            .map(|sample| load_sample(sample, image_size))
+                            .try_collect()?;
+                        let (image_seq, boxes_seq) = pairs.into_iter().unzip_n_vec();
 
-                        Ok((image, boxes))
-                    })
-                    .try_collect()?;
-                let (image_seq, boxes_seq) = pairs.into_iter().unzip_n_vec();
+                        anyhow::Ok((image_seq, boxes_seq))
+                    }
+                });
 
-                Fallible::Ok((image_seq, boxes_seq))
-            }
-        })
+                for sample in iter {
+                    let ok = tx.send(sample).is_ok();
+                    if !ok {
+                        break;
+                    }
+                }
+
+                anyhow::Ok(())
+            });
+
+            rx.into_stream().boxed()
+        }
+        config::Sampling::Position(config::PositionSample {
+            series_index,
+            seq_index,
+        }) => {
+            let samples = dataset.sample_at(series_index, seq_index, seq_len)?;
+            let pairs: Vec<_> = samples
+                .iter()
+                .map(|sample| load_sample(sample, image_size))
+                .try_collect()?;
+            let (image_seq, boxes_seq) = pairs.into_iter().unzip_n_vec();
+
+            stream::repeat(())
+                .map(move |()| {
+                    let image_seq: Vec<_> = image_seq.iter().map(|image| image.copy()).collect();
+                    Ok((image_seq, boxes_seq.clone()))
+                })
+                .boxed()
+        }
     };
 
     // group into chunks
@@ -123,4 +151,37 @@ pub async fn training_stream(
     );
 
     Ok(stream)
+}
+
+fn load_sample(
+    sample: &SampleRef<'_>,
+    image_size: i64,
+) -> Result<(Tensor, Vec<RatioRectLabel<R64>>)> {
+    let image = sample.image()?;
+
+    let orig_size = {
+        let (_, h, w) = image.size3().unwrap();
+        PixelSize::from_hw(h, w).unwrap().cast::<R64>().unwrap()
+    };
+    let new_size = PixelSize::from_hw(image_size, image_size)
+        .unwrap()
+        .cast::<R64>()
+        .unwrap();
+    let transform = PixelRectTransform::from_resizing_letterbox(&orig_size, &new_size);
+
+    // resize and scale image
+    let image = image
+        .resize2d_letterbox(image_size, image_size)?
+        .mul(2.0)
+        .sub(1.0)
+        .set_requires_grad(false);
+
+    // transform boxes
+    let boxes: Vec<_> = sample
+        .boxes()
+        .iter()
+        .map(|rect| (&transform * rect).to_ratio_label(&new_size))
+        .collect();
+
+    Ok((image, boxes))
 }
