@@ -42,6 +42,12 @@ struct TrainWorker {
     gan_loss_kind: config::GanLoss,
     gp: WGanGp,
     gp_transformer: WGanGp,
+
+    train_detector: bool,
+    train_generator: bool,
+    train_discriminator: bool,
+    train_transformer: bool,
+    train_image_seq_discriminator: bool,
 }
 
 #[derive(Debug)]
@@ -82,14 +88,16 @@ impl TrainWorker {
         let Self {
             detector_ctx:
                 DetectorContext {
-                    detector_vs,
-                    detector_model,
-                    detector_opt,
-                    detector_loss_fn,
+                    ref mut detector_vs,
+                    ref mut detector_model,
+                    ref mut detector_opt,
+                    ref mut detector_loss_fn,
                     ..
                 },
+
+            train_detector,
             ..
-        } = self;
+        } = *self;
 
         detector_vs.unfreeze();
 
@@ -99,7 +107,7 @@ impl TrainWorker {
             clamp_running_var(detector_vs);
 
             // run detector
-            let real_det = detector_model.forward_t(image, true)?;
+            let real_det = detector_model.forward_t(image, train_detector)?;
             let (real_det_loss, _) =
                 detector_loss_fn.forward(&real_det.shallow_clone().try_into()?, labels);
 
@@ -122,7 +130,6 @@ impl TrainWorker {
         steps: usize,
         real_image: &Tensor,
         input_det: &DenseDetectionTensorList,
-        train_discriminator: bool,
         with_artifacts: bool,
         dry_run: bool,
     ) -> Result<(Option<f64>, Option<Tensor>, Option<msg::WeightsAndGrads>)> {
@@ -135,6 +142,8 @@ impl TrainWorker {
             ref generator_model,
             ref discriminator_model,
             ref mut generator_opt,
+            train_generator,
+            train_discriminator,
             ..
         } = *self;
         let mut rng = rand::thread_rng();
@@ -146,7 +155,7 @@ impl TrainWorker {
             clamp_running_var(generator_vs);
 
             // generate fake image
-            let fake_image = generator_model.forward_t(input_det, None, true)?;
+            let fake_image = generator_model.forward_t(input_det, None, train_generator)?;
 
             // augmentation
             let (real_image, fake_image) = {
@@ -185,7 +194,6 @@ impl TrainWorker {
         steps: usize,
         real_image: &Tensor,
         input_det: &DenseDetectionTensorList,
-        train_generator: bool,
         with_artifacts: bool,
         dry_run: bool,
     ) -> Result<(Option<f64>, Option<Tensor>, Option<msg::WeightsAndGrads>)> {
@@ -200,6 +208,8 @@ impl TrainWorker {
             ref discriminator_model,
             ref mut discriminator_opt,
             ref gp,
+            train_generator,
+            train_discriminator,
             ..
         } = *self;
         let mut rng = rand::thread_rng();
@@ -228,8 +238,8 @@ impl TrainWorker {
             };
 
             // run discriminator
-            let real_score = discriminator_model.forward_t(&real_image, true);
-            let fake_score = discriminator_model.forward_t(&fake_image, true);
+            let real_score = discriminator_model.forward_t(&real_image, train_discriminator);
+            let fake_score = discriminator_model.forward_t(&fake_image, train_discriminator);
 
             // compute loss
             let loss = discriminator_gan_loss(
@@ -276,17 +286,19 @@ impl TrainWorker {
                 DetectorContext {
                     // detector_vs,
                     // detector_opt,
-                    detector_loss_fn,
-                    detector_model,
+                    ref mut detector_loss_fn,
+                    ref mut detector_model,
                     ..
                 },
 
-            generator_vs,
-            generator_model,
-            generator_opt,
+            ref mut generator_vs,
+            ref mut generator_model,
+            ref mut generator_opt,
             gan_loss_kind,
+
+            train_detector,
             ..
-        } = self;
+        } = *self;
 
         // detector_vs.unfreeze();
         generator_vs.unfreeze();
@@ -295,8 +307,8 @@ impl TrainWorker {
             // clamp running_var in norms
             clamp_running_var(generator_vs);
 
-            let recon_image = generator_model.forward_t(gt_det, None, true)?;
-            let recon_det = detector_model.forward_t(&recon_image, true)?;
+            let recon_image = generator_model.forward_t(gt_det, None, train_detector)?;
+            let recon_det = detector_model.forward_t(&recon_image, train_detector)?;
 
             let (loss, _) =
                 detector_loss_fn.forward(&recon_det.shallow_clone().try_into()?, gt_labels);
@@ -322,7 +334,6 @@ impl TrainWorker {
         gt_image: &Tensor,
         gt_labels: &[Vec<RatioRectLabel<R64>>],
         dry_run: bool,
-        train_discriminator: bool,
     ) -> Result<(Option<f64>, Option<DetectionSimilarity>)> {
         self.freeze_all_vs();
         let Self {
@@ -341,6 +352,8 @@ impl TrainWorker {
 
             ref discriminator_model,
             gan_loss_kind,
+            train_detector,
+            train_generator,
             ..
         } = *self;
 
@@ -351,9 +364,9 @@ impl TrainWorker {
             // clamp running_var in norms
             clamp_running_var(generator_vs);
 
-            let orig_det = detector_model.forward_t(gt_image, true)?;
-            let fake_image = generator_model.forward_t(&orig_det, None, true)?;
-            let recon_det = detector_model.forward_t(&fake_image, true)?;
+            let orig_det = detector_model.forward_t(gt_image, train_detector)?;
+            let fake_image = generator_model.forward_t(&orig_det, None, train_generator)?;
+            let recon_det = detector_model.forward_t(&fake_image, train_detector)?;
 
             let (loss, _) =
                 detector_loss_fn.forward(&recon_det.shallow_clone().try_into()?, gt_labels);
@@ -399,15 +412,18 @@ impl TrainWorker {
         let Self {
             detector_ctx:
                 DetectorContext {
-                    detector_model,
-                    detector_loss_fn,
+                    ref mut detector_model,
+                    ref mut detector_loss_fn,
                     ..
                 },
-            transformer_vs,
-            transformer_model,
-            transformer_opt,
+            ref mut transformer_vs,
+            ref mut transformer_model,
+            ref mut transformer_opt,
+
+            train_detector,
+            train_transformer,
             ..
-        } = self;
+        } = *self;
         transformer_vs.unfreeze();
 
         let seq_len = gt_image_seq.len();
@@ -418,53 +434,54 @@ impl TrainWorker {
             clamp_running_var(transformer_vs);
             let real_det_seq: Vec<_> = gt_image_seq
                 .iter()
-                .map(|image| detector_model.forward_t(image, true))
+                .map(|image| detector_model.forward_t(image, train_detector))
                 .try_collect()?;
             let mut fake_det_seq: Vec<_> = real_det_seq[0..input_len]
                 .iter()
                 .map(|det| det.shallow_clone())
                 .collect();
 
-            let (total_consistency_loss, similarity_vec): (AddVal<_>, Vec<_>) =
-                (0..=(seq_len - input_len - 1))
-                    .map(|index| -> Result<_> {
-                        let input_det_window = &real_det_seq[index..(index + input_len)];
-                        let last_gt_labels = &gt_labels_seq[index + input_len];
-                        let last_real_det = &real_det_seq[index + input_len];
-                        // let last_gt_det = &gt_det_seq[index + input_len];
-                        // dbg!(last_real_det.tensors[0].obj_prob().max());
-                        let (last_fake_det, artifacts) =
-                            transformer_model.forward_t(input_det_window, true, true)?;
+            let (total_consistency_loss, similarity_vec): (AddVal<_>, Vec<_>) = (0..=(seq_len
+                - input_len
+                - 1))
+                .map(|index| -> Result<_> {
+                    let input_det_window = &real_det_seq[index..(index + input_len)];
+                    let last_gt_labels = &gt_labels_seq[index + input_len];
+                    let last_real_det = &real_det_seq[index + input_len];
+                    // let last_gt_det = &gt_det_seq[index + input_len];
+                    // dbg!(last_real_det.tensors[0].obj_prob().max());
+                    let (last_fake_det, artifacts) =
+                        transformer_model.forward_t(input_det_window, train_transformer, true)?;
 
-                        ensure!(last_real_det.tensors.len() == last_fake_det.tensors.len());
+                    ensure!(last_real_det.tensors.len() == last_fake_det.tensors.len());
 
-                        // let (real_det_loss, _) = detector_loss_fn
-                        //     .forward(&last_real_det.shallow_clone().try_into()?, last_gt_labels);
-                        let (fake_det_loss, _) = detector_loss_fn
-                            .forward(&last_fake_det.shallow_clone().try_into()?, last_gt_labels);
-                        // let consitency_loss =
-                        //     (real_det_loss.total_loss + fake_det_loss.total_loss) / 2.0;
-                        let consistency_loss = fake_det_loss.total_loss
-                            + artifacts
-                                .unwrap()
-                                .motion_norm_pixel
-                                .unwrap()
-                                .mean(Kind::Float)
-                                .pow(2);
+                    // let (real_det_loss, _) = detector_loss_fn
+                    //     .forward(&last_real_det.shallow_clone().try_into()?, last_gt_labels);
+                    let (fake_det_loss, _) = detector_loss_fn
+                        .forward(&last_fake_det.shallow_clone().try_into()?, last_gt_labels);
+                    // let consitency_loss =
+                    //     (real_det_loss.total_loss + fake_det_loss.total_loss) / 2.0;
+                    let consistency_loss = fake_det_loss.total_loss
+                        + artifacts
+                            .unwrap()
+                            .motion_norm_pixel
+                            .unwrap()
+                            .mean(Kind::Float)
+                            .pow(2);
 
-                        let similarity = crate::model::dense_detection_list_similarity(
-                            &last_fake_det,
-                            last_real_det,
-                        )?;
+                    let similarity = crate::model::dense_detection_list_similarity(
+                        &last_fake_det,
+                        last_real_det,
+                    )?;
 
-                        // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
-                        fake_det_seq.push(last_fake_det);
+                    // let recon_loss = artifacts.unwrap().autoencoder_recon_loss;
+                    fake_det_seq.push(last_fake_det);
 
-                        Ok((consistency_loss, similarity))
-                    })
-                    .try_collect::<_, Vec<_>, _>()?
-                    .into_iter()
-                    .unzip();
+                    Ok((consistency_loss, similarity))
+                })
+                .try_collect::<_, Vec<_>, _>()?
+                .into_iter()
+                .unzip();
 
             let total_loss = total_consistency_loss.unwrap();
 
@@ -498,6 +515,10 @@ impl TrainWorker {
             ref generator_model,
             ref image_seq_discriminator_model,
             ref mut transformer_opt,
+
+            train_generator,
+            train_transformer,
+            train_image_seq_discriminator,
             ..
         } = *self;
 
@@ -515,20 +536,23 @@ impl TrainWorker {
             )
             .map(|(gt_image_window, gt_det_window)| -> Result<_> {
                 let (last_fake_det, _artifacts) =
-                    transformer_model.forward_t(gt_det_window, true, false)?;
-                let last_fake_image = generator_model.forward_t(&last_fake_det, Some(&noise), true);
+                    transformer_model.forward_t(gt_det_window, train_transformer, false)?;
+                let last_fake_image =
+                    generator_model.forward_t(&last_fake_det, Some(&noise), train_generator);
                 let fake_image_window: Vec<_> = {
-                    let prior_image_window = gt_det_window
-                        .iter()
-                        .map(|gt_det| generator_model.forward_t(gt_det, Some(&noise), true));
+                    let prior_image_window = gt_det_window.iter().map(|gt_det| {
+                        generator_model.forward_t(gt_det, Some(&noise), train_generator)
+                    });
                     chain!(prior_image_window, iter::once(last_fake_image)).try_collect()?
                 };
 
                 let real_input = &gt_image_window;
                 let fake_input = &fake_image_window;
 
-                let real_score = image_seq_discriminator_model.forward_t(real_input, true)?;
-                let fake_score = image_seq_discriminator_model.forward_t(fake_input, true)?;
+                let real_score = image_seq_discriminator_model
+                    .forward_t(real_input, train_image_seq_discriminator)?;
+                let fake_score = image_seq_discriminator_model
+                    .forward_t(fake_input, train_image_seq_discriminator)?;
 
                 // compute loss
                 let consistency_loss = generator_gan_loss(gan_loss_kind, &real_score, &fake_score)?;
@@ -571,6 +595,9 @@ impl TrainWorker {
             ref image_seq_discriminator_model,
             ref mut image_seq_discriminator_opt,
             ref gp_transformer,
+            train_generator,
+            train_transformer,
+            train_image_seq_discriminator,
             ..
         } = *self;
 
@@ -588,21 +615,24 @@ impl TrainWorker {
             )
             .map(|(gt_image_window, gt_det_window)| -> Result<_> {
                 let (last_fake_det, _artifacts) =
-                    transformer_model.forward_t(gt_det_window, true, false)?;
+                    transformer_model.forward_t(gt_det_window, train_transformer, false)?;
 
-                let last_fake_image = generator_model.forward_t(&last_fake_det, Some(&noise), true);
+                let last_fake_image =
+                    generator_model.forward_t(&last_fake_det, Some(&noise), train_generator);
                 let fake_image_window: Vec<_> = {
-                    let prior_image_seq = gt_det_window
-                        .iter()
-                        .map(|gt_det| generator_model.forward_t(gt_det, Some(&noise), true));
+                    let prior_image_seq = gt_det_window.iter().map(|gt_det| {
+                        generator_model.forward_t(gt_det, Some(&noise), train_generator)
+                    });
                     chain!(prior_image_seq, iter::once(last_fake_image)).try_collect()?
                 };
 
                 let real_input_seq = gt_image_window;
                 let fake_input_seq = &fake_image_window;
 
-                let real_score = image_seq_discriminator_model.forward_t(real_input_seq, true)?;
-                let fake_score = image_seq_discriminator_model.forward_t(fake_input_seq, true)?;
+                let real_score = image_seq_discriminator_model
+                    .forward_t(real_input_seq, train_image_seq_discriminator)?;
+                let fake_score = image_seq_discriminator_model
+                    .forward_t(fake_input_seq, train_image_seq_discriminator)?;
 
                 let real_input_tensor = Tensor::cat(real_input_seq, 1);
                 let fake_input_tensor = Tensor::cat(fake_input_seq, 1);
@@ -744,13 +774,17 @@ pub fn training_worker(
     let batch_size = config.train.batch_size.get();
     let label_flip_prob = config.train.label_flip_prob.raw();
     let critic_noise_prob = config.train.critic_noise_prob.raw();
-    let train_detector = config.train.train_detector_steps > 0;
-    let train_discriminator = config.train.train_discriminator_steps > 0;
-    let train_generator = config.train.train_generator_steps > 0;
-    let train_transformer = config.train.train_forward_consistency_steps > 0
-        || config.train.train_backward_consistency_gen_steps > 0;
-    let train_image_seq_discriminator = config.train.train_backward_consistency_disc_steps > 0;
     let dry_run_training = config.train.dry_run_training;
+
+    let train_detector = !dry_run_training && config.train.train_detector_steps > 0;
+    let train_discriminator = !dry_run_training && config.train.train_discriminator_steps > 0;
+    let train_generator = !dry_run_training && config.train.train_generator_steps > 0;
+    let train_transformer = !dry_run_training
+        && (config.train.train_forward_consistency_steps > 0
+            || config.train.train_backward_consistency_gen_steps > 0);
+    let train_image_seq_discriminator =
+        !dry_run_training && config.train.train_backward_consistency_disc_steps > 0;
+
     let config::Logging {
         save_detector_checkpoint,
         save_discriminator_checkpoint,
@@ -1046,6 +1080,12 @@ pub fn training_worker(
         save_transformer_checkpoint,
         save_image_seq_discriminator_checkpoint,
 
+        train_detector,
+        train_generator,
+        train_discriminator,
+        train_image_seq_discriminator,
+        train_transformer,
+
         checkpoint_dir: checkpoint_dir.as_ref().to_owned(),
         label_flip_prob,
         gan_loss_kind,
@@ -1054,149 +1094,149 @@ pub fn training_worker(
     };
 
     // warm up
-    tch::no_grad(|| -> Result<_> {
-        worker.freeze_all_vs();
-        let warm_up_steps = config.train.warm_up_steps;
-        let mut rate_counter = train::utils::RateCounter::with_second_intertal();
-        info!("run warm-up for {} steps", warm_up_steps);
+    // tch::no_grad(|| -> Result<_> {
+    //     worker.freeze_all_vs();
+    //     let warm_up_steps = config.train.warm_up_steps;
+    //     let mut rate_counter = train::utils::RateCounter::with_second_intertal();
+    //     info!("run warm-up for {} steps", warm_up_steps);
 
-        for warm_up_step in 0..warm_up_steps {
-            let msg = match train_rx.blocking_recv() {
-                Some(msg) => msg,
-                None => break,
-            };
-            let msg::TrainingMessage {
-                image_batch_seq: gt_image_seq,
-                boxes_batch_seq: gt_labels_seq,
-                ..
-            } = msg.to_device(device);
-            let seq_len = gt_image_seq.len();
+    //     for warm_up_step in 0..warm_up_steps {
+    //         let msg = match train_rx.blocking_recv() {
+    //             Some(msg) => msg,
+    //             None => break,
+    //         };
+    //         let msg::TrainingMessage {
+    //             image_batch_seq: gt_image_seq,
+    //             boxes_batch_seq: gt_labels_seq,
+    //             ..
+    //         } = msg.to_device(device);
+    //         let seq_len = gt_image_seq.len();
 
-            let gt_det_seq: Vec<_> = gt_labels_seq
-                .iter()
-                .map(|batch| -> Result<_> {
-                    let det_vec: Vec<_> = batch
-                        .iter()
-                        .map(|labels| {
-                            let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
-                            DenseDetectionTensorList::from_labels(
-                                labels,
-                                &worker.detector_ctx.detector_model.model.anchors(),
-                                &[image_h],
-                                &[image_w],
-                                num_classes,
-                            )
-                        })
-                        .try_collect()?;
-                    let det_batch = DenseDetectionTensorList::cat_batch(&det_vec)
-                        .unwrap()
-                        .to_device(device);
-                    Ok(det_batch)
-                })
-                .try_collect()?;
+    //         let gt_det_seq: Vec<_> = gt_labels_seq
+    //             .iter()
+    //             .map(|batch| -> Result<_> {
+    //                 let det_vec: Vec<_> = batch
+    //                     .iter()
+    //                     .map(|labels| {
+    //                         let labels = labels.iter().map(|label| label.cast::<f64>().unwrap());
+    //                         DenseDetectionTensorList::from_labels(
+    //                             labels,
+    //                             &worker.detector_ctx.detector_model.model.anchors(),
+    //                             &[image_h],
+    //                             &[image_w],
+    //                             num_classes,
+    //                         )
+    //                     })
+    //                     .try_collect()?;
+    //                 let det_batch = DenseDetectionTensorList::cat_batch(&det_vec)
+    //                     .unwrap()
+    //                     .to_device(device);
+    //                 Ok(det_batch)
+    //             })
+    //             .try_collect()?;
 
-            gt_image_seq.iter().try_for_each(|gt_image| -> Result<_> {
-                debug_assert!(gt_image.kind() == Kind::Float);
-                debug_assert!(f64::from(gt_image.min()) >= 0.0 && f64::from(gt_image.max()) <= 1.0);
+    //         gt_image_seq.iter().try_for_each(|gt_image| -> Result<_> {
+    //             debug_assert!(gt_image.kind() == Kind::Float);
+    //             debug_assert!(f64::from(gt_image.min()) >= 0.0 && f64::from(gt_image.max()) <= 1.0);
 
-                // detector
-                if train_detector {
-                    clamp_running_var(&mut worker.detector_ctx.detector_vs);
-                    let _ = worker
-                        .detector_ctx
-                        .detector_model
-                        .forward_t(gt_image, true)?;
-                }
+    //             // detector
+    //             if train_detector {
+    //                 clamp_running_var(&mut worker.detector_ctx.detector_vs);
+    //                 let _ = worker
+    //                     .detector_ctx
+    //                     .detector_model
+    //                     .forward_t(gt_image, true)?;
+    //             }
 
-                // generator
-                if train_generator {
-                    clamp_running_var(&mut worker.generator_vs);
-                    let det = worker
-                        .detector_ctx
-                        .detector_model
-                        .forward_t(gt_image, true)?;
-                    let fake_image = worker.generator_model.forward_t(&det, None, true)?;
-                    debug_assert_eq!(gt_image.size(), fake_image.size());
-                }
+    //             // generator
+    //             if train_generator {
+    //                 clamp_running_var(&mut worker.generator_vs);
+    //                 let det = worker
+    //                     .detector_ctx
+    //                     .detector_model
+    //                     .forward_t(gt_image, true)?;
+    //                 let fake_image = worker.generator_model.forward_t(&det, None, true)?;
+    //                 debug_assert_eq!(gt_image.size(), fake_image.size());
+    //             }
 
-                // discriminator
-                if train_discriminator {
-                    clamp_running_var(&mut worker.discriminator_vs);
-                    let det = worker
-                        .detector_ctx
-                        .detector_model
-                        .forward_t(gt_image, true)?;
-                    let fake_image = worker.generator_model.forward_t(&det, None, true)?;
-                    let _ = worker.discriminator_model.forward_t(gt_image, true);
-                    let _ = worker.discriminator_model.forward_t(&fake_image, true);
-                }
+    //             // discriminator
+    //             if train_discriminator {
+    //                 clamp_running_var(&mut worker.discriminator_vs);
+    //                 let det = worker
+    //                     .detector_ctx
+    //                     .detector_model
+    //                     .forward_t(gt_image, true)?;
+    //                 let fake_image = worker.generator_model.forward_t(&det, None, true)?;
+    //                 let _ = worker.discriminator_model.forward_t(gt_image, true);
+    //                 let _ = worker.discriminator_model.forward_t(&fake_image, true);
+    //             }
 
-                Ok(())
-            })?;
+    //             Ok(())
+    //         })?;
 
-            let input_len = worker.transformer_model.input_len();
+    //         let input_len = worker.transformer_model.input_len();
 
-            if train_transformer {
-                let fake_det_seq: Vec<_> = gt_image_seq
-                    .iter()
-                    .map(|image| worker.detector_ctx.detector_model.forward_t(image, true))
-                    .try_collect()?;
+    //         if train_transformer {
+    //             let fake_det_seq: Vec<_> = gt_image_seq
+    //                 .iter()
+    //                 .map(|image| worker.detector_ctx.detector_model.forward_t(image, true))
+    //                 .try_collect()?;
 
-                izip!(
-                    fake_det_seq.windows(input_len),
-                    gt_det_seq.windows(input_len)
-                )
-                .try_for_each(|(fake_det_window, gt_det_window)| -> Result<_> {
-                    let _ = worker
-                        .transformer_model
-                        .forward_t(gt_det_window, true, false)?;
-                    let _ = worker
-                        .transformer_model
-                        .forward_t(fake_det_window, true, false)?;
-                    Ok(())
-                })?;
-            }
+    //             izip!(
+    //                 fake_det_seq.windows(input_len),
+    //                 gt_det_seq.windows(input_len)
+    //             )
+    //             .try_for_each(|(fake_det_window, gt_det_window)| -> Result<_> {
+    //                 let _ = worker
+    //                     .transformer_model
+    //                     .forward_t(gt_det_window, true, false)?;
+    //                 let _ = worker
+    //                     .transformer_model
+    //                     .forward_t(fake_det_window, true, false)?;
+    //                 Ok(())
+    //             })?;
+    //         }
 
-            if train_image_seq_discriminator {
-                let noise = Tensor::randn(&[worker.generator_model.latent_dim], FLOAT_CPU);
+    //         if train_image_seq_discriminator {
+    //             let noise = Tensor::randn(&[worker.generator_model.latent_dim], FLOAT_CPU);
 
-                let fake_image_seq: Vec<_> = gt_det_seq
-                    .iter()
-                    .map(|det| worker.generator_model.forward_t(det, Some(&noise), true))
-                    .try_collect()?;
+    //             let fake_image_seq: Vec<_> = gt_det_seq
+    //                 .iter()
+    //                 .map(|det| worker.generator_model.forward_t(det, Some(&noise), true))
+    //                 .try_collect()?;
 
-                izip!(
-                    fake_image_seq.windows(input_len + 1),
-                    gt_image_seq.windows(input_len + 1)
-                )
-                .try_for_each(
-                    |(fake_image_window, gt_image_window)| -> Result<_> {
-                        let _ = worker
-                            .image_seq_discriminator_model
-                            .forward_t(gt_image_window, true)?;
-                        let _ = worker
-                            .image_seq_discriminator_model
-                            .forward_t(fake_image_window, true)?;
-                        Ok(())
-                    },
-                )?;
-            }
+    //             izip!(
+    //                 fake_image_seq.windows(input_len + 1),
+    //                 gt_image_seq.windows(input_len + 1)
+    //             )
+    //             .try_for_each(
+    //                 |(fake_image_window, gt_image_window)| -> Result<_> {
+    //                     let _ = worker
+    //                         .image_seq_discriminator_model
+    //                         .forward_t(gt_image_window, true)?;
+    //                     let _ = worker
+    //                         .image_seq_discriminator_model
+    //                         .forward_t(fake_image_window, true)?;
+    //                     Ok(())
+    //                 },
+    //             )?;
+    //         }
 
-            rate_counter.add(seq_len as f64);
+    //         rate_counter.add(seq_len as f64);
 
-            if let Some(batch_rate) = rate_counter.rate() {
-                let record_rate = batch_rate * batch_size as f64;
-                info!(
-                    "warm-up step: {}\t{:.2} batch/s\t{:.2} sample/s",
-                    warm_up_step, batch_rate, record_rate
-                );
-            } else {
-                info!("warm-up step: {}", warm_up_step);
-            }
-        }
+    //         if let Some(batch_rate) = rate_counter.rate() {
+    //             let record_rate = batch_rate * batch_size as f64;
+    //             info!(
+    //                 "warm-up step: {}\t{:.2} batch/s\t{:.2} sample/s",
+    //                 warm_up_step, batch_rate, record_rate
+    //             );
+    //         } else {
+    //             info!("warm-up step: {}", warm_up_step);
+    //         }
+    //     }
 
-        Ok(())
-    })?;
+    //     Ok(())
+    // })?;
 
     info!("start training");
 
@@ -1218,7 +1258,7 @@ pub fn training_worker(
                 let det = worker
                     .detector_ctx
                     .detector_model
-                    .forward_t(gt_image, true)?
+                    .forward_t(gt_image, worker.train_detector)?
                     .detach()
                     .copy();
                 anyhow::Ok(det)
@@ -1294,7 +1334,6 @@ pub fn training_worker(
                         config.train.train_discriminator_steps,
                         gt_image,
                         gt_det,
-                        train_generator,
                         true,
                         dry_run_training,
                     )?;
@@ -1305,7 +1344,6 @@ pub fn training_worker(
                         config.train.train_generator_steps,
                         gt_image,
                         gt_det,
-                        train_discriminator,
                         true,
                         dry_run_training,
                     )?;
@@ -1327,7 +1365,6 @@ pub fn training_worker(
                         gt_image,
                         gt_labels,
                         dry_run_training,
-                        train_discriminator,
                     )?;
 
                 // create logs
@@ -1400,11 +1437,11 @@ pub fn training_worker(
 
                     let detector_det_seq: Vec<_> = gt_image_seq
                         .iter()
-                        .map(|gt_image| detector_model.forward_t(gt_image, true))
+                        .map(|gt_image| detector_model.forward_t(gt_image, train_detector))
                         .try_collect()?;
                     let generator_image_seq: Vec<_> = detector_det_seq
                         .iter()
-                        .map(|det| generator_model.forward_t(det, Some(&noise), true))
+                        .map(|det| generator_model.forward_t(det, Some(&noise), train_generator))
                         .try_collect()?;
 
                     let mut input_det_buffer = detector_det_seq.shallow_clone();
@@ -1415,10 +1452,10 @@ pub fn training_worker(
                                 let input_det_window =
                                     &input_det_buffer[index..(index + input_len)];
                                 let (pred_det, artifacts) = transformer_model
-                                    .forward_t(input_det_window, true, true)
+                                    .forward_t(input_det_window, train_transformer, true)
                                     .unwrap();
                                 let recon_image = generator_model
-                                    .forward_t(&pred_det, Some(&noise), true)
+                                    .forward_t(&pred_det, Some(&noise), train_generator)
                                     .unwrap();
 
                                 input_det_buffer.push(pred_det.shallow_clone());
