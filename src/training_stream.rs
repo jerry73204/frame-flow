@@ -49,10 +49,7 @@ pub async fn training_stream(
 
             tokio::task::spawn_blocking(move || {
                 let iter = dataset.sample_iter(seq_len)?.map({
-                    let dataset = dataset.clone();
-
                     move |samples| {
-                        let samples = dataset.sample(seq_len)?;
                         let pairs: Vec<_> = samples
                             .iter()
                             .map(|sample| load_sample(sample, image_size))

@@ -38,6 +38,20 @@ mod dataset {
                 Self::Tensor(sample) => &sample.boxes,
             }
         }
+
+        pub fn series_index(&self) -> usize {
+            match self {
+                SampleRef::File(sample) => sample.series_index,
+                SampleRef::Tensor(sample) => sample.series_index,
+            }
+        }
+
+        pub fn seq_index(&self) -> usize {
+            match self {
+                SampleRef::File(sample) => sample.seq_index,
+                SampleRef::Tensor(sample) => sample.seq_index,
+            }
+        }
     }
 
     impl<'a> From<&'a TensorSample> for SampleRef<'a> {
@@ -99,12 +113,16 @@ mod dataset {
         pub image_file: PathBuf,
         pub size: PixelSize<usize>,
         pub boxes: Vec<PixelRectLabel<R64>>,
+        pub series_index: usize,
+        pub seq_index: usize,
     }
 
     #[derive(Debug)]
     pub struct TensorSample {
         pub image: Tensor,
         pub boxes: Vec<PixelRectLabel<R64>>,
+        pub series_index: usize,
+        pub seq_index: usize,
     }
 
     // HACK: workaround for `Tensor` is not Sync
@@ -241,13 +259,16 @@ mod iii_dataset {
             let samples: GroupHashMap<_, _> = {
                 let classes = classes.clone();
 
-                let iter = xml_files.into_iter().flat_map(|(dir, files)| {
-                    let dir = Arc::new(dir);
-                    files.into_iter().map(move |file| (dir.clone(), file))
-                });
+                let iter = xml_files
+                    .into_iter()
+                    .flat_map(|(dir, files)| {
+                        let dir = Arc::new(dir);
+                        files.into_iter().map(move |file| (dir.clone(), file))
+                    })
+                    .enumerate();
 
                 stream::iter(iter)
-                    .par_map_unordered(None, move |(dir, annotation_file)| {
+                    .par_map_unordered(None, move |(seq_index, (dir, annotation_file))| {
                         let classes = classes.clone();
                         let class_whitelist = class_whitelist.clone();
 
@@ -322,6 +343,8 @@ mod iii_dataset {
                                 image_file,
                                 size,
                                 boxes,
+                                series_index: 0,
+                                seq_index,
                             };
 
                             Fallible::Ok((dir, sample))
@@ -522,6 +545,8 @@ mod mnist_dataset {
                     TensorSample {
                         image,
                         boxes: vec![],
+                        series_index: 0,
+                        seq_index: index as usize,
                     }
                 })
                 .collect();
@@ -645,7 +670,8 @@ mod simple_dataset {
 
             let series: IndexMap<_, _> = series_entries
                 .into_iter()
-                .map(|(series_name, series_entry)| -> Result<_> {
+                .enumerate()
+                .map(|(series_index, (series_name, series_entry))| -> Result<_> {
                     let image_size = PixelSize::from_hw(series_entry.height, series_entry.width)?;
 
                     let mut labels = {
@@ -700,6 +726,8 @@ mod simple_dataset {
                                 image_file,
                                 boxes,
                                 size: image_size.clone(),
+                                series_index,
+                                seq_index: sample_index,
                             };
                             Ok(sample)
                         })
