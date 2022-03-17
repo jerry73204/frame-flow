@@ -15,13 +15,13 @@
     //     "min_seq_len": 5,
     // },
     "sampling": {
-        // "type": "random",
+        "type": "random",
 
         // "type": "sequential",
 
-        "type": "position",
-        "series_index": 0,
-        "seq_index": 661,
+        // "type": "position",
+        // "series_index": 0,
+        // "seq_index": 2610,
     },
     "model": {
         "detection_embedding": {
