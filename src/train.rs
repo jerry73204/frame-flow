@@ -104,7 +104,7 @@ impl TrainWorker {
         // train detector
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
             // clamp running_var in norms
-            clamp_running_var(detector_vs);
+            clamp_running_var(detector_vs, train_detector);
 
             // run detector
             let real_det = detector_model.forward_t(image, train_detector)?;
@@ -152,7 +152,7 @@ impl TrainWorker {
 
         let (loss, fake_image) = (0..steps).try_fold((None, None), |_, _| -> Result<_> {
             // clamp running_var in norms
-            clamp_running_var(generator_vs);
+            clamp_running_var(generator_vs, train_generator);
 
             // generate fake image
             let fake_image = generator_model.forward_t(input_det, None, train_generator)?;
@@ -218,7 +218,7 @@ impl TrainWorker {
 
         let (loss, fake_image) = (0..steps).try_fold((None, None), |_, _| -> Result<_> {
             // clamp running_var in norms
-            clamp_running_var(generator_vs);
+            clamp_running_var(generator_vs, train_generator);
 
             // generate fake image
             let fake_image = generator_model
@@ -294,7 +294,6 @@ impl TrainWorker {
             ref mut generator_vs,
             ref mut generator_model,
             ref mut generator_opt,
-            gan_loss_kind,
 
             train_detector,
             ..
@@ -305,7 +304,7 @@ impl TrainWorker {
 
         (0..steps).try_fold((None, None), |_, _| -> Result<_> {
             // clamp running_var in norms
-            clamp_running_var(generator_vs);
+            clamp_running_var(generator_vs, false);
 
             let recon_image = generator_model.forward_t(gt_det, None, train_detector)?;
             let recon_det = detector_model.forward_t(&recon_image, train_detector)?;
@@ -362,7 +361,7 @@ impl TrainWorker {
 
         (0..steps).try_fold((None, None), |_, _| -> Result<_> {
             // clamp running_var in norms
-            clamp_running_var(generator_vs);
+            clamp_running_var(generator_vs, train_generator);
 
             let orig_det = detector_model.forward_t(gt_image, train_detector)?;
             let fake_image = generator_model.forward_t(&orig_det, None, train_generator)?;
@@ -431,7 +430,7 @@ impl TrainWorker {
         ensure!(input_len < seq_len);
 
         let (loss, similarity_vec) = (0..steps).try_fold((None, None), |_, _| -> Result<_> {
-            clamp_running_var(transformer_vs);
+            clamp_running_var(transformer_vs, train_transformer);
             let real_det_seq: Vec<_> = gt_image_seq
                 .iter()
                 .map(|image| detector_model.forward_t(image, train_detector))
@@ -528,7 +527,7 @@ impl TrainWorker {
         let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
-            clamp_running_var(transformer_vs);
+            clamp_running_var(transformer_vs, train_transformer);
 
             let total_consistency_loss: AddVal<_> = izip!(
                 gt_image_seq.windows(input_len + 1),
@@ -607,7 +606,7 @@ impl TrainWorker {
         let noise = Tensor::randn(&[generator_model.latent_dim], FLOAT_CPU);
 
         let loss = (0..steps).try_fold(None, |_, _| -> Result<_> {
-            clamp_running_var(image_seq_discriminator_vs);
+            clamp_running_var(image_seq_discriminator_vs, train_image_seq_discriminator);
 
             let total_consistency_loss: AddVal<_> = izip!(
                 gt_image_seq.windows(input_len + 1),
@@ -1719,12 +1718,14 @@ fn discriminator_gan_loss(
     Ok(loss)
 }
 
-fn clamp_running_var(vs: &mut nn::VarStore) {
-    vs.variables().iter().for_each(|(name, var)| {
-        if name.ends_with(".running_var") {
-            let _ = var.shallow_clone().clamp_(1e-3, 1e3);
-        }
-    });
+fn clamp_running_var(vs: &mut nn::VarStore, train: bool) {
+    if train {
+        vs.variables().iter().for_each(|(name, var)| {
+            if name.ends_with(".running_var") {
+                let _ = var.shallow_clone().clamp_(1e-3, 1e3);
+            }
+        });
+    }
 }
 
 fn get_weights_and_grads(vs: &nn::VarStore) -> msg::WeightsAndGrads {
